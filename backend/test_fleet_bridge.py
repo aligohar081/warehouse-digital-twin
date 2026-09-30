@@ -330,6 +330,16 @@ def test_revoking_a_credential_removes_it_from_the_operator(twin):
     assert changed and changed[-1]["level"] == "WARNING"
 
 
+def test_revoking_safety_inspection_closes_the_human_inspection_gate(twin):
+    passed = twin.tasks.create_task({"type": "HUMAN_INSPECTION", "operator_id": "Sam"})
+    assert passed.status is TaskStatus.COMPLETED
+    credential = next(c for c in twin.inventory.get_worker("E-10001")["credentials"]
+                      if c["code"] == "safety_inspection")
+    twin.fleet.mutate(twin.inventory.revoke_credential, credential["credential_id"], "audit")
+    rejected = twin.tasks.create_task({"type": "HUMAN_INSPECTION", "operator_id": "Sam"})
+    assert rejected.status is TaskStatus.FAILED and "safety_inspection" in rejected.error
+
+
 def test_credential_expiry_is_picked_up_on_the_shift_check_cadence(twin, sim):
     with twin.inventory.at(datetime.now(timezone.utc) + timedelta(days=400)):
         ticks(sim, CONFIG["SHIFT_CHECK_EVERY_TICKS"])
