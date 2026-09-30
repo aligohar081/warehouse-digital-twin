@@ -10,6 +10,7 @@ import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .embodiment import GROUND
 from .models import (
     ACTIVE_TASK_STATES,
     BoxStatus,
@@ -243,7 +244,7 @@ class CIEngine:
             key = (robot.layer, robot.position[0], robot.position[1])  # same cell AND same layer
             if key in seen:
                 where = f"({robot.position[0]},{robot.position[1]})"
-                if robot.layer != "GROUND":
+                if robot.layer != GROUND:
                     where += f" on the {robot.layer} layer"
                 clashes.append(f"{robot.name} and {seen[key]} both occupy {where}")
             seen[key] = robot.name

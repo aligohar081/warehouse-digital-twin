@@ -8,6 +8,7 @@ from backend.embodiment import (
     AIR, GROUND, MobilityProfile, lift_ticks, seconds_to_ticks, step_ticks,
 )
 from backend.inventory.catalog_data import ROBOT_MODELS
+from backend.models import CellType, manhattan
 from backend.navigation import NavigationEngine
 from backend.warehouse import Warehouse
 
@@ -219,3 +220,97 @@ def test_classic_routing_is_unchanged_without_a_profile():
         }
         actual = set(classic.neighbors(cell))
         assert actual == expected, f"neighbors({cell}) mismatch: {actual} != {expected}"
+
+
+# --------------------------------------------------------------------------- #
+# The stop rule: the walkway is crossed, never stopped on (spec §5.2)
+# --------------------------------------------------------------------------- #
+CROSSINGS = [(17, 1), (17, 10), (17, 11), (17, 13), (17, 15), (17, 17)]
+
+
+def test_no_robot_may_stop_on_a_walkway_cell_but_may_pass_over_it(dc):
+    walkway = dc.zones["walkway"].cells
+    assert set(CROSSINGS) < set(walkway)
+    for cell in CROSSINGS:
+        assert dc.passable(cell, AMR) and not dc.may_stop(cell, AMR), cell
+        assert dc.passable(cell) and not dc.may_stop(cell), cell  # no profile: narrow-ground semantics
+    assert dc.passable((17, 10), FORKLIFT) and not dc.may_stop((17, 10), FORKLIFT)
+    for cell in walkway:
+        assert dc.passable(cell, DRONE, AIR) and not dc.may_stop(cell, DRONE, AIR), cell
+    assert dc.may_stop((16, 10), AMR) and dc.may_stop((18, 5), DRONE, AIR) and dc.may_stop((10, 3), FORKLIFT)
+    for profile_, layer in [(AMR, GROUND), (FORKLIFT, GROUND), (DRONE, AIR), (DRONE, GROUND), (None, GROUND)]:
+        for cell in dc.passable_cells(profile_, layer):
+            assert dc.may_stop(cell, profile_, layer) == (dc.cell_type(*cell) is not CellType.WALKWAY)
+        assert not dc.may_stop((2, 2), ARM)  # fixed equipment never stops anywhere it can't stand
+
+
+def test_a_path_may_cross_the_walkway_but_never_end_on_it(dc, nav):
+    over = nav.find_path((16, 10), (18, 10), allow_goal_adjacent=False, profile=AMR)
+    assert over == [(17, 10), (18, 10)]
+    assert nav.find_path((16, 10), (17, 10), allow_goal_adjacent=False, profile=AMR) is None
+    snapped = nav.find_path((16, 10), (17, 10), profile=AMR)
+    assert snapped and dc.cell_type(*snapped[-1]) is not CellType.WALKWAY
+    assert manhattan(snapped[-1], (17, 10)) == 1
+    assert nav.path_exists((16, 10), (17, 10), profile=AMR)  # it snaps, as any goal-adjacent query does
+    assert nav.find_path((16, 13), (17, 13), allow_goal_adjacent=False) is None  # no profile: same rule
+
+
+def test_a_drone_goal_on_the_walkway_snaps_off_it_or_fails(dc, nav):
+    snapped = nav.find_path((20, 2), (17, 5), allow_goal_adjacent=True, profile=DRONE, layer=AIR)
+    assert snapped and dc.cell_type(*snapped[-1]) is not CellType.WALKWAY
+    assert manhattan(snapped[-1], (17, 5)) == 1
+    assert nav.find_path((20, 2), (17, 5), allow_goal_adjacent=False, profile=DRONE, layer=AIR) is None
+    assert dc.nearest_walkable((17, 5), profile=DRONE, layer=AIR) in {(16, 5), (18, 5), (17, 4), (17, 6)} - set(dc.zones["walkway"].cells)
+
+
+def test_nearest_walkable_and_best_cell_in_zone_skip_the_walkway(dc, nav):
+    assert dc.nearest_walkable((17, 10), profile=AMR) in {(16, 10), (18, 10)}
+    assert dc.nearest_walkable((17, 13)) in {(16, 13), (18, 13)}
+    assert dc.nearest_walkable((17, 10), profile=FORKLIFT) in {(16, 10), (18, 10)}
+    assert dc.nearest_walkable((16, 10), profile=AMR) == (16, 10)
+    assert nav.best_cell_in_zone(dc.zones["walkway"].cells, (16, 10), profile=AMR) is None
+    assert nav.best_cell_in_zone(dc.zones["walkway"].cells, (17, 10), profile=AMR) is None  # even standing on it
+    assert nav.best_cell_in_zone(dc.zones["walkway"].cells, (20, 2), profile=DRONE, layer=AIR) is None
+    assert nav.best_cell_in_zone(dc.zones["walkway"].cells, (16, 10)) is None
+
+
+def test_the_classic_floor_has_no_stop_rule():
+    classic = Warehouse()
+    classic_nav = NavigationEngine(classic)
+    assert not any(classic.cell_type(x, y) is CellType.WALKWAY
+                   for x in range(classic.width) for y in range(classic.height))
+    drivable = classic.walkable_cells()
+    for x in range(classic.width):
+        for y in range(classic.height):
+            assert classic.may_stop((x, y)) == classic.is_walkable(x, y)
+    for goal in [(17, 12), (3, 8), (9, 6), (10, 10), (0, 0), (2, 14)]:
+        path = classic_nav.find_path((3, 8), goal, allow_goal_adjacent=False)
+        assert (path is not None) == classic.is_walkable(*goal), goal
+        snapped = classic_nav.find_path((3, 8), goal)
+        assert snapped is not None and classic.is_walkable(*(snapped[-1] if snapped else (3, 8)))
+        nearest = classic.nearest_walkable(goal)
+        assert classic.is_walkable(*nearest)
+        assert manhattan(nearest, goal) == min(manhattan(cell, goal) for cell in drivable)
+    for name in ("loading_zone", "charging_station", "shelf_a", "parking_area"):
+        zone = classic.zones[name]
+        best = classic_nav.best_cell_in_zone(zone.cells, (3, 8))
+        usable = [cell for cell in zone.cells if classic.is_walkable(*cell)]
+        if usable:
+            assert best in usable and manhattan(best, (3, 8)) == min(manhattan(cell, (3, 8)) for cell in usable)
+        else:
+            assert best is None
+
+
+# --------------------------------------------------------------------------- #
+# Layer names are validated
+# --------------------------------------------------------------------------- #
+def test_passable_rejects_a_misspelled_layer(dc):
+    with pytest.raises(ValueError, match=r"Unknown layer 'air' \(known: GROUND, AIR\)"):
+        dc.passable((10, 2), DRONE, "air")
+    with pytest.raises(ValueError, match="Unknown layer"):
+        dc.passable((10, 3), AMR, "sky")
+    with pytest.raises(ValueError, match="Unknown layer"):
+        dc.passable((10, 3), None, "ground")
+    with pytest.raises(ValueError, match="Unknown layer"):
+        dc.may_stop((10, 3), AMR, "ground")
+    assert dc.passable((10, 2), DRONE, AIR) and dc.passable((10, 3), AMR, GROUND)

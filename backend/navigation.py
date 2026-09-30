@@ -14,7 +14,7 @@ import heapq
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .embodiment import GROUND, MobilityProfile
-from .models import Cell, manhattan
+from .models import Cell, CellType, manhattan
 from .warehouse import Warehouse
 
 
@@ -40,13 +40,15 @@ class NavigationEngine:
     ) -> Optional[List[Cell]]:
         """Return the cells to traverse from ``start`` to ``goal``, exclusive of
         ``start``, using only cells ``profile`` may occupy on ``layer``.
-        ``None`` means no route exists.
+        ``None`` means no route exists. The route may cross walkway cells, but
+        the goal must be a cell the robot may stop on (Warehouse.may_stop): a
+        walkway goal is treated like an impassable one.
         """
         blocked_set: Set[Cell] = set(blocked or ())
         blocked_set.discard(start)
 
         target = goal
-        if not self.warehouse.passable(goal, profile, layer) or goal in blocked_set:
+        if not self.warehouse.may_stop(goal, profile, layer) or goal in blocked_set:
             if not allow_goal_adjacent:
                 self.failures += 1
                 return None
@@ -123,7 +125,8 @@ class NavigationEngine:
         profile: Optional[MobilityProfile] = None,
         layer: str = GROUND,
     ) -> Optional[Cell]:
-        """Pick the reachable cell of a zone that is cheapest to drive to.
+        """Pick the reachable cell of a zone that is cheapest to drive to, and
+        that a robot may stop on (so never a walkway cell).
 
         ``prefer`` cells are considered first (used to avoid stacking two boxes
         on the same drop point).
@@ -136,8 +139,8 @@ class NavigationEngine:
                 candidates = preferred
         candidates.sort(key=lambda c: manhattan(c, origin))
         for cell in candidates:
-            if cell in blocked_set:
-                continue
+            if cell in blocked_set or self.warehouse.cell_type(*cell) is CellType.WALKWAY:
+                continue  # crossed, never stopped on (spec §5.2); this also bars the origin shortcut below
             if cell == origin or self.find_path(origin, cell, blocked=blocked_set, allow_goal_adjacent=False,
                                                 profile=profile, layer=layer) is not None:
                 return cell

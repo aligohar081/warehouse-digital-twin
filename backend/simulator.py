@@ -448,13 +448,16 @@ class Simulator:
             self._break_deadlock(robot, task, blocker)
 
     def _break_deadlock(self, robot: Any, task: Any, blocker: Any) -> None:
-        """Step aside so the higher-priority robot can pass."""
+        """Step aside so the higher-priority robot can pass. A sidestep is a
+        stop, so it never lands on the walkway (spec §5.2): it goes through
+        step_to directly, so _crossing_wait would not get to hold it back."""
         twin = self.twin
         occupied = twin.other_robot_cells(robot.id)
         options = [
             cell
             for cell in twin.warehouse.neighbors(robot.position, robot.mobility, robot.layer)
             if cell not in occupied and cell != blocker.position
+            and twin.warehouse.may_stop(cell, robot.mobility, robot.layer)
         ]
         if not options:
             robot.wait_ticks = 0

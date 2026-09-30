@@ -67,7 +67,7 @@ class TaskPlanner:
         if cell is not None:
             if not warehouse.is_inside(*cell):
                 raise PlanningError(f"Coordinates {cell} are outside the warehouse")
-            resolved = cell if warehouse.passable(cell, profile, layer) \
+            resolved = cell if warehouse.may_stop(cell, profile, layer) \
                 else warehouse.nearest_walkable(cell, blocked, profile=profile, layer=layer)
             if resolved is None:
                 raise PlanningError(f"No drivable cell near {cell}")

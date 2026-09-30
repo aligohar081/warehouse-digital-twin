@@ -5,9 +5,10 @@ import pytest
 from backend import people
 from backend.digital_twin import DigitalTwin
 from backend.fleet_bridge import credential_scopes
-from backend.models import OperatorStatus, RobotStatus, SimulationStatus, TaskStatus
+from backend.models import CellType, OperatorStatus, RobotStatus, SimulationStatus, TaskStatus, manhattan
 from backend.operator import Operator
 from backend.simulator import Simulator
+from backend.task_planner import PlanningError
 
 
 def make_twin(tmp_path, layout="distribution_center"):
@@ -261,3 +262,92 @@ def test_a_walk_that_stays_on_one_side_does_not_hold_the_crossing(twin, sim, sam
     assert task.status is TaskStatus.COMPLETED and amr.position == (18, 13)
     assert walking_when_done, "the robot only got across because the walk was over"
     assert not twin.events.query(event_type="ROBOT_SAFETY_WAIT")
+
+
+# --------------------------------------------------------------------------- #
+# Crossings are pass-through: robots never stop or hover on the walkway (spec §5.2)
+# --------------------------------------------------------------------------- #
+def _stalled(twin, robot, destination):
+    """A task for `robot` for _break_deadlock to report on (no ticks run)."""
+    return twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": robot.id, "destination": destination})
+
+
+def test_an_amr_deadlock_sidestep_never_lands_on_a_crossing(twin, sim, sam):
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(16, 10))
+    blocker = twin.add_robot(name="TR50-202", asset_id="AST-000202", position=(15, 10))
+    people.place(twin, sam, "pick_station_2")
+    people.start_transit(twin, sam, "intake_staging")  # someone is crossing the walkway right now
+    assert (17, 10) in twin.warehouse.neighbors(amr.position, amr.mobility, amr.layer)
+    sim._break_deadlock(amr, _stalled(twin, amr, "10,10"), blocker)
+    assert amr.position in {(16, 9), (16, 11)}, "stepped aside to a cell it may stop on"
+    assert twin.warehouse.cell_type(*amr.position) is not CellType.WALKWAY
+    assert twin.events.query(event_type="DEADLOCK_RESOLVED")
+
+
+def test_a_drone_deadlock_sidestep_never_hovers_over_the_walkway(twin, sim, sam):
+    drone = twin.add_robot(name="IX2-208", asset_id="AST-000208", position=(20, 2))  # drones spawn on a pad
+    blocker = twin.add_robot(name="IX2-209", asset_id="AST-000209", position=(21, 2))
+    for flyer, cell in ((drone, (18, 5)), (blocker, (19, 5))):
+        twin.set_robot_layer(flyer.id, "AIR")
+        flyer.position = cell  # mid-flight, beside the walkway
+    people.place(twin, sam, "pick_station_2")
+    people.start_transit(twin, sam, "intake_staging")
+    assert (17, 5) in twin.warehouse.neighbors(drone.position, drone.mobility, drone.layer)
+    sim._break_deadlock(drone, _stalled(twin, drone, "16,2"), blocker)
+    assert drone.position in {(18, 4), (18, 6)}
+    assert twin.warehouse.cell_type(*drone.position) is not CellType.WALKWAY
+
+
+def test_a_robot_whose_only_free_neighbour_is_a_crossing_stays_put(twin, sim):
+    # The blocker, a rack and a third robot box it in; the crossing is the one way out.
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(16, 10))
+    blocker = twin.add_robot(name="TR50-202", asset_id="AST-000202", position=(15, 10))
+    twin.add_robot(name="PK30-203", asset_id="AST-000203", position=(16, 11))
+    assert twin.warehouse.neighbors(amr.position, amr.mobility, amr.layer) == [(17, 10), (15, 10), (16, 11)]
+    amr.wait_ticks = 9
+    sim._break_deadlock(amr, _stalled(twin, amr, "10,10"), blocker)
+    assert amr.position == (16, 10) and amr.wait_ticks == 0
+    assert not twin.events.query(event_type="DEADLOCK_RESOLVED")
+
+
+def test_no_route_ends_on_the_walkway_for_a_drone(twin):
+    drone = twin.add_robot(name="IX2-208", asset_id="AST-000208", position=(20, 2))
+    warehouse, nav = twin.warehouse, twin.navigation
+    assert warehouse.passable((17, 5), drone.mobility, "AIR")  # flyable, so routes may cross it...
+    assert not warehouse.may_stop((17, 5), drone.mobility, "AIR")  # ...but never hover on it
+    snapped = nav.find_path((20, 2), (17, 5), profile=drone.mobility, layer="AIR")
+    assert snapped and warehouse.cell_type(*snapped[-1]) is not CellType.WALKWAY
+    assert manhattan(snapped[-1], (17, 5)) == 1
+    assert nav.find_path((20, 2), (17, 5), allow_goal_adjacent=False, profile=drone.mobility, layer="AIR") is None
+    across = nav.find_path((20, 2), (14, 2), allow_goal_adjacent=False, profile=drone.mobility, layer="AIR")
+    assert across and any(warehouse.cell_type(*c) is CellType.WALKWAY for c in across[:-1])  # still crossable
+
+
+def test_a_walkway_destination_is_not_reachable_for_anyone(twin):
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(16, 10))
+    drone = twin.add_robot(name="IX2-208", asset_id="AST-000208", position=(20, 2))
+    twin.set_robot_layer(drone.id, "AIR")
+    for robot in (amr, drone):
+        with pytest.raises(PlanningError, match="not reachable"):
+            twin.planner.resolve_target("walkway", robot.position, set(),
+                                        profile=robot.mobility, layer=robot.layer)
+
+
+def test_an_explicit_crossing_destination_snaps_to_a_cell_it_may_stop_on(twin):
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(16, 10))
+    cell, _ = twin.planner.resolve_target("17,10", amr.position, set(), profile=amr.mobility, layer=amr.layer)
+    assert twin.warehouse.cell_type(*cell) is not CellType.WALKWAY and manhattan(cell, (17, 10)) == 1
+    cell, _ = twin.planner.resolve_target({"x": 17, "y": 13}, amr.position, set(),
+                                          profile=amr.mobility, layer=amr.layer)
+    assert twin.warehouse.cell_type(*cell) is not CellType.WALKWAY
+
+
+def test_a_robot_sent_to_a_crossing_parks_beside_it(twin, sim):
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(16, 13))
+    task = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": amr.id, "destination": "17,13"})
+    for _ in range(60):
+        if task.is_terminal:
+            break
+        sim.tick()
+    assert task.status is TaskStatus.COMPLETED
+    assert twin.warehouse.cell_type(*amr.position) is not CellType.WALKWAY

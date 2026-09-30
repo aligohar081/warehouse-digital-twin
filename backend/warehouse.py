@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Dict, List, Optional, Set
 
-from .embodiment import AIR, GROUND, MobilityProfile
+from .embodiment import AIR, GROUND, LAYERS, MobilityProfile
 from .layouts import build_layout
 from .layouts.base import NARROW, WIDE, Slot, Zone
 from .models import Cell, CellType, manhattan
@@ -83,7 +83,11 @@ class Warehouse:
         No profile: exactly is_walkable (every classic robot). Ground robots:
         walkable cells, WIDE cells only for a wide robot. Drones: on AIR any
         flyable cell; on GROUND only their pad. Fixed equipment never moves.
+        An unknown layer name (say "air") raises ValueError rather than being
+        read as GROUND.
         """
+        if layer not in LAYERS:
+            raise ValueError(f"Unknown layer {layer!r} (known: {', '.join(LAYERS)})")
         x, y = cell
         if profile is None:
             return self.is_walkable(x, y)
@@ -96,6 +100,17 @@ class Warehouse:
         if layer != GROUND or not self.is_walkable(x, y):
             return False
         return profile.clearance != WIDE or self._clearance.get(cell) == WIDE
+
+    def may_stop(self, cell: Cell, profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> bool:
+        """May a robot with `profile` come to rest on `cell` on `layer`?
+
+        Spec §5.2: walkway cells, crossings included, are pass-through only:
+        a robot may cross them but never stops or hovers on one. So this is
+        passable() minus the WALKWAY cells. Goals, parking spots and deadlock
+        sidesteps use it; the cells in between a route use passable(). The
+        classic floor has no walkway, so there it is exactly passable().
+        """
+        return self.passable(cell, profile, layer) and self.cell_type(*cell) is not CellType.WALKWAY
 
     def walkable_cells(self) -> List[Cell]:
         return [
@@ -179,10 +194,10 @@ class Warehouse:
 
     def nearest_walkable(self, cell: Cell, blocked: Optional[Set[Cell]] = None,
                          profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> Optional[Cell]:
-        """Breadth-first search outwards for the closest cell `profile` may use
-        on `layer` (with no profile: the closest drivable cell)."""
+        """Breadth-first search outwards for the closest cell `profile` may stop
+        on, on `layer` (with no profile: the closest drivable cell)."""
         blocked = blocked or set()
-        if self.passable(cell, profile, layer) and cell not in blocked:
+        if self.may_stop(cell, profile, layer) and cell not in blocked:
             return cell
         seen = {cell}
         frontier: deque = deque([cell])
@@ -193,7 +208,7 @@ class Warehouse:
                 if nxt in seen or not self.is_inside(*nxt):
                     continue
                 seen.add(nxt)
-                if self.passable(nxt, profile, layer) and nxt not in blocked:
+                if self.may_stop(nxt, profile, layer) and nxt not in blocked:
                     return nxt
                 frontier.append(nxt)
         return None
