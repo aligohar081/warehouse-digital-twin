@@ -106,6 +106,7 @@ class DigitalTwin:
         demo: bool = True,
         demo_tasks: bool = True,
         inventory_path: str = ":memory:",
+        layout: str = "classic",
     ) -> None:
         self.lock = threading.RLock()
         self.log_dir = log_dir
@@ -117,7 +118,10 @@ class DigitalTwin:
         self.events = EventSystem(self.logger)
         self.ids = IdFactory()
 
-        self.warehouse = Warehouse()
+        # The named floor plan (backend/layouts). "classic" — today's floor —
+        # is the default, so every existing caller builds the same twin.
+        self.warehouse = Warehouse(layout=layout)
+        self.layout_name = self.warehouse.layout_name
         self.navigation = NavigationEngine(self.warehouse)
         self.planner = TaskPlanner(self)
         self.tasks = TaskManager(self)
@@ -911,6 +915,7 @@ class DigitalTwin:
     def snapshot(self, include_layout: bool = False, task_limit: int = 60) -> Dict[str, Any]:
         with self.lock:
             state: Dict[str, Any] = {
+                "layout_name": self.layout_name,
                 "environment": self.environment_state(),
                 "robots": [r.to_dict() for r in self.robots.values()],
                 "boxes": [b.to_dict() for b in self.boxes.values()],
