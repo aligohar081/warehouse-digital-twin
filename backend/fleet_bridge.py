@@ -15,7 +15,7 @@ _on_change only after its transaction has committed.
 from __future__ import annotations
 
 import random
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from .inventory import InventoryService, NotFound, reseed
 from .inventory.catalog_data import CLASS_DEFAULT_MODELS
@@ -54,6 +54,17 @@ class FleetBridge:
         for robot in self.twin.robots.values():
             if robot.asset_id == asset_id:
                 return robot
+        return None
+
+    def spare_floor_asset(self, model_code: str, exclude: Iterable[str] = ()) -> Optional[str]:
+        """An IN_SERVICE floor asset of `model_code` that no live robot is bound to
+        (lowest id first), or None — so a robot whose own asset is unusable takes
+        over an orphaned one instead of commissioning yet another."""
+        held = {robot.asset_id for robot in self.twin.robots.values() if robot.asset_id}
+        skip = held | set(exclude)
+        for summary in self.service.list_robots(site=FLOOR_SITE, status="IN_SERVICE"):
+            if summary["model_code"] == model_code and summary["asset_id"] not in skip:
+                return summary["asset_id"]
         return None
 
     def bind_new_robot(self, robot: Any, model_code: Optional[str] = None,
@@ -139,8 +150,10 @@ class FleetBridge:
                     self.twin.logger.warning(
                         LogCategory.FLEET,
                         f"{robot.name}: asset {robot.asset_id} can't be re-bound ({exc}) — commissioning a new one")
+                    model = self.service.get_robot(robot.asset_id)["model_code"]
+                    # Robots not yet re-bound still carry their saved asset_id, so none of those is "spare".
                     robot.asset_id = None
-                    self.bind_new_robot(robot, adopt=False)
+                    self.bind_new_robot(robot, asset_id=self.spare_floor_asset(model), adopt=False)
                 continue
             missing, robot.asset_id = robot.asset_id, None
             self.bind_new_robot(robot, adopt=False)
@@ -296,7 +309,9 @@ class FleetBridge:
             if robot.asset_id and self.service.has_asset(robot.asset_id):
                 bound.add(robot.asset_id)
                 self._report_robot(robot)
-        self.service.touch_remote_reports(exclude=bound)
+        # Only the other sites check in on their own; an unbound floor asset has nothing
+        # reporting for it, so its report goes stale (and the fleet shows it).
+        self.service.touch_remote_reports(exclude=bound, exclude_sites=(FLOOR_SITE,))
 
     def _report_robot(self, robot: Any) -> None:
         if robot.status == RobotStatus.ERROR:

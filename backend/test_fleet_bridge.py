@@ -1,6 +1,7 @@
 """FleetBridge: binding live robots/operators to the inventory, and the
 runtime effects of inventory actions on the simulation."""
 import json
+from datetime import timedelta
 
 import pytest
 
@@ -123,6 +124,53 @@ def test_boot_survives_a_decommissioned_demo_asset(tmp_path):
     warnings = [r for r in second.logger.records
                 if r["category"] == "FLEET" and r["level"] == "WARNING" and "AST-000101" in r["message"]]
     assert len(warnings) == 1 and "decommissioned" in warnings[0]["message"]
+
+
+def test_repeated_degraded_boots_reuse_the_replacement_asset(tmp_path):
+    path = str(tmp_path / "inventory.sqlite3")
+    first = make_twin(tmp_path, inventory_path=path)
+    first.fleet.mutate(first.inventory.decommission, "AST-000101", "scrapped")
+
+    def floor_assets(twin):
+        return [r["asset_id"] for r in twin.inventory.list_robots(site="WH-01", status="IN_SERVICE")]
+
+    second = make_twin(tmp_path, inventory_path=path)
+    replacement = second.find_robot("Robo-01").asset_id
+    assert replacement != "AST-000101"
+    after_second = floor_assets(second)
+    third = make_twin(tmp_path, inventory_path=path)
+    assert third.find_robot("Robo-01").asset_id == replacement  # bound again, not a fresh one
+    assert third.find_robot("Robo-02").asset_id == "AST-000102"
+    assert floor_assets(third) == after_second
+    warnings = [r for r in third.logger.records
+                if r["category"] == "FLEET" and r["level"] == "WARNING" and "AST-000101" in r["message"]]
+    assert len(warnings) == 1 and replacement in warnings[0]["message"]
+
+
+def test_load_state_takes_over_a_spare_asset_before_commissioning(twin, tmp_path):
+    spare = twin.fleet.mutate(twin.inventory.commission_robot, "AC-TR50", "WH-01", "parking_area")["aggregate_id"]
+    assert twin.fleet.spare_floor_asset("AC-TR50") == spare
+    assert twin.fleet.spare_floor_asset("AC-TR50", exclude=[spare]) is None  # 101/102 are bound, 103 is in maintenance
+    assert twin.fleet.spare_floor_asset("NW-PF1200") is None  # no floor asset of that model
+    path = twin.save_state(str(tmp_path / "state.json"))
+    twin.fleet.mutate(twin.inventory.decommission, "AST-000101", "scrapped")
+    before = twin.inventory.store.count("robot_asset")
+    twin.load_state(path)
+    assert twin.find_robot("Robo-01").asset_id == spare
+    assert twin.inventory.store.count("robot_asset") == before  # nothing new was commissioned
+
+
+def test_unbound_floor_assets_go_stale_while_other_sites_keep_checking_in(twin):
+    inventory = twin.inventory
+    orphan = twin.fleet.mutate(inventory.commission_robot, "AC-TR50", "WH-01", "parking_area")["aggregate_id"]
+    assert not inventory.get_robot(orphan)["flags"]["report_stale"]
+    later = inventory.now() + timedelta(seconds=inventory.setting("REPORT_STALE_SECONDS") + 60)
+    with inventory.at(later):
+        with twin.lock:
+            twin.fleet.heartbeat()
+        assert inventory.get_robot(orphan)["flags"]["report_stale"]  # nothing reports for it
+        assert not inventory.get_robot("AST-000101")["flags"]["report_stale"]  # bound: the robot reports
+        assert not inventory.get_robot("AST-000201")["flags"]["report_stale"]  # WH-02 checks in on its own
 
 
 def test_load_state_survives_a_decommissioned_asset(twin, tmp_path):

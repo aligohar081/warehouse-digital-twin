@@ -338,16 +338,20 @@ class FleetMixin:
                                 after=self.store.get("reported_state", "asset_id", asset_id),
                                 actor=actor or SYSTEM)
 
-    def touch_remote_reports(self, exclude: Iterable[str] = ()) -> int:
+    def touch_remote_reports(self, exclude: Iterable[str] = (), exclude_sites: Iterable[str] = ()) -> int:
         """Refresh reported_at for every ONLINE, non-decommissioned asset not in
-        `exclude` — the robots at other sites checking in."""
+        `exclude` (or at a site in `exclude_sites`) — the robots at other sites
+        checking in. Assets on the twin's own floor report for themselves."""
         excluded = set(exclude)
+        sites = list(dict.fromkeys(exclude_sites))
+        site_filter = f" AND site_code NOT IN ({', '.join('?' for _ in sites)})" if sites else ""
         now = self.now_iso()
         with self._tx():
             rows = self.store.select(
                 "reported_state",
                 "connectivity = 'ONLINE' AND asset_id IN "
-                "(SELECT asset_id FROM robot_asset WHERE lifecycle_status != 'DECOMMISSIONED')")
+                f"(SELECT asset_id FROM robot_asset WHERE lifecycle_status != 'DECOMMISSIONED'{site_filter})",
+                sites)
             touched = 0
             for row in rows:
                 if row["asset_id"] in excluded:

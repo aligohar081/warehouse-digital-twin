@@ -18,6 +18,7 @@ from .event_system import EventSystem
 from .fleet_bridge import FleetBridge
 from .inventory import NotFound as InventoryNotFound
 from .inventory import open_inventory
+from .inventory.catalog_data import CLASS_DEFAULT_MODELS
 from .logger import WarehouseLogger
 from .models import (
     ACTIVE_TASK_STATES,
@@ -179,11 +180,18 @@ class DigitalTwin:
                 self.add_robot(name=name, position=position, asset_id=DEMO_ASSET_IDS.get(name))
             except ValueError as exc:
                 # A persisted inventory may have retired the demo's asset; the
-                # twin must still boot, so commission a fresh one instead.
+                # twin must still boot, so take over an orphaned floor asset of
+                # the same model (a previous boot's replacement) or commission
+                # a fresh one — never grow the inventory on every boot.
+                demo_asset = DEMO_ASSET_IDS.get(name)
+                model = (self.inventory.get_robot(demo_asset)["model_code"]
+                         if self.inventory.has_asset(demo_asset) else CLASS_DEFAULT_MODELS["AMR"])
+                spare = self.fleet.spare_floor_asset(model, exclude=DEMO_ASSET_IDS.values())
                 self.logger.warning(
                     LogCategory.FLEET,
-                    f"{name}: demo asset {DEMO_ASSET_IDS.get(name)} is unusable ({exc}) — commissioning a new one")
-                self.add_robot(name=name, position=position)
+                    f"{name}: demo asset {demo_asset} is unusable ({exc}) — "
+                    + (f"taking over spare asset {spare}" if spare else "commissioning a new one"))
+                self.add_robot(name=name, position=position, asset_id=spare)
         for name, position, weight, source, destination in DEMO_BOXES:
             self.add_box(name=name, position=position, weight=weight,
                          source=source, destination=destination)
