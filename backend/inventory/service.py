@@ -8,8 +8,9 @@ training). core.py holds the shared plumbing.
 """
 from __future__ import annotations
 
+from .catalog import CatalogMixin
 from .core import ServiceCore
 
 
-class InventoryService(ServiceCore):
+class InventoryService(CatalogMixin, ServiceCore):
     pass
