@@ -13,7 +13,8 @@ from .core import ServiceCore
 from .fleet import FleetMixin
 from .ota import OtaMixin
 from .servicing import ServicingMixin
+from .workforce import WorkforceMixin
 
 
-class InventoryService(OtaMixin, ServicingMixin, FleetMixin, CatalogMixin, ServiceCore):
+class InventoryService(OtaMixin, ServicingMixin, FleetMixin, CatalogMixin, WorkforceMixin, ServiceCore):
     pass
