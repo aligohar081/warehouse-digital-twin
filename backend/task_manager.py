@@ -974,7 +974,7 @@ class TaskManager:
         if needs_destination:
             if not task.destination:
                 return False, "This task type needs a destination"
-            origin = robot.position if robot else next(iter(twin.robots.values())).position
+            origin = robot.position if robot else self._auto_origin()
             try:
                 planner.resolve_target(task.destination, origin, **route)
             except PlanningError as exc:
@@ -983,7 +983,7 @@ class TaskManager:
         # Source (optional, but if given it must exist)
         if task.source:
             try:
-                origin = robot.position if robot else next(iter(twin.robots.values())).position
+                origin = robot.position if robot else self._auto_origin()
                 planner.resolve_target(task.source, origin, **route)
             except PlanningError as exc:
                 return False, f"Invalid source: {exc}"
@@ -998,6 +998,17 @@ class TaskManager:
                 return False, f"No path from {robot.name} to ({target_cell[0]},{target_cell[1]})"
 
         return True, None
+
+    def _auto_origin(self) -> Optional[Cell]:
+        """Where an AUTO task's targets are resolved from when no robot is
+        named: the first robot that can move. A fixed arm stands on an isolated
+        station cell that nothing is reachable from. If every robot is fixed,
+        the first one; None when there are no robots."""
+        robots = list(self.twin.robots.values())
+        for robot in robots:
+            if robot.mobility is None or not robot.mobility.is_fixed:
+                return robot.position
+        return robots[0].position if robots else None
 
     def _primary_target(self, task: Task, origin: Cell, profile: Optional[Any] = None,
                         layer: str = GROUND) -> Tuple[Optional[Cell], str]:
@@ -1063,10 +1074,13 @@ class TaskManager:
         select_robot() (which actually assigns the winner) and
         AGENT_REPLAN's read-only recommendation (which only reports it)."""
         twin = self.twin
-        try:
-            target_cell, target_label = self._primary_target(task, next(iter(twin.robots.values())).position)
-        except (PlanningError, StopIteration):
-            target_cell, target_label = None, ""
+        origin = self._auto_origin()
+        target_cell, target_label = None, ""
+        if origin is not None:
+            try:
+                target_cell, target_label = self._primary_target(task, origin)
+            except PlanningError:
+                pass  # no target to measure distance to: scored without distance
 
         scored: List[Tuple[float, Any, Dict[str, Any]]] = []
         for robot in twin.robots.values():

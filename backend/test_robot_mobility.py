@@ -129,3 +129,23 @@ def test_reset_sends_a_robot_home_by_its_own_profile(twin):
     twin.reset_robot(forklift.id)
     # (8,1) is the nearest free drivable cell, but it is NARROW; (7,2) is the nearest WIDE one.
     assert forklift.position == (7, 2) and forklift.status is RobotStatus.IDLE
+
+
+def test_auto_tasks_resolve_their_targets_from_a_robot_that_can_move(twin):
+    # An arm sits on an isolated station cell, so nothing is reachable from it:
+    # with the arm first in the fleet, AUTO targets must not start from there.
+    twin.add_robot(name="CX10-210", asset_id="AST-000210")
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201")
+    task = twin.tasks.create_task({"type": "MOVE_ROBOT", "destination": "outbound_staging"})
+    assert task.status is TaskStatus.PLANNING, task.error
+    charge = twin.tasks.create_task({"type": "CHARGE_ROBOT"})
+    scored, _ = twin.tasks._score_candidates(charge)
+    assert [entry[1] for entry in scored] == [amr]  # the arm is never a charging candidate
+
+
+def test_the_auto_origin_is_the_first_robot_that_can_move(twin):
+    assert twin.tasks._auto_origin() is None  # the new floor boots with no robots
+    arm = twin.add_robot(name="CX10-210", asset_id="AST-000210")
+    assert twin.tasks._auto_origin() == arm.position  # every robot is fixed: fall back to the first
+    amr = twin.add_robot(name="TR50-201", asset_id="AST-000201")
+    assert twin.tasks._auto_origin() == amr.position
