@@ -201,9 +201,11 @@ class FleetBridge:
                   "subject_id": change.get("subject_id")},
         )
         if change["aggregate_type"] == "ROBOT_ASSET":
-            if (robot is not None and robot.ota_installing
-                    and not any(j["state"] == "INSTALLING" for j in change["after"]["active_ota_jobs"])):
-                robot.ota_installing = False  # the job that was installing ended (failed, swapped out, decommissioned)
+            if robot is not None:  # UPDATING is derived from the jobs, never hand-set per job
+                installing = any(j["state"] == "INSTALLING" for j in change["after"]["active_ota_jobs"])
+                if installing != robot.ota_installing:
+                    robot.ota_installing = installing
+                    self._report_robot(robot)  # the fleet sees UPDATING start and end at once
             if action in LIFECYCLE_ACTIONS and robot is not None:
                 self._apply_lifecycle(robot, change["after"]["lifecycle_status"])
             if action == "COMPONENT_SWAPPED":
@@ -218,8 +220,6 @@ class FleetBridge:
                 self._set_running_version(job["asset_id"], robot, job["kind"], job["slot"], job["from_version"])
             elif action == "OTA_FAILED":
                 self._ota_ticks.pop(change["subject_id"], None)
-                if robot is not None:
-                    robot.ota_installing = False
         elif change["aggregate_type"] == "WORKER":
             for operator in list(self.twin.operators.values()):
                 if operator.worker_id == change["aggregate_id"]:
@@ -346,20 +346,22 @@ class FleetBridge:
                     continue
                 self.service.transition_ota(job_id, "INSTALLING")
                 self._ota_ticks[job_id] = 0
-                if robot is not None:
-                    robot.ota_installing = True
             elif state == "INSTALLING":
                 if ticks < CONFIG["OTA_INSTALL_TICKS"]:
                     continue
                 self._ota_ticks.pop(job_id, None)
-                if robot is not None:
-                    robot.ota_installing = False
                 if random.random() < CONFIG.get("OTA_FAILURE_RISK", 0.0):
                     self.service.transition_ota(job_id, "FAILED",
                                                 failure_reason="install failed: image signature verification error")
                     continue
                 self._set_running_version(job["asset_id"], robot, job["kind"], job["slot"], job["version"])
                 self.service.transition_ota(job_id, "REPORTED")
+        # A robot is UPDATING exactly while one of its jobs is INSTALLING. Re-derived from a
+        # fresh query, so it also repairs a robot restored by load_state mid-install.
+        installing = {j["asset_id"] for j in self.service.active_ota_jobs() if j["state"] == "INSTALLING"}
+        for robot in self.twin.robots.values():
+            if robot.asset_id:
+                robot.ota_installing = robot.asset_id in installing
 
     def sync_all_operators(self) -> None:
         """Catch credentials that expired (or became effective) with time."""

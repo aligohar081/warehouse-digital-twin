@@ -131,6 +131,7 @@ def test_load_state_survives_a_decommissioned_asset(twin, tmp_path):
 # --------------------------------------------------------------------------- #
 # Runtime effects (Simulator.tick → FleetBridge.on_tick)
 # --------------------------------------------------------------------------- #
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -189,10 +190,12 @@ def test_ota_runs_through_the_simulator_and_waits_for_an_idle_robot(twin, sim):
     assert robot.current_task is not None and job_state(twin, job) == "DOWNLOADING"  # waits while busy
     run_until(sim, lambda: job_state(twin, job) == "INSTALLING")
     assert robot.current_task is None and robot.ota_installing and not robot.is_available
+    assert twin.inventory.get_robot("AST-000101")["reported"]["operational_mode"] == "UPDATING"
     run_until(sim, lambda: job_state(twin, job) == "REPORTED")
     assert robot.firmware_version == "2.2.0" and not robot.ota_installing and robot.is_available
     record = twin.inventory.get_robot("AST-000101")
     assert record["reported"]["software_version"] == "2.2.0" and record["declared_software_version"] == "2.1.0"
+    assert record["reported"]["operational_mode"] == "IDLE"  # not stuck on UPDATING until the next heartbeat
     twin.fleet.mutate(twin.inventory.verify_ota, job, verified_by="E-10003")
     assert twin.inventory.get_robot("AST-000101")["flags"]["software_mismatch"] is False
     assert any(e["event"] == "OTA_JOB_UPDATED" for e in twin.events.query(limit=500))
@@ -255,21 +258,63 @@ def test_credential_expiry_is_picked_up_on_the_shift_check_cadence(twin, sim):
     assert twin.find_operator("Lee").certifications == []
 
 
-def test_api_style_mutations_during_a_running_simulator_thread_do_not_deadlock(twin):
+def test_mutations_racing_the_simulator_thread_neither_deadlock_nor_break_ticks(twin, monkeypatch):
+    """API-style mutations (twin.lock → inventory lock) run on a worker thread while the
+    simulator thread ticks with a heartbeat and an operator sync on every tick."""
+    monkeypatch.setitem(CONFIG, "FLEET_HEARTBEAT_EVERY_TICKS", 1)
+    monkeypatch.setitem(CONFIG, "SHIFT_CHECK_EVERY_TICKS", 1)
+    heartbeats = []
+    real_heartbeat = twin.fleet.heartbeat
+    monkeypatch.setattr(twin.fleet, "heartbeat", lambda: (heartbeats.append(1), real_heartbeat())[1])
     simulator = Simulator(twin)
+    simulator.dt = 0.002
+    errors = []
+    job_ids = []
+
+    def hammer():
+        try:
+            target = twin.tick_count + 30
+            job_ids.append(twin.fleet.mutate(twin.inventory.start_ota, "AST-000102",
+                                             "AC-TR50:SW:2.2.0")["subject_id"])
+            i = 0
+            while twin.tick_count < target:
+                twin.fleet.mutate(twin.inventory.admin_edit, "AST-000201", {"fleet_id": f"F-{i}"}, "stress")
+                twin.fleet.mutate(twin.inventory.report_state, "AST-000201",
+                                  {"health_state": "DEGRADED" if i % 2 else "OK"})
+                i += 1
+        except Exception as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
     simulator.start()
     simulator.start_thread()
     try:
-        started = time.time()
-        for i in range(20):
-            twin.fleet.mutate(twin.inventory.admin_edit, "AST-000201", {"fleet_id": f"F-{i}"}, "stress")
-            twin.fleet.mutate(twin.inventory.report_state, "AST-000201",
-                              {"health_state": "DEGRADED" if i % 2 else "OK"})
-        assert time.time() - started < 5
-        time.sleep(0.3)
-        assert twin.tick_count > 0
+        started_at = twin.tick_count
+        worker = threading.Thread(target=hammer, daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        assert not worker.is_alive(), "mutations and ticks deadlocked"
+        assert errors == []
+        assert twin.tick_count - started_at >= 30
+        assert len(heartbeats) >= 10  # ticks ran the fleet hooks while mutations were in flight
+        assert job_state(twin, job_ids[0]) != "STAGED"
     finally:
         simulator.stop_thread()
+    failures = [r for r in twin.logger.records if r["level"] in ("ERROR", "CRITICAL")]
+    assert failures == []  # no tick (or fleet hook) failed under the race
+
+
+def test_overlapping_ota_jobs_keep_the_robot_updating_until_both_finish(twin, sim):
+    robot = twin.find_robot("Robo-01")
+    software = twin.fleet.mutate(twin.inventory.start_ota, "AST-000101", "AC-TR50:SW:2.2.0")["subject_id"]
+    ticks(sim, 3)
+    lidar = next(c for c in twin.inventory.get_robot("AST-000101")["components"] if c["slot"] == "lidar")
+    firmware = twin.fleet.mutate(twin.inventory.start_ota, "AST-000101", "WT-L360:FW:1.9.4",
+                                 component_id=lidar["component_id"])["subject_id"]
+    run_until(sim, lambda: job_state(twin, software) == "REPORTED")
+    assert job_state(twin, firmware) == "INSTALLING"
+    assert robot.ota_installing and not robot.is_available
+    run_until(sim, lambda: job_state(twin, firmware) == "REPORTED")
+    assert not robot.ota_installing and robot.is_available
 
 
 def test_a_swap_during_install_clears_updating(twin, sim):
