@@ -18,6 +18,7 @@ from .decision_graph import flatten_record, query_decisions
 from .digital_twin import DigitalTwin
 from .eval_engine import evaluate_events
 from .event_system import Broadcaster
+from .inventory_api import register_inventory_routes
 from .maintenance import maintenance_reason
 from .models import CONFIG, LogCategory, Priority, SimulationStatus, now_iso
 from .policy import DEFAULT_POLICY_PATH, effective_policy, load_policies
@@ -128,6 +129,8 @@ def create_app(
 
         wrapper.__name__ = fn.__name__
         return wrapper
+
+    register_inventory_routes(app, twin, ApiError)
 
     # ------------------------------------------------------------------ #
     # Static dashboard
@@ -356,6 +359,8 @@ def create_app(
             speed=_float(data, "speed"),
             allowed_task_types=data.get("allowed_task_types"),
             robot_class=data.get("robot_class"),
+            model_code=data.get("model_code") or None,
+            asset_id=data.get("asset_id") or None,
         )
         return jsonify({"ok": True, "robot": robot.to_dict()}), 201
 

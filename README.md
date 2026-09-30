@@ -768,6 +768,41 @@ automatic recharge (`Simulator._auto_charge`) is dispatched as a normal,
 gated `CHARGE_ROBOT` task, so a class that can't run one can never
 charge itself and will eventually strand in `ERROR`.
 
+## Fleet & workforce inventory
+
+The twin also plays the *source systems* a real warehouse has: a **fleet
+manager** (robot model catalog, serialized assets with a component tree,
+calibration, maintenance work orders and over-the-air updates) and a
+**workforce system** (workers, credentials, training). They live in
+`backend/inventory/` with their own SQLite database (`data/inventory.sqlite3`;
+tests use an in-memory copy) and their own IDs (`AST-000101`, `E-10001`).
+Every live robot and operator is bound to its record by
+`backend/fleet_bridge.py`. Every change is a lifecycle action that bumps a
+revision and appends to a cursor-based change feed — the feed
+physical-work-assurance ingests to keep robot and worker passports current.
+
+All manufacturers are fictional; specs, sensors and standards are modelled
+on real product categories. Worker records hold only the PWA allowlist
+(no pay, performance, health or demographic data) and credential numbers
+only as hashes.
+
+Open the **Fleet & workforce** page from the dashboard header (`/fleet.html`).
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/fleet/catalog/models`, `/parts`, `GET /api/fleet/releases` | Model catalog, part catalog, software/firmware/AI-policy releases |
+| `GET /api/fleet/releases/<id>/sbom` | The release's CycloneDX 1.5 SBOM |
+| `POST /api/fleet/releases`, `POST …/<id>/recall` | Publish / recall a release |
+| `GET/POST /api/fleet/robots`, `GET/PATCH /api/fleet/robots/<asset>` | List, commission, read, correct a robot asset |
+| `POST /api/fleet/robots/<asset>/status`, `/decommission` | Lifecycle changes (stop/resume the floor robot) |
+| `POST /api/fleet/robots/<asset>/ota`, `POST /api/fleet/ota/<job>/verify`, `/rollback` | OTA updates (install progresses over simulator ticks) |
+| `POST /api/fleet/robots/<asset>/work-orders`, `POST /api/fleet/work-orders/<wo>/swap`, `/close` | Maintenance and part swaps |
+| `POST /api/fleet/components/<component>/calibrations` | Record a calibration |
+| `GET/POST /api/workforce/workers`, `GET/PATCH /api/workforce/workers/<id>` | Workers |
+| `POST /api/workforce/workers/<id>/credentials`, `/training`, `/employment-status` | Credentials, training, status |
+| `POST /api/workforce/credentials/<id>/renew`, `/verify`, `/revoke` | Credential lifecycle |
+| `GET /api/fleet/changes`, `GET /api/workforce/changes` | Change feeds (`?cursor=<epoch>:<seq>&limit=`) |
+
 ### Operator roles
 
 `backend/models.py::OPERATOR_ROLE_PRESETS` — the exact same idea as
