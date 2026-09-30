@@ -1,4 +1,5 @@
 """ServiceCore: clock, transactions, change recording, listeners, change feed."""
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -116,6 +117,33 @@ def test_cursor_from_another_epoch_requires_resync(service):
     assert page["resync_required"] is True
     assert len(page["items"]) == 1  # from the start of the current epoch
     assert page["next_cursor"].startswith(service.store.epoch() + ":")
+
+
+def test_a_feed_page_reads_the_epoch_and_the_rows_under_one_lock(service, monkeypatch):
+    _write(service)
+    store = service.store
+
+    def held_by_the_caller():
+        outcome = []
+
+        def attempt():  # from another thread: can it take the lock?
+            got = store.lock.acquire(blocking=False)
+            if got:
+                store.lock.release()
+            outcome.append(not got)
+
+        thread = threading.Thread(target=attempt)
+        thread.start()
+        thread.join()
+        return outcome[0]
+
+    seen = []
+    real_epoch, real_changes = store.epoch, store.changes
+    monkeypatch.setattr(store, "epoch", lambda: (seen.append(("epoch", held_by_the_caller())), real_epoch())[1])
+    monkeypatch.setattr(store, "changes", lambda *a, **k: (seen.append(("changes", held_by_the_caller())),
+                                                            real_changes(*a, **k))[1])
+    assert len(service.changes("fleet")["items"]) == 1
+    assert seen == [("epoch", True), ("changes", True)]
 
 
 def test_bad_feed_arguments_are_value_errors(service):

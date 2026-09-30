@@ -194,8 +194,7 @@ class ServiceCore:
         except (TypeError, ValueError):
             raise ValueError("limit must be an integer") from None
         limit = max(1, min(limit, MAX_FEED_LIMIT))
-        epoch = self.store.epoch()
-        after_seq, resync = 0, False
+        cursor_epoch, seq_int = None, 0
         if cursor:
             cursor_epoch, separator, seq_text = str(cursor).partition(":")
             if not separator or not seq_text or not seq_text.isascii() or not seq_text.isdigit():
@@ -206,11 +205,11 @@ class ServiceCore:
                     raise ValueError(f"Malformed cursor {cursor!r} (expected '<epoch>:<seq>')")
             except (ValueError, OverflowError):
                 raise ValueError(f"Malformed cursor {cursor!r} (expected '<epoch>:<seq>')") from None
-            if cursor_epoch == epoch:
-                after_seq = seq_int
-            else:
-                resync = True
-        rows = self.store.changes(FEEDS[feed], after_seq, limit + 1)
+        with self.store.lock:  # one snapshot: a reseed can't slip between the epoch and the rows
+            epoch = self.store.epoch()
+            resync = cursor_epoch is not None and cursor_epoch != epoch
+            after_seq = 0 if resync else seq_int
+            rows = self.store.changes(FEEDS[feed], after_seq, limit + 1)
         has_more = len(rows) > limit
         items = [change_view(row) for row in rows[:limit]]
         last_seq = items[-1]["seq"] if items else after_seq
