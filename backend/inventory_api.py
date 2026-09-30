@@ -2,7 +2,7 @@
 
 Reads go straight to the inventory service; every mutation goes through
 twin.fleet.mutate() so it runs under twin.lock (see backend/fleet_bridge.py).
-Errors: NotFound → 404, Conflict → 409, any other ValueError/TypeError → 400,
+Errors: NotFound → 404, Conflict → 409, ValueError → 400,
 in the same JSON shape as the rest of the API.
 """
 from __future__ import annotations
@@ -15,13 +15,21 @@ from flask import jsonify, request
 from .inventory import Conflict, NotFound
 
 
+REGISTER_WORKER_FIELDS = ("worker_type", "organization", "role_codes", "site_codes",
+                           "worker_id", "supervisor_id", "shift_start_hour", "shift_end_hour",
+                           "employment_status")
+UPDATE_WORKER_FIELDS = ("role_codes", "site_codes", "organization", "supervisor_id")
+
+
 def _list(value: Any) -> List[str]:
     """Accept a JSON list or a comma-separated string."""
     if value is None or value == "":
         return []
     if isinstance(value, str):
         return [part.strip() for part in value.split(",") if part.strip()]
-    return list(value)
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    raise ValueError("expected a list or a comma-separated string")
 
 
 def _opt(data: Dict[str, Any], key: str) -> Optional[Any]:
@@ -44,7 +52,7 @@ def register_inventory_routes(app, twin, api_error) -> None:
                 raise api_error(str(exc), status=404)
             except Conflict as exc:
                 raise api_error(str(exc), status=409)
-            except (ValueError, TypeError) as exc:
+            except ValueError as exc:
                 raise api_error(str(exc))
         return wrapper
 
@@ -227,10 +235,18 @@ def register_inventory_routes(app, twin, api_error) -> None:
     def workforce_register_worker():
         data = body()
         display_name = data.pop("display_name", None)
-        for key in ("role_codes", "site_codes"):
-            if key in data:
-                data[key] = _list(data[key])
-        return worker_response(fleet.mutate(service.register_worker, display_name, **data), 201)
+        unknown = set(data.keys()) - set(REGISTER_WORKER_FIELDS)
+        if unknown:
+            raise ValueError(f"Field(s) not allowed in a worker record: {sorted(unknown)}")
+        kwargs = {}
+        for key in REGISTER_WORKER_FIELDS:
+            if key not in data:
+                continue
+            value = data[key]
+            if key in ("role_codes", "site_codes"):
+                value = _list(value)
+            kwargs[key] = value
+        return worker_response(fleet.mutate(service.register_worker, display_name, **kwargs), 201)
 
     @app.get("/api/workforce/workers/<worker_id>")
     @guarded
@@ -242,10 +258,18 @@ def register_inventory_routes(app, twin, api_error) -> None:
     def workforce_update_worker(worker_id: str):
         data = body()
         reason = data.pop("reason", None)
-        for key in ("role_codes", "site_codes"):
-            if key in data:
-                data[key] = _list(data[key])
-        return worker_response(fleet.mutate(service.update_worker, worker_id, reason, **data))
+        unknown = set(data.keys()) - set(UPDATE_WORKER_FIELDS)
+        if unknown:
+            raise ValueError(f"Field(s) not allowed in a worker record: {sorted(unknown)}")
+        kwargs = {}
+        for key in UPDATE_WORKER_FIELDS:
+            if key not in data:
+                continue
+            value = data[key]
+            if key in ("role_codes", "site_codes"):
+                value = _list(value)
+            kwargs[key] = value
+        return worker_response(fleet.mutate(service.update_worker, worker_id, reason, **kwargs))
 
     @app.get("/api/workforce/workers/<worker_id>/history")
     @guarded

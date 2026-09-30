@@ -115,3 +115,30 @@ def test_post_api_robots_accepts_model_code(client):
     assert made.status_code == 201
     robot = made.get_json()["robot"]
     assert robot["robot_class"] == "FORKLIFT" and robot["asset_id"]
+
+
+def test_worker_payloads_are_allowlisted(client):
+    # POST with disallowed field "action" should reject it
+    refused = client.post("/api/workforce/workers", json={"display_name": "A", "action": "x"})
+    assert refused.status_code == 400
+    error = refused.get_json()["error"]
+    assert "action" in error
+    assert "FleetBridge" not in error
+
+    # POST with disallowed field "self" should reject it
+    refused2 = client.post("/api/workforce/workers", json={"display_name": "A", "self": 1})
+    assert refused2.status_code == 400
+    error2 = refused2.get_json()["error"]
+    assert "self" in error2
+
+    # PATCH with disallowed field "worker_id" should reject it
+    refused3 = client.patch("/api/workforce/workers/E-10002", json={"reason": "x", "worker_id": "E-99999"})
+    assert refused3.status_code == 400
+    error3 = refused3.get_json()["error"]
+    assert "worker_id" in error3
+    assert "multiple values" not in error3
+
+    # POST credentials with invalid type for equipment_scope should reject it
+    refused4 = client.post("/api/workforce/workers/E-10001/credentials",
+                          json={"code": "forklift_operator", "equipment_scope": 5})
+    assert refused4.status_code == 400
