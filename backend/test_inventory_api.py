@@ -142,3 +142,11 @@ def test_worker_payloads_are_allowlisted(client):
     refused4 = client.post("/api/workforce/workers/E-10001/credentials",
                           json={"code": "forklift_operator", "equipment_scope": 5})
     assert refused4.status_code == 400
+
+
+def test_fleet_page_is_served_and_linked(client):
+    page = client.get("/fleet.html")
+    assert page.status_code == 200 and b'src="fleet.js"' in page.data
+    assert client.get("/fleet.js").status_code == 200
+    assert client.get("/fleet.css").status_code == 200
+    assert b'href="/fleet.html"' in client.get("/").data

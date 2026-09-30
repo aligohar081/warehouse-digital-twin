@@ -488,7 +488,7 @@
       name.appendChild(dot);
       name.appendChild(document.createTextNode(robot.name));
       head.appendChild(name);
-      head.appendChild(chip(robot.status));
+      head.appendChild(chip(robot.ota_installing ? "UPDATING" : robot.status));
       card.appendChild(head);
 
       var level = robot.battery <= 8 ? "critical" : robot.battery <= 20 ? "low" : "";

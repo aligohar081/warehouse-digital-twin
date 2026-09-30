@@ -301,6 +301,7 @@ body {
 .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .btn-row .btn { flex: 1 1 auto; }
 .btn-row.tight { margin-top: 10px; }
+.fleet-link { align-self: center; white-space: nowrap; }
 
 /* ------------------------------------------------------------------- forms */
 .field { display: block; margin-bottom: 9px; }

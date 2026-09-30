@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fleet &amp; Workforce — Warehouse Digital Twin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body class="fleet-page">
+
+<header class="topbar">
+  <div class="identity">
+    <span class="tape" aria-hidden="true"></span>
+    <div>
+      <p class="eyebrow">Source systems &middot; fleet manager + workforce</p>
+      <h1>Fleet &amp; Workforce</h1>
+    </div>
+  </div>
+  <nav class="fleet-nav" aria-label="Views">
+    <button class="btn small tab active" type="button" data-view="robots">Robots <span class="count" id="robotCount"></span></button>
+    <button class="btn small tab" type="button" data-view="workers">Workers <span class="count" id="workerCount"></span></button>
+    <button class="btn small tab" type="button" data-view="changes">Change feed</button>
+    <a class="btn small" href="/">&larr; Control centre</a>
+  </nav>
+</header>
+
+<main class="fleet-shell">
+  <section class="panel fleet-view" id="view-robots">
+    <h2 class="panel-title">Robot assets</h2>
+    <p class="map-foot">Every robot the fleet manager knows about, on this floor (WH-01) or elsewhere. Declared values are what the registry believes; reported values are what the robot last said.</p>
+    <div class="fleet-filters">
+      <label class="field"><span>Search</span><input id="robotSearch" placeholder="asset, serial, model" /></label>
+      <label class="field"><span>Site</span><select id="robotSite"><option value="">All sites</option></select></label>
+      <label class="field"><span>Lifecycle</span><select id="robotStatus"><option value="">Any</option></select></label>
+      <span class="spacer"></span>
+      <button class="btn small primary" type="button" id="commissionBtn">Commission robot</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table" id="robotTable">
+        <thead><tr><th>Asset</th><th>Model</th><th>Serial</th><th>Site</th><th>Lifecycle</th><th>Software</th><th>Calibration</th><th>Last report</th></tr></thead>
+        <tbody><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel fleet-view" id="view-workers" hidden>
+    <h2 class="panel-title">Workers</h2>
+    <p class="map-foot">Qualification records only &mdash; no pay, performance, health or demographic data is ever stored.</p>
+    <div class="fleet-filters">
+      <label class="field"><span>Search</span><input id="workerSearch" placeholder="id, name, role" /></label>
+      <label class="field"><span>Status</span><select id="workerStatus"><option value="">Any</option><option>ACTIVE</option><option>ON_LEAVE</option><option>TERMINATED</option></select></label>
+      <span class="spacer"></span>
+      <button class="btn small primary" type="button" id="registerBtn">Register worker</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table" id="workerTable">
+        <thead><tr><th>Worker</th><th>Name</th><th>Type</th><th>Roles</th><th>Sites</th><th>Status</th><th>Credentials</th></tr></thead>
+        <tbody><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel fleet-view" id="view-changes" hidden>
+    <h2 class="panel-title">Change feed</h2>
+    <p class="map-foot">The revisioned feed (<code>/api/fleet/changes</code>, <code>/api/workforce/changes</code>) a passport system ingests. Newest first.</p>
+    <ul class="change-feed" id="changeFeed"><li class="sub">Loading&hellip;</li></ul>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" role="dialog" aria-labelledby="drawerTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="drawerTitle"></h2>
+    <button class="btn small" type="button" id="drawerClose">Close</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="fleet.js"></script>
+</body>
+</html>
