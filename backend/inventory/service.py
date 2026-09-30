@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from .catalog import CatalogMixin
 from .core import ServiceCore
+from .fleet import FleetMixin
 
 
-class InventoryService(CatalogMixin, ServiceCore):
+class InventoryService(FleetMixin, CatalogMixin, ServiceCore):
     pass
