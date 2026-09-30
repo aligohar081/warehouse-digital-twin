@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Dict, List, Optional, Set
 
+from .embodiment import AIR, GROUND, MobilityProfile
 from .layouts import build_layout
 from .layouts.base import NARROW, WIDE, Slot, Zone
 from .models import Cell, CellType, manhattan
@@ -76,6 +77,26 @@ class Warehouse:
         WALKABLE_CELLS; on a layered floor, what a narrow ground robot may use."""
         return self.cell_type(x, y) in self.walkable_types or (x, y) in self.walkable_extras
 
+    def passable(self, cell: Cell, profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> bool:
+        """May a robot with `profile` occupy `cell` on `layer` (spec §5.2)?
+
+        No profile: exactly is_walkable (every classic robot). Ground robots:
+        walkable cells, WIDE cells only for a wide robot. Drones: on AIR any
+        flyable cell; on GROUND only their pad. Fixed equipment never moves.
+        """
+        x, y = cell
+        if profile is None:
+            return self.is_walkable(x, y)
+        if profile.is_fixed:
+            return False
+        if profile.is_air:
+            if layer == AIR:
+                return self.is_flyable(cell)
+            return self.cell_type(x, y) is CellType.DRONE_PAD
+        if layer != GROUND or not self.is_walkable(x, y):
+            return False
+        return profile.clearance != WIDE or self._clearance.get(cell) == WIDE
+
     def walkable_cells(self) -> List[Cell]:
         return [
             (x, y)
@@ -84,13 +105,21 @@ class Warehouse:
             if self.is_walkable(x, y)
         ]
 
-    def neighbors(self, cell: Cell) -> List[Cell]:
-        x, y = cell
+    def passable_cells(self, profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> List[Cell]:
         return [
-            (nx, ny)
-            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
-            if self.is_walkable(nx, ny)
+            (x, y)
+            for y in range(self.height)
+            for x in range(self.width)
+            if self.passable((x, y), profile, layer)
         ]
+
+    def neighbors(self, cell: Cell, profile: Optional[MobilityProfile] = None,
+                  layer: str = GROUND) -> List[Cell]:
+        x, y = cell
+        candidates = ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+        if profile is None:
+            return [(nx, ny) for nx, ny in candidates if self.is_walkable(nx, ny)]
+        return [c for c in candidates if self.passable(c, profile, layer)]
 
     def resolve_zone(self, name: Optional[str]) -> Optional[Zone]:
         if not name:
@@ -148,10 +177,12 @@ class Warehouse:
             return zone.label
         return f"({cell[0]},{cell[1]})"
 
-    def nearest_walkable(self, cell: Cell, blocked: Optional[Set[Cell]] = None) -> Optional[Cell]:
-        """Breadth-first search outwards for the closest drivable cell."""
+    def nearest_walkable(self, cell: Cell, blocked: Optional[Set[Cell]] = None,
+                         profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> Optional[Cell]:
+        """Breadth-first search outwards for the closest cell `profile` may use
+        on `layer` (with no profile: the closest drivable cell)."""
         blocked = blocked or set()
-        if self.is_walkable(*cell) and cell not in blocked:
+        if self.passable(cell, profile, layer) and cell not in blocked:
             return cell
         seen = {cell}
         frontier: deque = deque([cell])
@@ -162,7 +193,7 @@ class Warehouse:
                 if nxt in seen or not self.is_inside(*nxt):
                     continue
                 seen.add(nxt)
-                if self.is_walkable(*nxt) and nxt not in blocked:
+                if self.passable(nxt, profile, layer) and nxt not in blocked:
                     return nxt
                 frontier.append(nxt)
         return None

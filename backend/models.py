@@ -98,6 +98,10 @@ CONFIG: Dict[str, Any] = {
     "CALIBRATION_DUE_SOON_DAYS": 14,
     "CREDENTIAL_EXPIRING_SOON_DAYS": 30,
     "REPORT_STALE_SECONDS": 300,
+    # Multi-embodiment floor (backend/embodiment.py): metres per grid cell,
+    # and the speed a loaded forklift or heavy hauler keeps (× its top speed).
+    "CELL_SIZE_M": 1.5,
+    "LOADED_SPEED_FACTOR": 0.7,
 }
 
 

@@ -3,12 +3,17 @@
 The engine is deliberately stateless — it takes the static grid plus a set of
 dynamic obstacles (other robots, temporary blockages) and returns a path. That
 makes replanning mid-mission a plain function call.
+
+Every query takes an optional mobility `profile` and `layer` (see
+backend/embodiment.py): a forklift routes only over WIDE cells, a drone over
+racks on the AIR layer. With no profile, routing is exactly as it always was.
 """
 from __future__ import annotations
 
 import heapq
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from .embodiment import GROUND, MobilityProfile
 from .models import Cell, manhattan
 from .warehouse import Warehouse
 
@@ -30,19 +35,22 @@ class NavigationEngine:
         blocked: Optional[Iterable[Cell]] = None,
         allow_goal_adjacent: bool = True,
         is_replan: bool = False,
+        profile: Optional[MobilityProfile] = None,
+        layer: str = GROUND,
     ) -> Optional[List[Cell]]:
         """Return the cells to traverse from ``start`` to ``goal``, exclusive of
-        ``start``. ``None`` means no route exists.
+        ``start``, using only cells ``profile`` may occupy on ``layer``.
+        ``None`` means no route exists.
         """
         blocked_set: Set[Cell] = set(blocked or ())
         blocked_set.discard(start)
 
         target = goal
-        if not self.warehouse.is_walkable(*goal) or goal in blocked_set:
+        if not self.warehouse.passable(goal, profile, layer) or goal in blocked_set:
             if not allow_goal_adjacent:
                 self.failures += 1
                 return None
-            replacement = self.warehouse.nearest_walkable(goal, blocked_set)
+            replacement = self.warehouse.nearest_walkable(goal, blocked_set, profile=profile, layer=layer)
             if replacement is None:
                 self.failures += 1
                 return None
@@ -68,7 +76,7 @@ class NavigationEngine:
                 if is_replan:
                     self.replans += 1
                 return path
-            for neighbor in self.warehouse.neighbors(current):
+            for neighbor in self.warehouse.neighbors(current, profile, layer):
                 if neighbor in blocked_set or neighbor in closed:
                     continue
                 tentative = cost + 1
@@ -95,13 +103,15 @@ class NavigationEngine:
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
-    def path_exists(self, start: Cell, goal: Cell, blocked: Optional[Iterable[Cell]] = None) -> bool:
-        return self.find_path(start, goal, blocked=blocked) is not None
+    def path_exists(self, start: Cell, goal: Cell, blocked: Optional[Iterable[Cell]] = None,
+                    profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> bool:
+        return self.find_path(start, goal, blocked=blocked, profile=profile, layer=layer) is not None
 
     def distance(
-        self, start: Cell, goal: Cell, blocked: Optional[Iterable[Cell]] = None
+        self, start: Cell, goal: Cell, blocked: Optional[Iterable[Cell]] = None,
+        profile: Optional[MobilityProfile] = None, layer: str = GROUND,
     ) -> Optional[int]:
-        path = self.find_path(start, goal, blocked=blocked)
+        path = self.find_path(start, goal, blocked=blocked, profile=profile, layer=layer)
         return None if path is None else len(path)
 
     def best_cell_in_zone(
@@ -110,6 +120,8 @@ class NavigationEngine:
         origin: Cell,
         blocked: Optional[Iterable[Cell]] = None,
         prefer: Optional[Set[Cell]] = None,
+        profile: Optional[MobilityProfile] = None,
+        layer: str = GROUND,
     ) -> Optional[Cell]:
         """Pick the reachable cell of a zone that is cheapest to drive to.
 
@@ -126,8 +138,8 @@ class NavigationEngine:
         for cell in candidates:
             if cell in blocked_set:
                 continue
-            if cell == origin or self.find_path(origin, cell, blocked=blocked_set,
-                                                allow_goal_adjacent=False) is not None:
+            if cell == origin or self.find_path(origin, cell, blocked=blocked_set, allow_goal_adjacent=False,
+                                                profile=profile, layer=layer) is not None:
                 return cell
         return None
 
