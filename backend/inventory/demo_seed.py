@@ -69,8 +69,8 @@ def _seed_workers(service, ago: Callable[[float], datetime]) -> None:
                site_scope=[REMOTE_SITE])
     credential("E-10006", "safety_inspection", days=90, valid_days=365)
     hire("E-10007", "Kai Nakamura", ["FORKLIFT_OPERATOR"], [REMOTE_SITE], days=358, worker_type="CONTRACTOR",
-         organization="Northstar Staffing", supervisor="E-10005")
-    credential("E-10007", "forklift_operator", days=358, valid_days=365, issuer="Northstar Staffing Training",
+         organization="Proseware Staffing", supervisor="E-10005")
+    credential("E-10007", "forklift_operator", days=358, valid_days=365, issuer="Proseware Staffing Training",
                equipment_scope=["NW-PF1200"])  # expires in 7 days
     hire("E-10008", "Riley Chen", ["ROBOT_CELL_OPERATOR"], [REMOTE_SITE], days=500)
     revoked = credential("E-10008", "robot_cell_access", days=200, valid_days=365, equipment_scope=["FB-CX10"])

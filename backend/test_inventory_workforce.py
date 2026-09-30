@@ -56,8 +56,8 @@ def test_register_worker_enforces_the_privacy_allowlist(inv):
 
 
 def test_credential_lifecycle_and_validity(inv, clock):
-    worker = inv.register_worker("Kai", worker_type="CONTRACTOR", organization="Northstar Staffing")["aggregate_id"]
-    issued = inv.issue_credential(worker, "forklift_operator", "Northstar Training",
+    worker = inv.register_worker("Kai", worker_type="CONTRACTOR", organization="Proseware Staffing")["aggregate_id"]
+    issued = inv.issue_credential(worker, "forklift_operator", "Proseware Training",
                                   expires_at=NOW + timedelta(days=40), equipment_scope=["NW-PF1200"],
                                   credential_number="FL-99812")
     assert issued["action"] == "CREDENTIAL_ISSUED"
