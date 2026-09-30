@@ -11,8 +11,9 @@ from __future__ import annotations
 from .catalog import CatalogMixin
 from .core import ServiceCore
 from .fleet import FleetMixin
+from .ota import OtaMixin
 from .servicing import ServicingMixin
 
 
-class InventoryService(ServicingMixin, FleetMixin, CatalogMixin, ServiceCore):
+class InventoryService(OtaMixin, ServicingMixin, FleetMixin, CatalogMixin, ServiceCore):
     pass
