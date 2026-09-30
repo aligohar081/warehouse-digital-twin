@@ -77,8 +77,13 @@ class ServicingMixin:
             if performed_by:
                 self._require("worker", "worker_id", performed_by, "Worker")
             before = self._asset_document(asset_id)
+            now = self.now_iso()
             self.store.update("component", "component_id", old["component_id"],
-                              {"status": "REMOVED", "removed_at": self.now_iso()})
+                              {"status": "REMOVED", "removed_at": now})
+            for job in self._active_ota_rows(asset_id):
+                if job["component_id"] == old["component_id"]:
+                    self.store.update("ota_job", "job_id", job["job_id"],
+                                      {"state": "FAILED", "updated_at": now, "failure_reason": f"component replaced in work order {wo_id}"})
             new = self._install_component(asset_id, slot, new_part, hw_revision)
             return self._commit_asset(asset_id, "COMPONENT_SWAPPED", before,
                                       actor=self._worker_actor(performed_by, actor),

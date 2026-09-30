@@ -111,3 +111,20 @@ def test_rollback_records_a_reason_and_decommission_fails_active_jobs(inv):
     second = inv.start_ota(asset, "AC-TR50:SW:2.2.0")["subject_id"]
     inv.decommission(asset, "Scrapped")
     assert inv.get_ota_job(second)["state"] == "FAILED"
+
+
+def test_swapping_a_component_fails_its_pending_firmware_job(inv):
+    asset = commission(inv)
+    lidar = next(c for c in inv.get_robot(asset)["components"] if c["slot"] == "lidar")
+    job = inv.start_ota(asset, "WT-L360:FW:1.9.4", component_id=lidar["component_id"])["subject_id"]
+    assert inv.get_ota_job(job)["state"] == "STAGED"
+    wo = inv.open_work_order(asset, "CORRECTIVE", "Replace lidar")["subject_id"]
+    inv.swap_component(wo, "lidar")
+    assert inv.get_ota_job(job)["state"] == "FAILED"
+    assert inv.get_ota_job(job)["failure_reason"] == f"component replaced in work order {wo}"
+    with pytest.raises(Conflict):
+        inv.transition_ota(job, "DOWNLOADING")
+    assert inv.get_robot(asset)["flags"]["active_ota_job"] is None
+    new_lidar = next(c for c in inv.get_robot(asset)["components"] if c["slot"] == "lidar")
+    assert new_lidar["component_id"] != lidar["component_id"]
+    inv.start_ota(asset, "WT-L360:FW:1.9.4", component_id=new_lidar["component_id"])  # succeeds
