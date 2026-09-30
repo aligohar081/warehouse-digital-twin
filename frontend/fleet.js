@@ -273,8 +273,9 @@
     }).map(function (r) {
       return [r.release_id, (r.kind === "AI_POLICY_MODEL" ? "AI policy " : "Software ") + releaseLabel(r)];
     });
+    var currentSoftware = state.releases.filter(function (r) { return r.target_code === robot.model_code && r.kind === "ROBOT_SOFTWARE" && r.status === "CURRENT"; })[0];
     var otaForm = live && robotReleases.length ? form("POST", base + "/ota", "Start OTA", [
-      select("release_id", "Release", options(robotReleases))
+      select("release_id", "Release", options(robotReleases, currentSoftware ? currentSoftware.release_id : undefined))
     ]) : "";
     var jobs = robot.ota_jobs.map(function (job) {
       var jobUrl = "/api/fleet/ota/" + encodeURIComponent(job.job_id);
@@ -304,8 +305,9 @@
       }
       var partReleases = state.releases.filter(function (r) { return r.target_code === c.part_number && r.status !== "RECALLED"; });
       if (live && partReleases.length) {
+        var currentRelease = partReleases.filter(function (r) { return r.status === "CURRENT"; })[0];
         actions.push(form("POST", base + "/ota", "Flash", [
-          select("release_id", "Firmware", options(partReleases.map(function (r) { return [r.release_id, releaseLabel(r)]; }))),
+          select("release_id", "Firmware", options(partReleases.map(function (r) { return [r.release_id, releaseLabel(r)]; }), currentRelease ? currentRelease.release_id : undefined)),
           hidden("component_id", c.component_id)
         ]));
       }
@@ -445,8 +447,12 @@
   function show(title, html) {
     var body = $("drawerBody");
     var scroll = body.scrollTop;
+    var lefts = Array.prototype.map.call(body.querySelectorAll(".table-wrap"), function (wrap) { return wrap.scrollLeft; });
     $("drawerTitle").textContent = title;
     body.innerHTML = html;
+    Array.prototype.forEach.call(body.querySelectorAll(".table-wrap"), function (wrap, index) {
+      if (lefts[index]) wrap.scrollLeft = lefts[index];
+    });
     body.scrollTop = scroll;
     $("drawer").hidden = false;
   }
@@ -455,9 +461,15 @@
     var drawer = $("drawer");
     if (drawer.hidden) return false;
     if (drawer.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return true;
-    return Array.prototype.some.call(drawer.querySelectorAll("input:not([type=hidden])"), function (el) {
+    var typed = Array.prototype.some.call(drawer.querySelectorAll("input:not([type=hidden])"), function (el) {
       return el.value !== el.defaultValue;
     });
+    var picked = Array.prototype.some.call(drawer.querySelectorAll("select"), function (el) {
+      var defaultIndex = 0;
+      Array.prototype.forEach.call(el.options, function (option, index) { if (option.defaultSelected) defaultIndex = index; });
+      return el.selectedIndex !== defaultIndex;
+    });
+    return typed || picked;
   }
 
   function renderDrawer() {
@@ -483,6 +495,7 @@
 
   function openDrawer(kind, id) {
     state.drawer = { kind: kind, id: id || null };
+    $("drawerBody").innerHTML = "";
     $("drawerBody").scrollTop = 0;
     renderDrawer().catch(function (error) { toast(error.message, true); });
   }
