@@ -137,3 +137,56 @@ def test_take_and_persistence(ledger, dc):
     with pytest.raises(KeyError):
         ledger.take("PR-08-02-0")
     ledger.put("PR-08-02-0", "box_001", "SKU-0001", 40, kind="PALLET")  # the slot is free again
+
+
+def test_stock_changes_invalidate_a_pending_count(dc):
+    """A count becomes stale if stock changes before reconciliation."""
+    stock = StockLedger(dc)
+    stock.put("PR-08-02-0", "box_001", "SKU-0001", 15)
+    stock.adjust_true("PR-08-02-0", -3)  # record 15, true 12
+    stock.record_count("PR-08-02-0", 12, tick=40)
+    # Pick 5 units: record drops to 10, count becomes stale
+    stock.consume("PR-08-02-0", 5)
+    # Reconcile should reject the stale count
+    with pytest.raises(ValueError, match="has not been counted"):
+        stock.reconcile("PR-08-02-0")
+    # Recount to clear the stale state
+    stock.record_count("PR-08-02-0", 10)
+    # Now reconcile sets record to the true count
+    correction = stock.reconcile("PR-08-02-0")
+    assert correction == 0 and stock.location("PR-08-02-0").recorded_qty == 10
+
+
+def test_restock_invalidates_a_pending_count(dc):
+    """Restocking units invalidates the pending count."""
+    stock = StockLedger(dc)
+    stock.put("PR-08-02-0", "box_001", "SKU-0001", 20)
+    stock.record_count("PR-08-02-0", 20)
+    stock.restock("PR-08-02-0", 5)
+    with pytest.raises(ValueError, match="has not been counted"):
+        stock.reconcile("PR-08-02-0")
+
+
+def test_adjust_true_invalidates_a_pending_count(dc):
+    """A fault (adjust_true) invalidates the pending count."""
+    stock = StockLedger(dc)
+    stock.put("PR-08-02-0", "box_001", "SKU-0001", 20)
+    stock.record_count("PR-08-02-0", 20)
+    stock.adjust_true("PR-08-02-0", -3)
+    with pytest.raises(ValueError, match="has not been counted"):
+        stock.reconcile("PR-08-02-0")
+
+
+def test_record_count_rejects_invalid_input(dc):
+    """record_count validates that counted_qty is a non-negative integer."""
+    stock = StockLedger(dc)
+    stock.put("PR-08-02-0", "box_001", "SKU-0001", 20)
+    # Negative quantity
+    with pytest.raises(ValueError, match="must be a non-negative integer"):
+        stock.record_count("PR-08-02-0", -1)
+    # Float is not an integer
+    with pytest.raises(ValueError, match="must be a non-negative integer"):
+        stock.record_count("PR-08-02-0", 2.5)
+    # Valid count succeeds
+    result = stock.record_count("PR-08-02-0", 20)
+    assert result["counted_qty"] == 20

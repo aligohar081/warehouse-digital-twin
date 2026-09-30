@@ -120,6 +120,7 @@ class StockLedger:
             raise ValueError(f"{slot_id} records only {location.recorded_qty} of {location.sku}")
         location.recorded_qty -= int(quantity)
         location.true_qty = max(0, location.true_qty - int(taken))
+        location.counted_qty, location.counted_tick = None, None
         return location
 
     def restock(self, slot_id: str, quantity: int) -> StockLocation:
@@ -129,12 +130,14 @@ class StockLedger:
             raise ValueError("quantity cannot be negative")
         location.recorded_qty += int(quantity)
         location.true_qty += int(quantity)
+        location.counted_qty, location.counted_tick = None, None
         return location
 
     def adjust_true(self, slot_id: str, delta: int) -> StockLocation:
         """A physical change the record never saw (an injected fault)."""
         location = self._require(slot_id)
         location.true_qty = max(0, location.true_qty + int(delta))
+        location.counted_qty, location.counted_tick = None, None
         return location
 
     # ---- counting ------------------------------------------------------- #
@@ -142,6 +145,8 @@ class StockLedger:
         """A cycle count's reading. It is stored and compared with the record,
         but the record is left alone until reconcile()."""
         location = self._require(slot_id)
+        if not isinstance(counted_qty, int) or isinstance(counted_qty, bool) or counted_qty < 0:
+            raise ValueError("counted_qty must be a non-negative integer")
         location.counted_qty, location.counted_tick = int(counted_qty), tick
         variance = location.counted_qty - location.recorded_qty
         return {
