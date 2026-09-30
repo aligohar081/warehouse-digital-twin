@@ -786,6 +786,14 @@ on real product categories. Worker records hold only the PWA allowlist
 (no pay, performance, health or demographic data) and credential numbers
 only as hashes.
 
+**Persistence.** The app keeps the inventory in `data/inventory.sqlite3`
+(git-ignored), so it survives restarts; **Reset** re-seeds it. A schema or
+seed change (the catalog data or `backend/inventory/demo_seed.py`) re-seeds
+it automatically on the next start and keeps the old file as
+`inventory.sqlite3.bak`, logging a warning. Delete the file to start fresh.
+Seeded dates are relative to seed time, so a long-lived file drifts —
+calibrations and credentials slowly expire.
+
 Open the **Fleet & workforce** page from the dashboard header (`/fleet.html`).
 
 | Endpoint | What it does |

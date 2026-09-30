@@ -1,9 +1,13 @@
 """Catalog: seeded OEM reference data, SBOMs, release management, bootstrap."""
+import logging
+import os
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
 
 from backend.inventory import Conflict, NotFound, open_inventory, reseed
+from backend.inventory.bootstrap import SEED_VERSION
 from backend.inventory.catalog_data import CLASS_DEFAULT_MODELS, ROBOT_MODELS
 from backend.inventory.sbom import build_sbom, serialize_sbom
 from backend.models import APPROVED_FIRMWARE_VERSIONS, ROBOT_CLASS_PRESETS
@@ -116,6 +120,39 @@ def test_open_inventory_reuses_a_seeded_file_and_reseed_rotates_the_epoch(tmp_pa
     reseed(again, demo=False)
     assert again.store.epoch() != epoch
     assert again.current_release("ROBOT_SOFTWARE", "AC-TR50")["version"] == "2.2.0"
+
+
+def _set_meta(path, key, value):
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE meta SET value = ? WHERE key = ?", (value, key))
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("key, reason", [("seed_version", "seed"), ("schema_version", "schema")])
+def test_a_file_seeded_under_an_older_version_is_reseeded_and_the_old_file_kept(tmp_path, caplog, key, reason):
+    path = str(tmp_path / "inv.sqlite3")
+    first = open_inventory(path, demo=False)
+    assert first.store.get_meta("seed_version") == SEED_VERSION
+    assert not os.path.exists(path + ".bak")  # a brand-new file has nothing to keep
+    first.publish_release("ROBOT_SOFTWARE", "AC-TR50", "2.3.0")
+    first.store.conn.close()
+    _set_meta(path, key, "old")
+    with caplog.at_level(logging.WARNING, logger="backend.inventory"):
+        again = open_inventory(path, demo=False)
+    assert again.current_release("ROBOT_SOFTWARE", "AC-TR50")["version"] == "2.2.0"  # the marker change is gone
+    assert again.store.get_meta("seed_version") == SEED_VERSION
+    assert again.store.get_meta("schema_version") != "old"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and path in warnings[0] and reason in warnings[0] and path + ".bak" in warnings[0]
+    backup = sqlite3.connect(path + ".bak")  # the previous file, marker change included
+    assert backup.execute("SELECT COUNT(*) FROM software_release WHERE release_id = 'AC-TR50:SW:2.3.0'").fetchone()[0] == 1
+    assert backup.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()[0] == "old"
+    backup.close()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="backend.inventory"):
+        open_inventory(path, demo=False)  # now current: reused silently
+    assert not caplog.records
 
 
 def test_in_memory_inventories_are_independent():
