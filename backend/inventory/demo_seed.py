@@ -52,15 +52,16 @@ def _seed_workers(service, ago: Callable[[float], datetime]) -> None:
     hire("E-10002", "Lee", ["WAREHOUSE_OPERATOR"], [FLOOR_SITE], days=400)
     credential("E-10002", "safety_inspection", days=60, valid_days=365, site_scope=[FLOOR_SITE])
     hire("E-10003", "Noor Haddad", ["MAINTENANCE_TECH"], [FLOOR_SITE, REMOTE_SITE], days=1200)
+    credential("E-10003", "equipment_maintenance", days=500, valid_days=730)
     credential("E-10003", "robot_maintenance", days=300, valid_days=730, equipment_scope=["AC-TR50", "AC-PK30", "AC-SC1"])
     credential("E-10003", "electrical_safety", days=120, valid_days=365)
-    credential("E-10003", "equipment_maintenance", days=500, valid_days=730)
-    service.record_training("E-10003", "LOTO-101", "3", completed_at=ago(90),
-                            expires_at=ago(90) + timedelta(days=365), actor=SYSTEM)
+    with service.at(ago(90)):
+        service.record_training("E-10003", "LOTO-101", "3", completed_at=ago(90),
+                                expires_at=ago(90) + timedelta(days=365), actor=SYSTEM)
     hire("E-10004", "Mateo Silva", ["ROBOTICS_TECH"], [REMOTE_SITE], days=700)
+    credential("E-10004", "drone_operations", days=250, valid_days=730, equipment_scope=["CT-IX2"])
     credential("E-10004", "robot_maintenance", days=200, valid_days=730)
     credential("E-10004", "robot_cell_access", days=150, valid_days=365, equipment_scope=["FB-CX10"])
-    credential("E-10004", "drone_operations", days=250, valid_days=730, equipment_scope=["CT-IX2"])
     hire("E-10005", "Ana Kowalski", ["FORKLIFT_OPERATOR"], [REMOTE_SITE], days=1500)
     credential("E-10005", "forklift_operator", days=400, valid_days=1095, equipment_scope=["NW-PF1200"])
     credential("E-10005", "heavy_equipment", days=400, valid_days=1095)
@@ -74,9 +75,9 @@ def _seed_workers(service, ago: Callable[[float], datetime]) -> None:
                equipment_scope=["NW-PF1200"])  # expires in 7 days
     hire("E-10008", "Riley Chen", ["ROBOT_CELL_OPERATOR"], [REMOTE_SITE], days=500)
     revoked = credential("E-10008", "robot_cell_access", days=200, valid_days=365, equipment_scope=["FB-CX10"])
+    credential("E-10008", "safety_inspection", days=100, valid_days=365)
     with service.at(ago(10)):
         service.revoke_credential(revoked, "Failed recertification audit", actor=SYSTEM)
-    credential("E-10008", "safety_inspection", days=100, valid_days=365)
     hire("E-10009", "Sasha Ivanova", ["FORKLIFT_OPERATOR"], [REMOTE_SITE], days=800)
     credential("E-10009", "forklift_operator", days=300, valid_days=1095, equipment_scope=["NW-PF1200"])
     with service.at(ago(14)):

@@ -60,6 +60,16 @@ def test_demo_workforce(demo):
     assert len(demo.list_workers()) == 10
 
 
+def test_each_workers_seeded_history_is_chronological(demo):
+    for worker in demo.list_workers():
+        history = sorted(demo.worker_history(worker["worker_id"]), key=lambda change: change["revision"])
+        stamps = [change["occurred_at"] for change in history]
+        assert stamps == sorted(stamps), worker["worker_id"]  # revision order and occurred_at agree
+    assert demo.get_worker("E-10003")["training"][0]["completed_at"].startswith("2026-07-02")  # 90 days back
+    training = next(c for c in demo.worker_history("E-10003") if c["action"] == "TRAINING_RECORDED")
+    assert training["occurred_at"].startswith("2026-07-02")
+
+
 def test_seeded_history_is_backdated(demo):
     commissioned = demo.robot_history("AST-000213")[-1]
     assert commissioned["action"] == "COMMISSIONED"
