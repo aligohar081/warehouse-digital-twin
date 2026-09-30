@@ -96,6 +96,36 @@ New-floor seed, save/load v2 and app boot must deal with these:
 - `DigitalTwin` does not yet own a `StockLedger`, `add_box` has no `slot`/`kind` arguments, and `serialize()` is still version 1; `Robot.mobility` is rebuilt on load by `FleetBridge.rebind_all`, but layer, altitude, zones and transit are saved through the entity dicts only.
 - `snapshot()["config"]` still reports `GRID_WIDTH`/`GRID_HEIGHT` 20×15 on the new floor; `Warehouse.to_dict()` does not yet expose slots, crossings or clearance for the dashboard.
 
+### Added after execution (task reviews and the final review)
+
+**To plan 1b:**
+- **`add_box`** has no `kind`/`sku`/`quantity`/`slot` arguments (moved here from 1c, because PICK_ITEMS, PACK_ORDER and the conveyor need it). It still snaps an unwalkable position to the nearest walkable cell with no profile: an item at conveyor cell (21,15) lands on Pick 1's work cell. Its default `resolve_zone("shelf_a")` raises `AttributeError` on the new floor. The fix:
+  - PALLET and TOTE boxes go on their slot's cell, and ITEM and CARTON boxes go on conveyor cells, without snapping;
+  - a missing default zone raises `ValueError`.
+- **Goal snapping.** The §9.1 capability check must avoid snapping goals everywhere, `distance()` included. `TaskManager._score_candidates` scores through `navigation.distance`, which snaps a goal to its neighbour. For example, a forklift that is closer to an AUTO MOVE_ROBOT → tote_aisle_1 gets chosen, and the job then fails.
+- **Mains-powered arms (§5.5).** Arms have `mobility.battery is None`. Auto-charge, `request_charge`, robot selection and `validate` must skip them. A named CHARGE_ROBOT on an arm should be a plain `validate` rejection. Today it is accepted, routed and failed with "Charging is not reachable right now".
+- **Drones on low battery.** A grounded drone with a low battery floods `_auto_charge` with one failing CHARGE_ROBOT per tick, because it is sent to `charging_station` rather than the pad (§5.5). Fix this, with a test, before TAKEOFF can drain a drone.
+- **Fixed profiles in routing.** `find_path` returns None and counts a failure for a FIXED profile, even when start == goal. Arms must never be routed.
+- **Drone altitude and events.** TAKEOFF and SCAN compute the altitude as the target level's height plus `HOVER_CLEARANCE_M`; `set_robot_layer` only defaults to 0.5. TAKEOFF and LAND should also emit events, since `set_robot_layer` only logs. Two related gaps:
+  - `set_robot_layer(AIR)` with no altitude resets an airborne drone to 0.5;
+  - `reset_robot` with no free pad lands an airborne drone off the pad.
+- **Safety waits don't always pair.** `Robot.clear_path()` clears `wait_reason` silently when a task ends or on `set_robot_layer`: no `ROBOT_SAFETY_RESUMED` is emitted, and the task status isn't restored. So waits and resumes don't always pair up. When 1b adds more wait reasons, `_safety_wait` should close the previous reason's wait before switching, and a wait ended by `clear_path` should get a closing event. The escalation (`SAFETY_WAIT_ESCALATE_S`) needs `wait_started_tick`.
+- **`crosses_walkway` uses zone centres.** This is degenerate for zones that straddle the strip, or sit mostly on one side with their centre on the other. `cross_aisle` has its centre at (17,10); `top_aisle` has its centre west of x=17 but 16 of its 25 cells at x=18. The shift engine should not use such zones as walk ends, or the rule should use the zone's actual cells.
+- **`zone.attributes["route"]` is the corner list, not `True`.** Test for the key's presence, never `is True`.
+- **`location_options()` offers non-destination zones.** It lists `patrol_loop`, `walkway`, `conveyor` and `drone_pad` as task endpoints. Filter it for the new floor.
+- **One source of truth for stock.** The `StockLedger` is authoritative; keep `Box.slot` and `Box.quantity` in sync with it. The automatic reconcile at 2 units or fewer is the count job's to perform (the ledger only flags `auto_reconcile`).
+- **The `Box.weight` setter** moves only `declared_weight_kg`. Any weight-edit path must set both declared and true weights.
+- **Locking.** `people.place`/`start_transit` and `StockLedger` don't take `twin.lock`. API callers must hold it.
+- **Caching.** `FleetBridge._on_change` rebuilds a robot's profile via `get_model` on every ROBOT_ASSET change. Catalog models are immutable at runtime, so this can be cached per model code, which matters for the soak's tick budget.
+
+**To plan 1c:**
+- **Save/load v2 of robots:** `Robot.from_dict` doesn't restore `wait_reason`, and `wait_started_tick` isn't saved. It also doesn't validate `layer` or `altitude_m`.
+- **Save/load v2 of operators and stock:** `Operator.from_dict` shallow-copies `certification_scopes` and doesn't check zone and transit consistency; a `transit_to` with zone None would raise inside `_crossing_wait`. `StockLocation(**item)` in `StockLedger.from_dict` raises on unknown keys and bypasses `put`'s checks.
+- **Arm spawning.** `_spawn_cell` puts an arm at the first free station, whatever its home zone. The new-floor seed must pass positions, or spawn should prefer the home zone's station.
+- **Explicit spawn positions** are checked with `passable`, not the stop rule, so `add_robot(position=(17,10))` would place a robot on a crossing. The seed must not spawn on the walkway, or `_spawn_cell` should use `may_stop`.
+- **Backups.** Each reseed overwrites the one `.bak`, so flipping a file classic → distribution_center → classic loses the first backup. Consider timestamped backups once the app can boot either layout against `data/inventory.sqlite3`.
+- **Layout switching.** `open_inventory(profile=self.layout_name)` means every layout name must also be a seed profile. `load_state`'s layout rebuild must update both `twin.layout_name` and `warehouse.layout_name`.
+
 ---
 
 ### Task 1: Classic golden test and the layout registry

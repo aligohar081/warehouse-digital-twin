@@ -169,7 +169,7 @@ The layout exposes `required_zones`, which the system checks read (§10.5). They
 
 **Clearance is a per-cell attribute.** A cell's clearance is `WIDE` if any zone containing it is marked WIDE, otherwise `NARROW` if any zone marks it NARROW. A walkable cell that no zone marks, such as (1..6, 1) or (1..3, 6), defaults to `NARROW`.
 
-**A cell may belong to several zones.** Examples: `cross_aisle` overlaps a crossing cell's neighbours, and `patrol_loop` overlaps the aisles. `patrol_loop` is a route (`route=True`), not a place. `zone_of_cell` returns the most specific non-route zone: the smallest by cell count, with ties broken by declaration order. `zones_of_cell` returns all of them, routes included.
+**A cell may belong to several zones.** Examples: `cross_aisle` overlaps a crossing cell's neighbours, and `patrol_loop` overlaps the aisles. `patrol_loop` is a route (its `route` attribute holds the loop's corner cells), not a place. `zone_of_cell` returns the most specific non-route zone: the smallest by cell count, with ties broken by declaration order. `zones_of_cell` returns all of them, routes included.
 
 **Slots.** A slot is a (rack or shelf cell, level) pair. There are 4 × 9 × 5 = 180 pallet slots and 4 × 9 × 3 = 108 tote slots. Each slot is served from a face cell:
 - pallet racks from the pallet aisle named in the table: rack y2 from y3, y5 from y4, y6 from y7, and y9 from y8;
