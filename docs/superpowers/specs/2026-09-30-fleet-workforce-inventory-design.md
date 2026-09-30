@@ -68,11 +68,16 @@ it from the operator).
 ```
 backend/inventory/            ← the "source systems"; imports nothing from the twin
     schema.py                 DDL, connect(), schema version, meta (epoch)
+    store.py                  InventoryStore: sqlite3 repository + change_log append
+    documents.py              UTC time helpers, document flatten/diff
+    core.py                   ServiceCore: clock, settings, transactions, change recording, feed
     catalog_data.py           fictional manufacturers, part models, robot models, releases
     sbom.py                   deterministic synthetic CycloneDX 1.5 JSON + sha256
-    seed.py                   seed catalog; seed fleet + workforce (demo)
-    store.py                  InventoryStore: sqlite3 repository + change_log append
-    service.py                InventoryService: lifecycle actions, validation, derived flags
+    catalog.py / fleet.py / servicing.py / ota.py / workforce.py
+                              InventoryService mixins, one per responsibility
+    service.py                InventoryService composed from the mixins
+    seed.py / demo_seed.py    seed the catalog; seed the demo fleet + workforce
+    bootstrap.py              open_inventory(), reseed(), seeded-template cache
     errors.py                 NotFound(KeyError), Conflict(ValueError)
 backend/fleet_bridge.py       FleetBridge: binds Robot↔asset, Operator↔worker; heartbeat;
                               OTA runtime effects; credential → operator.certifications sync
@@ -104,8 +109,8 @@ All IDs are the source system's own (`AST-000123`, `E-10042`, …); PWA maps the
 
 | Table | Key fields |
 |---|---|
-| `manufacturer` | `manufacturer_id`, `name` (fictional) |
-| `robot_model` | `model_code`, `manufacturer_id`, `name`, `embodiment_class` (AMR, FORKLIFT, ARM, DRONE, HUMANOID, SCOUT, HEAVY_HAULER, PICKER), `spec` JSON (movement mode, clearance class, max payload kg, max lift m / max shelf level, max speed m/s, footprint mm, mass kg, IP rating, battery chemistry + capacity Wh, runtime h, charge time h, supported box kinds, supervision requirement), `safety_standards[]`, `component_layout[]` (slot, part_number, required) |
+| `manufacturer` | `manufacturer_id`, `name` (fictional), `serial_prefix` |
+| `robot_model` | `model_code`, `manufacturer_id`, `name`, `embodiment_class` (AMR, FORKLIFT, ARM, DRONE, HUMANOID, SCOUT, HEAVY_HAULER, PICKER), `hw_revisions[]`, `spec` JSON (movement mode, clearance class, max payload kg, max lift m / max shelf level, max speed m/s, footprint mm, mass kg, IP rating, battery chemistry + capacity Wh, runtime h, charge time h, supported box kinds, supervision requirement), `safety_standards[]`, `component_layout[]` (slot, part_number, required) |
 | `part_model` | `part_number`, `manufacturer_id`, `name`, `component_type` (COMPUTE, SAFETY_CONTROLLER, DRIVE_UNIT, BATTERY, LIDAR, SAFETY_SCANNER, RGBD_CAMERA, IMU, LOAD_CELL, MAST_ENCODER, FORCE_TORQUE, SCANNER, LIGHT_CURTAIN, GRIPPER, FORKS, ROTOR, ACTUATOR), `hw_revisions[]`, `firmware_capable`, `calibration_interval_days` (null = no calibration), `spec` JSON |
 | `software_release` | `release_id`, `kind` (ROBOT_SOFTWARE, COMPONENT_FIRMWARE, AI_POLICY_MODEL), `target_type` (MODEL, PART), `target_code`, `version`, `released_at`, `min_hw_rev`, `status` (CURRENT, SUPERSEDED, RECALLED), `sbom_json`, `sbom_sha256` |
 
@@ -117,10 +122,10 @@ The embodiment limits sketched earlier as per-class `EMBODIMENT_PROFILES` live i
 | Table | Key fields |
 |---|---|
 | `robot_asset` | `asset_id`, `asset_tag`, `serial_number` (unique per manufacturer), `model_code`, `hw_revision`, `fleet_id`, `site_code`, `home_zone`, `lifecycle_status` (COMMISSIONING, IN_SERVICE, MAINTENANCE, OUT_OF_SERVICE, DECOMMISSIONED), `commissioned_at`, `decommissioned_at`, **declared** `software_release_id`, `config_hash`, `safety_policy_hash`, `ai_policy_release_id` (nullable), `revision`, `updated_at` |
-| `component` | `component_id`, `asset_id` (null once removed), `slot`, `part_number`, `serial`, `hw_revision`, declared `firmware_release_id` (nullable), `installed_at`, `removed_at`, `status` (INSTALLED, REMOVED, FAULTY) |
+| `component` | `component_id`, `asset_id` (kept after removal so part history stays linked; `status` says REMOVED), `slot`, `part_number`, `serial`, `hw_revision`, declared `firmware_release_id` (nullable), `installed_at`, `removed_at`, `status` (INSTALLED, REMOVED, FAULTY) |
 | `calibration_record` | `calibration_id`, `component_id`, `performed_at`, `performed_by` (worker_id), `method`, `result` (PASS, FAIL), `valid_until` (null on FAIL), `certificate_ref` |
 | `work_order` | `wo_id`, `asset_id`, `type` (PREVENTIVE, CORRECTIVE, INSPECTION), `description`, `technician_id`, `status` (OPEN, CLOSED), `opened_at`, `closed_at`, `resolution` |
-| `ota_job` | `job_id`, `asset_id`, `component_id` (null = robot software / AI policy), `release_id`, `from_version`, `state`, `ticks_in_state`, `created_at`, `updated_at`, `created_by`, `failure_reason` |
+| `ota_job` | `job_id`, `asset_id`, `component_id` (null = robot software / AI policy), `release_id`, `from_version`, `state`, `created_at`, `updated_at`, `created_by`, `failure_reason` (tick counts for the timed states are runtime-only, held by the bridge) |
 | `reported_state` | `asset_id` (PK), `software_version`, `os_version`, `config_hash`, `safety_policy_hash`, `ai_policy_version`, `component_firmware` JSON (slot → version), `health_state` (OK, DEGRADED, FAULT, UNKNOWN), `connectivity` (ONLINE, OFFLINE, INTERMITTENT), `operational_mode`, `zone`, `battery` JSON (`soc_pct`, `soh_pct`, `cycle_count`), `reported_at`, `observation_seq` |
 
 Refinement vs the brainstorm: battery `cycle_count` / `soh_pct` are *reported telemetry*, so
@@ -146,9 +151,11 @@ naming the field), so a prohibited field can never be stored or logged.
 
 ### 3.4 Change tracking
 
-`change_log`: `seq` (INTEGER PK AUTOINCREMENT — the feed cursor), `epoch`, `occurred_at`,
+`change_log`: `seq` (INTEGER PK AUTOINCREMENT — the feed cursor), `occurred_at`,
 `aggregate_type` (ROBOT_ASSET, ROBOT_OBSERVATION, WORKER, CATALOG), `aggregate_id`, `revision`,
-`action`, `actor_type` (SYSTEM, WORKER, API), `actor_id`, `reason`, `diff` JSON
+`action`, `subject_id` (the sub-record the action concerns: work order, OTA job, component,
+calibration, credential, training or release id), `actor_type` (SYSTEM, WORKER, API),
+`actor_id`, `reason`, `diff` JSON
 (`{field: {"from": …, "to": …}}`), `after` JSON (full aggregate as it stands after the change).
 
 `meta`: `schema_version`, `epoch` (random hex, regenerated whenever the database is re-seeded).
@@ -219,11 +226,13 @@ expiry), and the worker is ACTIVE.
 
 ### 4.4 Derived flags (computed on read, never stored)
 
-Robot: `software_mismatch` (declared vs reported), `component_firmware_mismatches[]`, per-sensor
-`calibration_status` (VALID, DUE_SOON within `CALIBRATION_DUE_SOON_DAYS`, EXPIRED, MISSING,
-FAILED), `report_stale` (older than `REPORT_STALE_SECONDS`), `running_recalled_release`,
-`active_ota_job`. Worker: per-credential `validity` (VALID, EXPIRING_SOON, EXPIRED, REVOKED,
-NOT_YET_EFFECTIVE, WORKER_INACTIVE).
+Robot: `software_mismatch` (declared vs reported), `ai_policy_mismatch`,
+`component_firmware_mismatches[]`, per-sensor `calibration_status` (VALID, DUE_SOON within
+`CALIBRATION_DUE_SOON_DAYS`, EXPIRED, MISSING, FAILED) with `calibration_worst` and
+`calibration_issues[]`, `report_stale` (older than `REPORT_STALE_SECONDS`),
+`running_recalled_release`, `running_unknown_software` (a version with no catalog release),
+`active_ota_job`. Worker: per-credential `validity` (VALID, EXPIRING_SOON within
+`CREDENTIAL_EXPIRING_SOON_DAYS`, EXPIRED, REVOKED, NOT_YET_EFFECTIVE, WORKER_INACTIVE).
 
 ### 4.5 Change feed
 
@@ -295,13 +304,15 @@ from the start of the current epoch (the source system was rebuilt). `limit` is 
   as the codes of the worker's valid credentials in issuance order. The existing eligibility code
   is untouched and simply sees the result.
 - New events: `INVENTORY_CHANGED` (INFO, carries `aggregate_id` + `action`),
-  `OTA_JOB_UPDATED`. The dashboard's warning bell gets only failures (OTA_FAILED) and
-  revocations.
+  `OTA_JOB_UPDATED`, `OPERATOR_CERTIFICATIONS_CHANGED` (WARNING when a certification is lost).
+  The dashboard's warning bell gets only failures (OTA_FAILED) and revocations / lost
+  certifications. All inventory events use the new `FLEET` log category.
 
 ### 5.4 New CONFIG keys (policy-overridable)
 
 `FLEET_HEARTBEAT_EVERY_TICKS: 10`, `OTA_DOWNLOAD_TICKS: 5`, `OTA_INSTALL_TICKS: 8`,
-`OTA_FAILURE_RISK: 0.0`, `CALIBRATION_DUE_SOON_DAYS: 14`, `REPORT_STALE_SECONDS: 300`.
+`OTA_FAILURE_RISK: 0.0`, `CALIBRATION_DUE_SOON_DAYS: 14`, `CREDENTIAL_EXPIRING_SOON_DAYS: 30`,
+`REPORT_STALE_SECONDS: 300`.
 
 ---
 
@@ -396,7 +407,8 @@ every 3 s (no SSE changes).
 
 ## 8. Testing
 
-- `backend/test_inventory.py` — the inventory package on its own: schema + seed determinism;
+- `backend/test_inventory_{store,core,catalog,fleet,servicing,ota,workforce,seed}.py` — the
+  inventory package on its own, one file per module: schema + seed determinism;
   every action (revision bump, `diff` / `after` contents, actor); every illegal transition →
   `Conflict`; OTA compatibility checks (recalled, `min_hw_rev`, wrong target, concurrent job);
   calibration and credential validity derivation at boundary times; component swap semantics;
