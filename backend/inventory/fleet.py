@@ -46,6 +46,9 @@ class FleetMixin:
     def _asset(self, asset_id: str) -> Dict[str, Any]:
         return self._require("robot_asset", "asset_id", asset_id, "Robot asset")
 
+    def lifecycle_status(self, asset_id: str) -> str:
+        return self._asset(asset_id)["lifecycle_status"]
+
     def _latest_calibration(self, component_id: str) -> Optional[Dict[str, Any]]:
         rows = self.store.select("calibration_record", "component_id = ?", (component_id,),
                                  order="performed_at DESC, rowid DESC", limit=1)

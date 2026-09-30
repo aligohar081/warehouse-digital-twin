@@ -303,11 +303,15 @@ class FleetBridge:
 
     def heartbeat(self) -> None:
         """Every floor robot reports what it is running; the other sites'
-        online robots check in (reported_at only)."""
+        online robots check in (reported_at only). The robot's hold is
+        re-derived from its asset's lifecycle here too, so a missed change
+        event (or a hold restored by load_state) can't outlive the next
+        heartbeat."""
         bound = set()
         for robot in list(self.twin.robots.values()):
             if robot.asset_id and self.service.has_asset(robot.asset_id):
                 bound.add(robot.asset_id)
+                self._apply_lifecycle(robot, self.service.lifecycle_status(robot.asset_id))
                 self._report_robot(robot)
         # Only the other sites check in on their own; an unbound floor asset has nothing
         # reporting for it, so its report goes stale (and the fleet shows it).

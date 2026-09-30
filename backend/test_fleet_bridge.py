@@ -293,6 +293,26 @@ def test_lifecycle_changes_stop_and_resume_the_floor_robot(twin):
     assert robot.status == RobotStatus.IDLE and robot.fleet_hold is None
 
 
+def test_a_missed_lifecycle_effect_is_reapplied_by_the_next_heartbeat(twin, sim):
+    robot = twin.find_robot("Robo-01")
+    twin.fleet.mutate(twin.inventory.set_lifecycle_status, "AST-000101", "OUT_OF_SERVICE", "Drive fault")
+    assert robot.status == RobotStatus.STOPPED and robot.fleet_hold == "OUT_OF_SERVICE"
+    robot.status_before_stop = None
+    robot.set_status(RobotStatus.IDLE)  # simulate the change listener never having run
+    robot.fleet_hold = None
+    ticks(sim, CONFIG["FLEET_HEARTBEAT_EVERY_TICKS"])
+    assert robot.status == RobotStatus.STOPPED and robot.fleet_hold == "OUT_OF_SERVICE"
+
+
+def test_a_stale_fleet_hold_is_released_by_the_next_heartbeat(twin, sim):
+    robot = twin.find_robot("Robo-02")  # its asset is IN_SERVICE, but a restored hold says otherwise
+    twin.stop_robot(robot.id, reason="restored hold")
+    robot.fleet_hold = "MAINTENANCE"
+    assert twin.inventory.lifecycle_status("AST-000102") == "IN_SERVICE"
+    ticks(sim, CONFIG["FLEET_HEARTBEAT_EVERY_TICKS"])
+    assert robot.status == RobotStatus.IDLE and robot.fleet_hold is None
+
+
 def test_a_user_stop_is_not_undone_by_the_fleet(twin):
     robot = twin.find_robot("Robo-02")
     twin.stop_robot(robot.id, reason="user")
