@@ -104,6 +104,10 @@ CONFIG: Dict[str, Any] = {
     "LOADED_SPEED_FACTOR": 0.7,
     # People on the new floor (backend/people.py) walk between zones at this pace.
     "PERSON_WALK_SPEED_MPS": 1.2,
+    # Goods (backend/goods.py): a cycle-count variance this small or smaller
+    # is reconciled automatically; a packed carton weighs its items plus this.
+    "STOCK_AUTO_RECONCILE_UNITS": 2,
+    "CARTON_TARE_KG": 0.3,
 }
 
 
@@ -359,6 +363,14 @@ class OperatorStatus(str, enum.Enum):
     AVAILABLE = "AVAILABLE"
     ON_TASK = "ON_TASK"
     OFF_DUTY = "OFF_DUTY"
+
+
+class BoxKind(str, enum.Enum):
+    """What a Box is (multi-embodiment spec §7.1). Classic boxes are TOTEs."""
+    PALLET = "PALLET"
+    TOTE = "TOTE"
+    ITEM = "ITEM"
+    CARTON = "CARTON"
 
 
 class BoxStatus(str, enum.Enum):
