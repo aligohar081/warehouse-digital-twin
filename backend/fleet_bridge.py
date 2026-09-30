@@ -121,7 +121,6 @@ class FleetBridge:
                 change = service.register_worker(
                     operator.name, role_codes=[operator.role] if operator.role else ["WAREHOUSE_OPERATOR"],
                     site_codes=[FLOOR_SITE], worker_id=worker_id or None,
-                    shift_start_hour=operator.shift_start_hour, shift_end_hour=operator.shift_end_hour,
                     actor=SYSTEM,
                 )
                 operator.worker_id = change["aggregate_id"]

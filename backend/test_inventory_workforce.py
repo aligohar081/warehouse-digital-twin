@@ -49,8 +49,8 @@ def test_register_worker_enforces_the_privacy_allowlist(inv):
         inv.register_worker("Pat", worker_type="ROBOT")
     with pytest.raises(ValueError):
         inv.register_worker(" ")
-    with pytest.raises(ValueError):
-        inv.register_worker("Pat", shift_start_hour=25)
+    with pytest.raises(ValueError, match="shift_start_hour"):
+        inv.register_worker("Pat", shift_start_hour=9)  # shift windows stay on the twin's Operator
     with pytest.raises(Conflict):
         inv.register_worker("Sam again", worker_id="E-10001")
 

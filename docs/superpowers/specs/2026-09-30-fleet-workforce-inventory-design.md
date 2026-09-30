@@ -135,10 +135,12 @@ they live in `reported_state.battery`, not on the component row.
 
 | Table | Key fields |
 |---|---|
-| `worker` | `worker_id`, `display_name` (synthetic), `worker_type` (EMPLOYEE, CONTRACTOR, PARTNER), `organization`, `role_codes[]`, `site_codes[]`, `employment_status` (ACTIVE, ON_LEAVE, TERMINATED), `supervisor_id` (nullable), `shift_start_hour` / `shift_end_hour` (twin-only; never exported), `revision`, `updated_at` |
+| `worker` | `worker_id`, `display_name` (synthetic), `worker_type` (EMPLOYEE, CONTRACTOR, PARTNER), `organization`, `role_codes[]`, `site_codes[]`, `employment_status` (ACTIVE, ON_LEAVE, TERMINATED), `supervisor_id` (nullable), `revision`, `updated_at` |
 | `credential_definition` | `code`, `name`, `issuer_types[]`, `renewal_period_days`, `scope_dimensions[]` |
 | `worker_credential` | `credential_id`, `worker_id`, `code`, `issuer`, `credential_number_hash` (**never the raw number**), `verification_status` (UNVERIFIED, SOURCE_VERIFIED, ISSUER_VERIFIED, REVOKED), `effective_from`, `expires_at`, `equipment_scope[]`, `task_scope[]`, `site_scope[]`, `supervision_requirement`, `revoked_at`, `revocation_reason` |
 | `training_completion` | `training_id`, `worker_id`, `course_code`, `course_version`, `completed_at`, `expires_at` |
+
+Shift windows stay on the twin's Operator; the workforce source system does not store them.
 
 Credential codes are the twin's existing lowercase certification strings
 (`safety_inspection`, `electrical_safety`, `equipment_maintenance`, `heavy_equipment`,
@@ -212,7 +214,7 @@ the previous CURRENT release for that target becomes SUPERSEDED) and
 
 | Action | change_log action |
 |---|---|
-| `register_worker(worker_id?, display_name, worker_type, organization, role_codes, site_codes, supervisor_id?, shift?)` | `WORKER_REGISTERED` |
+| `register_worker(worker_id?, display_name, worker_type, organization, role_codes, site_codes, supervisor_id?)` | `WORKER_REGISTERED` |
 | `update_worker(worker_id, role_codes?, site_codes?, supervisor_id?, reason)` | `WORKER_UPDATED` |
 | `set_employment_status(worker_id, status, reason)` | `EMPLOYMENT_STATUS_CHANGED` |
 | `issue_credential(worker_id, code, issuer, effective_from?, expires_at?, scopes?, verification_status?)` | `CREDENTIAL_ISSUED` |

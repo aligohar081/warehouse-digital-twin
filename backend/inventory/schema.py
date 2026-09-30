@@ -10,7 +10,7 @@ from __future__ import annotations
 import secrets
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 JSON_COLUMNS = frozenset({
     "hw_revisions", "spec", "safety_standards", "component_layout",
@@ -153,8 +153,6 @@ CREATE TABLE IF NOT EXISTS worker (
     site_codes        TEXT NOT NULL,
     employment_status TEXT NOT NULL,
     supervisor_id     TEXT,
-    shift_start_hour  INTEGER,
-    shift_end_hour    INTEGER,
     revision          INTEGER NOT NULL,
     updated_at        TEXT NOT NULL
 );

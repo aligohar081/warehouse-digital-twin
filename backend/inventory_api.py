@@ -16,8 +16,7 @@ from .inventory import Conflict, NotFound
 
 
 REGISTER_WORKER_FIELDS = ("worker_type", "organization", "role_codes", "site_codes",
-                           "worker_id", "supervisor_id", "shift_start_hour", "shift_end_hour",
-                           "employment_status")
+                           "worker_id", "supervisor_id", "employment_status")
 UPDATE_WORKER_FIELDS = ("role_codes", "site_codes", "organization", "supervisor_id")
 
 

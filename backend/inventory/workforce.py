@@ -31,18 +31,6 @@ def _codes(values: Any) -> List[str]:
     return list(dict.fromkeys(str(v).strip() for v in values if str(v).strip()))
 
 
-def _hour(value: Any, label: str) -> Optional[int]:
-    if value is None or value == "":
-        return None
-    try:
-        hour = int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"{label} must be an hour between 0 and 23") from None
-    if not 0 <= hour <= 23:
-        raise ValueError(f"{label} must be between 0 and 23")
-    return hour
-
-
 def _reject_unlisted(extra: Mapping[str, Any]) -> None:
     if extra:
         raise ValueError(f"Field(s) not allowed in a worker record: {sorted(extra)}")
@@ -106,7 +94,6 @@ class WorkforceMixin:
     def register_worker(self, display_name: str, worker_type: str = "EMPLOYEE",
                         organization: str = "Warehouse Operations", role_codes: Any = (), site_codes: Any = (), *,
                         worker_id: Optional[str] = None, supervisor_id: Optional[str] = None,
-                        shift_start_hour: Any = None, shift_end_hour: Any = None,
                         employment_status: str = "ACTIVE", actor: Any = None, **extra: Any) -> Dict[str, Any]:
         _reject_unlisted(extra)
         name = str(display_name or "").strip()
@@ -119,8 +106,6 @@ class WorkforceMixin:
         if employment_status not in EMPLOYMENT_STATUSES:
             raise ValueError(f"Unknown employment_status {employment_status!r} (known: {list(EMPLOYMENT_STATUSES)})")
         organization = str(organization or "").strip() or "Warehouse Operations"
-        start_hour = _hour(shift_start_hour, "shift_start_hour")
-        end_hour = _hour(shift_end_hour, "shift_end_hour")
         with self._tx():
             if worker_id:
                 if self.has_worker(worker_id):
@@ -133,7 +118,6 @@ class WorkforceMixin:
                 "worker_id": worker_id, "display_name": name, "worker_type": worker_type,
                 "organization": organization, "role_codes": _codes(role_codes), "site_codes": _codes(site_codes),
                 "employment_status": employment_status, "supervisor_id": supervisor_id or None,
-                "shift_start_hour": start_hour, "shift_end_hour": end_hour,
                 "revision": 0, "updated_at": self.now_iso(),
             })
             return self._commit_worker(worker_id, "WORKER_REGISTERED", None, actor=actor)

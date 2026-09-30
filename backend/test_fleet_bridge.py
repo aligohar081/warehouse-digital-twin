@@ -1,5 +1,7 @@
 """FleetBridge: binding live robots/operators to the inventory, and the
 runtime effects of inventory actions on the simulation."""
+import json
+
 import pytest
 
 from backend.digital_twin import DigitalTwin
@@ -66,6 +68,14 @@ def test_add_operator_registers_a_worker_with_matching_credentials(twin):
     assert odd.certifications == ["crane_rigging"]
     preset = twin.add_operator(name="Tess", role="SAFETY_INSPECTOR")
     assert preset.certifications == ["safety_inspection"]
+
+
+def test_shift_hours_never_reach_the_workforce_source_system(twin):
+    operator = twin.add_operator(name="Shifty", certifications=["safety_inspection"],
+                                 shift_start_hour=6, shift_end_hour=14)
+    assert (operator.shift_start_hour, operator.shift_end_hour) == (6, 14)  # the twin keeps them
+    assert "shift" not in json.dumps(twin.inventory.changes("workforce", limit=500))
+    assert not [key for key in twin.inventory.get_worker(operator.worker_id) if "shift" in key]
 
 
 def test_reset_reseeds_the_inventory_with_a_new_epoch(twin):

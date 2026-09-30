@@ -20,7 +20,7 @@ def _worker_row(worker_id):
     return {
         "worker_id": worker_id, "display_name": "Sam", "worker_type": "EMPLOYEE",
         "organization": "Ops", "role_codes": [], "site_codes": [], "employment_status": "ACTIVE",
-        "supervisor_id": None, "shift_start_hour": None, "shift_end_hour": None,
+        "supervisor_id": None,
         "revision": 1, "updated_at": "2026-01-01T00:00:00Z",
     }
 
