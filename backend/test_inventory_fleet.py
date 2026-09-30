@@ -185,3 +185,32 @@ def test_robot_history_is_newest_first(inv):
     assert [c["action"] for c in inv.robot_history(asset)] == ["ADMIN_EDIT", "STATE_REPORTED", "COMMISSIONED"]
     with pytest.raises(NotFound):
         inv.robot_history("AST-404")
+
+
+def test_report_state_rejects_malformed_payloads(inv):
+    asset = commission(inv)
+    before = inv.store.count("change_log")
+    # Test malformed component_firmware values
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"component_firmware": "x"})
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"component_firmware": None})
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"component_firmware": {"lidar": 2}})
+    # Test malformed battery values
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"battery": 50})
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"battery": {"soc_pct": "full"}})
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"battery": {"soc_pct": True}})
+    # Test malformed software_version value
+    with pytest.raises(ValueError):
+        inv.report_state(asset, {"software_version": 220})
+    # Verify nothing was stored and get_robot/list_robots still work
+    assert inv.store.count("change_log") == before
+    robot = inv.get_robot(asset)
+    assert robot["asset_id"] == asset
+    assert robot["reported"]["software_version"] == "2.2.0"
+    robots = inv.list_robots()
+    assert len(robots) == 1 and robots[0]["asset_id"] == asset

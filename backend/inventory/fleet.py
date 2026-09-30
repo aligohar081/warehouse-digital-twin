@@ -271,6 +271,38 @@ class FleetMixin:
             return self._commit_asset(asset_id, "ADMIN_EDIT", before, actor=actor, reason=reason)
 
     # ---- robot-reported state ----------------------------------------- #
+    @staticmethod
+    def _check_report_shape(reported: Mapping[str, Any]) -> None:
+        """Validate the payload shape of a robot heartbeat before storing."""
+        if "component_firmware" in reported:
+            cf = reported["component_firmware"]
+            if cf is None:
+                raise ValueError("component_firmware: None is not allowed (must be a dict of str → str, or omit the field)")
+            if not isinstance(cf, dict):
+                raise ValueError(f"component_firmware: must be a dict, got {type(cf).__name__}")
+            for key, value in cf.items():
+                if not isinstance(key, str):
+                    raise ValueError(f"component_firmware: all keys must be str, got {type(key).__name__} for key {key!r}")
+                if not isinstance(value, str):
+                    raise ValueError(f"component_firmware: all values must be str, got {type(value).__name__} for value {value!r}")
+        if "battery" in reported:
+            battery = reported["battery"]
+            if battery is not None:
+                if not isinstance(battery, dict):
+                    raise ValueError(f"battery: must be a dict or None, got {type(battery).__name__}")
+                for key, value in battery.items():
+                    if not isinstance(key, str):
+                        raise ValueError(f"battery: all keys must be str, got {type(key).__name__} for key {key!r}")
+                    if isinstance(value, bool):
+                        raise ValueError(f"battery: bool is not allowed (use int or float), got bool for key {key!r}")
+                    if not isinstance(value, (int, float)):
+                        raise ValueError(f"battery: all values must be int or float, got {type(value).__name__} for key {key!r}")
+        for field in ("software_version", "os_version", "config_hash", "safety_policy_hash", "ai_policy_version", "operational_mode", "zone"):
+            if field in reported:
+                value = reported[field]
+                if value is not None and not isinstance(value, str):
+                    raise ValueError(f"{field}: must be str or None, got {type(value).__name__}")
+
     def report_state(self, asset_id: str, reported: Mapping[str, Any], actor: Any = None) -> Optional[Dict[str, Any]]:
         """A robot heartbeat. Always refreshes reported_at; appends a
         ROBOT_OBSERVATION change only when a significant field changed."""
@@ -282,6 +314,7 @@ class FleetMixin:
             raise ValueError(f"Unknown health_state {reported['health_state']!r} (known: {list(HEALTH_STATES)})")
         if "connectivity" in reported and reported["connectivity"] not in CONNECTIVITY_STATES:
             raise ValueError(f"Unknown connectivity {reported['connectivity']!r} (known: {list(CONNECTIVITY_STATES)})")
+        self._check_report_shape(reported)
         with self._tx():
             self._asset(asset_id)
             current = self._require("reported_state", "asset_id", asset_id, "Reported state")
