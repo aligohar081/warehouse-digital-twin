@@ -387,8 +387,8 @@ class Simulator:
     def _blocking_robot(self, robot: Any, cell: Cell) -> Optional[Any]:
         mine = self._precedence(robot)
         for other in self.twin.robots.values():
-            if other.id == robot.id:
-                continue
+            if other.id == robot.id or other.layer != robot.layer:
+                continue  # only a robot on the same layer can be in the way
             if other.position == cell:
                 return other
             if other.next_cell == cell and self._precedence(other) > mine:
@@ -480,15 +480,16 @@ class Simulator:
         get re-flagged as a "fresh" collision every single tick forever
         while they sit stacked on the same cell waiting to be Reset."""
         twin = self.twin
-        seen: Dict[Cell, Any] = {}
+        seen: Dict[Tuple[str, int, int], Any] = {}
         for robot in twin.robots.values():
             if robot.status == RobotStatus.ERROR:
                 continue
-            other = seen.get(robot.position)
+            key = (robot.layer, robot.position[0], robot.position[1])  # a drone over an AMR is no collision
+            other = seen.get(key)
             if other is not None:
                 twin.register_collision(robot.id, other.id)
             else:
-                seen[robot.position] = robot
+                seen[key] = robot
 
     # ---- handling ----------------------------------------------------- #
     def _act_pick(self, robot: Any, task: Any, action: Any) -> None:

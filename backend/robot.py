@@ -79,8 +79,11 @@ class Robot:
         # bound asset's catalog model. Set by the fleet bridge on a layered
         # floor; None on classic, where every robot drives as it always has.
         self.mobility: Optional[MobilityProfile] = None
-        # The layer the robot occupies and routes on. Only drones leave GROUND.
+        # The layer the robot occupies and routes on, and its height above the
+        # floor. Only drones leave GROUND (DigitalTwin.set_robot_layer); traffic
+        # and collisions compare (layer, x, y), so a drone over an AMR is fine.
         self.layer: str = GROUND
+        self.altitude_m: float = 0.0
 
         # Statistics
         self.completed_tasks = 0
@@ -235,6 +238,8 @@ class Robot:
             "id": self.id,
             "name": self.name,
             "position": cell_dict(self.position),
+            "layer": self.layer,
+            "altitude_m": round(self.altitude_m, 2),
             "home": cell_dict(self.home),
             "orientation": self.orientation,
             "speed": self.speed,
@@ -298,6 +303,8 @@ class Robot:
         robot.ai_policy_version = data.get("ai_policy_version")
         robot.component_firmware = dict(data.get("component_firmware") or {})
         robot.fleet_hold = data.get("fleet_hold")
+        robot.layer = data.get("layer", GROUND)
+        robot.altitude_m = float(data.get("altitude_m", 0.0))
         robot.home = cell_tuple(data.get("home")) or robot.position
         robot.orientation = data.get("orientation", "EAST")
         robot.status = RobotStatus(data.get("status", "IDLE"))

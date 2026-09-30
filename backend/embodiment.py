@@ -23,6 +23,9 @@ MOVEMENTS = (GROUND, AIR, FIXED)
 #: The layers a robot can occupy. Only drones ever leave GROUND.
 LAYERS = (GROUND, AIR)
 
+#: A flying drone holds this far above the level it works at (spec §5.3).
+HOVER_CLEARANCE_M = 0.5
+
 #: Classes that travel slower while carrying (× CONFIG["LOADED_SPEED_FACTOR"]).
 LOADED_SLOWDOWN_CLASSES = frozenset({"FORKLIFT", "HEAVY_HAULER"})
 DEFAULT_LIFT_SPEED_MPS = 0.5

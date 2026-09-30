@@ -15,7 +15,7 @@ from typing import Any, Deque, Dict, List, Optional, Set
 from .agent import Agent
 from .box import Box
 from .event_system import EventSystem
-from .embodiment import MobilityProfile
+from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, LAYERS, MobilityProfile
 from .fleet_bridge import FleetBridge
 from .inventory import NotFound as InventoryNotFound
 from .inventory import open_inventory
@@ -267,14 +267,21 @@ class DigitalTwin:
                 return operator
         return None
 
-    def robot_cells(self) -> Dict[Cell, str]:
-        return {r.position: r.id for r in self.robots.values()}
+    def robot_cells(self, layer: Optional[str] = None) -> Dict[Cell, str]:
+        """Occupied cell -> robot id, on one layer (default: every layer)."""
+        return {r.position: r.id for r in self.robots.values() if layer is None or r.layer == layer}
 
-    def other_robot_cells(self, exclude_id: str, include_reservations: bool = True) -> Set[Cell]:
-        """Cells occupied (or about to be occupied) by robots other than one."""
+    def other_robot_cells(self, exclude_id: str, include_reservations: bool = True,
+                          layer: Optional[str] = None) -> Set[Cell]:
+        """Cells occupied (or about to be occupied) by robots other than one,
+        on one layer: `layer`, or by default the excluded robot's own — a
+        drone overhead never blocks a ground robot, nor the reverse."""
+        if layer is None:
+            me = self.robots.get(exclude_id)
+            layer = me.layer if me is not None else GROUND
         cells: Set[Cell] = set()
         for robot in self.robots.values():
-            if robot.id == exclude_id:
+            if robot.id == exclude_id or robot.layer != layer:
                 continue
             cells.add(robot.position)
             if include_reservations and robot.next_cell is not None:
@@ -377,7 +384,7 @@ class DigitalTwin:
         """Where a new robot starts. Fixed equipment goes on a free station
         cell of its own; anything else on the requested (or default) cell, or
         the nearest free cell its floor profile may use."""
-        occupied = set(self.robot_cells())
+        occupied = set(self.robot_cells(GROUND))  # every robot starts on the ground
         if body is not None and body.is_fixed:
             stations = self.warehouse.fixed_stations
             if not stations:
@@ -605,6 +612,48 @@ class DigitalTwin:
         )
         return robot
 
+    def set_robot_layer(self, robot_id: str, layer: str, altitude_m: Optional[float] = None) -> Robot:
+        """Take a drone off (onto AIR) or land it (back on GROUND), or change
+        its altitude while it flies.
+
+        Only a robot whose floor profile flies may leave the ground, and it
+        takes off and lands only on a drone-pad cell that no robot on the
+        target layer holds. Instantaneous here; the TAKEOFF / LAND job steps
+        add the durations. Airborne altitude defaults to HOVER_CLEARANCE_M."""
+        robot = self.find_robot(robot_id)
+        if robot is None:
+            raise KeyError(f"Robot '{robot_id}' does not exist")
+        layer = str(layer or "").upper()
+        if layer not in LAYERS:
+            raise ValueError(f"Unknown layer {layer!r} (known: {list(LAYERS)})")
+        with self.lock:
+            if layer == GROUND and robot.layer == GROUND:
+                return robot  # already on the ground: nothing to do
+            mobility = robot.mobility
+            if mobility is None or not mobility.is_air:
+                raise ValueError(f"{robot.name} cannot fly")
+            altitude = 0.0
+            if layer == AIR:
+                altitude = HOVER_CLEARANCE_M if altitude_m is None else float(altitude_m)
+                if not 0.0 < altitude <= mobility.max_lift_m:
+                    raise ValueError(f"Altitude must be above 0 and at most {mobility.max_lift_m} m")
+            if layer != robot.layer:
+                x, y = robot.position
+                if self.warehouse.cell_type(x, y) is not CellType.DRONE_PAD:
+                    verb = "take off" if layer == AIR else "land"
+                    raise ValueError(f"{robot.name} can only {verb} on the drone pad, not at ({x},{y})")
+                if robot.position in self.robot_cells(layer):
+                    raise ValueError(f"({x},{y}) is already occupied on the {layer} layer")
+                robot.clear_path()  # a route planned for the other layer no longer applies
+            robot.layer, robot.altitude_m = layer, altitude
+            robot.touch()
+        self.logger.info(
+            LogCategory.ROBOT,
+            f"{robot.name} is on the {layer} layer at {robot.altitude_m:.1f} m",
+            robot_id=robot.id, position=cell_dict(robot.position),
+        )
+        return robot
+
     def request_charge(self, robot_id: str, priority: Priority = Priority.HIGH,
                       internal: bool = False) -> Task:
         robot = self.find_robot(robot_id)
@@ -633,11 +682,12 @@ class DigitalTwin:
                 box.assigned_robot = None
                 box.assigned_task = None
             robot.carrying_box = None
-        occupied = {r.position for r in self.robots.values() if r.id != robot.id}
+        occupied = {r.position for r in self.robots.values() if r.id != robot.id and r.layer == GROUND}
         home = robot.home if robot.home not in occupied else self.warehouse.nearest_walkable(
             robot.home, occupied, profile=robot.mobility
         )
         robot.position = home or robot.position
+        robot.layer, robot.altitude_m = GROUND, 0.0  # a reset robot is back on the ground
         robot.battery = 100.0
         robot.clear_path()
         robot.current_task = None
@@ -676,6 +726,8 @@ class DigitalTwin:
             raise KeyError("Both robots must exist")
         if robot_a.id == robot_b.id:
             raise ValueError("A robot cannot collide with itself")
+        if robot_a.layer != robot_b.layer:
+            raise ValueError(f"{robot_a.name} and {robot_b.name} are on different layers and cannot collide")
 
         with self.lock:
             self.statistics["collisions"] += 1
@@ -690,7 +742,7 @@ class DigitalTwin:
             level=LogLevel.CRITICAL,
             robot_id=robot_a.id,
             position=cell_dict(robot_a.position),
-            data={"robot_a": robot_a.id, "robot_b": robot_b.id},
+            data={"robot_a": robot_a.id, "robot_b": robot_b.id, "layer": robot_a.layer},
         )
 
         disconnected_tasks = []

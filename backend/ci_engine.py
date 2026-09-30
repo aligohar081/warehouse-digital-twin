@@ -240,12 +240,13 @@ class CIEngine:
         seen: Dict[tuple, str] = {}
         clashes: List[str] = []
         for robot in twin.robots.values():
-            if robot.position in seen:
-                clashes.append(
-                    f"{robot.name} and {seen[robot.position]} both occupy "
-                    f"({robot.position[0]},{robot.position[1]})"
-                )
-            seen[robot.position] = robot.name
+            key = (robot.layer, robot.position[0], robot.position[1])  # same cell AND same layer
+            if key in seen:
+                where = f"({robot.position[0]},{robot.position[1]})"
+                if robot.layer != "GROUND":
+                    where += f" on the {robot.layer} layer"
+                clashes.append(f"{robot.name} and {seen[key]} both occupy {where}")
+            seen[key] = robot.name
         details = {
             "collisions_recorded": twin.statistics["collisions"],
             "collisions_avoided": twin.statistics["collisions_avoided"],
