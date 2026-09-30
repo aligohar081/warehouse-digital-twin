@@ -1,4 +1,5 @@
 """Inventory storage foundation: schema, store helpers, document diffing."""
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -67,6 +68,46 @@ def test_transaction_rolls_back_everything_on_error(store):
             raise RuntimeError("boom")
     assert store.count("manufacturer") == 0
     assert store.depth == 0
+
+
+class _FailFirstCommit:
+    """Delegates to a real connection but makes the first COMMIT fail like a locked database."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.commit_attempts = 0
+
+    def execute(self, sql, *args):
+        if sql == "COMMIT":
+            self.commit_attempts += 1
+            if self.commit_attempts == 1:
+                raise sqlite3.OperationalError("database is locked")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_a_failed_commit_rolls_back_instead_of_wedging_the_connection(store):
+    real = store.conn
+    store.conn = _FailFirstCommit(real)
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        with store.transaction():
+            store.insert("manufacturer", {"manufacturer_id": "A", "name": "A", "serial_prefix": "A"})
+    assert store.depth == 0
+    assert not real.in_transaction
+    assert store.count("manufacturer") == 0
+    with store.transaction():  # the next transaction starts and commits normally
+        store.insert("manufacturer", {"manufacturer_id": "B", "name": "B", "serial_prefix": "B"})
+    assert store.depth == 0 and not real.in_transaction
+    assert [row["manufacturer_id"] for row in store.select("manufacturer")] == ["B"]
+
+
+def test_file_databases_use_wal_so_outside_readers_never_block_commits(tmp_path):
+    path = str(tmp_path / "inventory.sqlite3")
+    conn = connect(path)
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert connect(":memory:").execute("PRAGMA journal_mode").fetchone()[0] == "memory"
 
 
 def test_next_id_skips_ids_that_already_exist(store):

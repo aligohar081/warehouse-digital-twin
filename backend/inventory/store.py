@@ -57,11 +57,23 @@ class InventoryStore:
             except BaseException:
                 self.depth -= 1
                 if self.depth == 0:
-                    self.conn.execute("ROLLBACK")
+                    self._rollback()
                 raise
             self.depth -= 1
             if self.depth == 0:
-                self.conn.execute("COMMIT")
+                try:
+                    self.conn.execute("COMMIT")
+                except BaseException:
+                    # A failed COMMIT (e.g. "database is locked") can leave the transaction open;
+                    # end it so the connection isn't wedged for every later write.
+                    self._rollback()
+                    raise
+
+    def _rollback(self) -> None:
+        # SQLite may already have rolled back on its own; ROLLBACK then would raise and mask
+        # the original error.
+        if self.conn.in_transaction:
+            self.conn.execute("ROLLBACK")
 
     # ---- meta ----------------------------------------------------------- #
     def get_meta(self, key: str) -> Optional[str]:
