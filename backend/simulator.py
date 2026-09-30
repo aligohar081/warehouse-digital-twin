@@ -17,12 +17,14 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from datetime import datetime
 
+from . import people
 from .eligibility import robot_eligibility
 from .maintenance import maintenance_reason
 from .models import (
     CONFIG,
     ActionType,
     Cell,
+    CellType,
     BoxStatus,
     EventType,
     LogCategory,
@@ -122,6 +124,7 @@ class Simulator:
             twin.simulation_time = round(twin.simulation_time + self.dt, 3)
 
             twin.scheduler.tick()
+            people.update_transits(twin)  # walks end before robots decide who is on the walkway
             twin.tasks.dispatch()
 
             for robot in self._execution_order():
@@ -256,6 +259,9 @@ class Simulator:
         next_cell = robot.next_cell
         if next_cell is None:
             robot.clear_path()
+            return
+
+        if self._crossing_wait(robot, task, next_cell):
             return
 
         blocker = self._blocking_robot(robot, next_cell)
@@ -490,6 +496,65 @@ class Simulator:
                 twin.register_collision(robot.id, other.id)
             else:
                 seen[key] = robot
+
+    # ---- people and safety waits (spec §6, §10.3) --------------------- #
+    def _crossing_wait(self, robot: Any, task: Any, next_cell: Cell) -> bool:
+        """PERSON_ON_CROSSING: a robot about to step onto the pedestrian
+        walkway (a ground robot at a crossing, or a drone about to cross it)
+        waits while anyone is on the walkway, i.e. walking a route that crosses
+        the strip (people.anyone_on_walkway) — a walk that stays on one side of
+        it holds nobody up. True while it waits."""
+        warehouse = self.twin.warehouse
+        entering = (warehouse.cell_type(*next_cell) is CellType.WALKWAY
+                    and warehouse.cell_type(*robot.position) is not CellType.WALKWAY)
+        if entering and people.anyone_on_walkway(self.twin):
+            self._safety_wait(robot, task, "PERSON_ON_CROSSING", next_cell)
+            return True
+        if robot.wait_reason == "PERSON_ON_CROSSING":
+            self._safety_resume(robot, task)
+        return False
+
+    def _safety_wait(self, robot: Any, task: Any, reason: str, cell: Cell) -> None:
+        """A physical wait — a decision, not a rejection: the robot holds
+        WAITING with a reason code, announced once when the wait starts. It
+        is not a traffic block, so it never replans or sidesteps."""
+        robot.set_status(RobotStatus.WAITING)
+        if robot.wait_reason == reason:
+            return
+        robot.wait_reason = reason
+        robot.wait_started_tick = self.twin.tick_count
+        self.twin.events.emit(
+            EventType.ROBOT_SAFETY_WAIT,
+            f"{robot.name} waiting before ({cell[0]},{cell[1]}): {reason}",
+            category=LogCategory.SAFETY,
+            level=LogLevel.WARNING,
+            robot_id=robot.id,
+            task_id=task.id,
+            position=cell_dict(cell),
+            data={"reason": reason, "cell": cell_dict(cell)},
+        )
+        self.twin.tasks.set_status(task, TaskStatus.BLOCKED, f"Safety wait: {reason}")
+
+    def _safety_resume(self, robot: Any, task: Any) -> None:
+        reason = robot.wait_reason
+        started = robot.wait_started_tick if robot.wait_started_tick is not None else self.twin.tick_count
+        waited = self.twin.tick_count - started
+        robot.wait_reason = None
+        robot.wait_started_tick = None
+        robot.set_status(RobotStatus.DELIVERING if robot.carrying_box else RobotStatus.MOVING)
+        self.twin.events.emit(
+            EventType.ROBOT_SAFETY_RESUMED,
+            f"{robot.name} resumed after {waited} ticks ({reason} cleared)",
+            category=LogCategory.SAFETY,
+            robot_id=robot.id,
+            task_id=task.id,
+            position=cell_dict(robot.position),
+            data={"reason": reason, "waited_ticks": waited},
+        )
+        self.twin.tasks.set_status(
+            task, TaskStatus.TRANSPORTING if robot.carrying_box else TaskStatus.IN_PROGRESS,
+            f"{reason} cleared",
+        )
 
     # ---- handling ----------------------------------------------------- #
     def _act_pick(self, robot: Any, task: Any, action: Any) -> None:

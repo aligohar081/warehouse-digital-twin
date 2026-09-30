@@ -15,17 +15,39 @@ _on_change only after its transaction has committed.
 from __future__ import annotations
 
 import random
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .embodiment import MobilityProfile
 from .inventory import InventoryService, NotFound, reseed
 from .inventory.catalog_data import CLASS_DEFAULT_MODELS
 from .inventory.core import SYSTEM
+from .inventory.workforce import VALID_CREDENTIAL_STATES
 from .models import CONFIG, EventType, LogCategory, LogLevel, RobotStatus
 
 FLOOR_SITE = "WH-01"
 WARNING_ACTIONS = frozenset({"OTA_FAILED", "CREDENTIAL_REVOKED"})
 LIFECYCLE_ACTIONS = frozenset({"STATUS_CHANGED", "DECOMMISSIONED", "WORK_ORDER_OPENED", "WORK_ORDER_CLOSED"})
+
+
+def credential_scopes(worker: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
+    """{code: {"equipment": [...], "site": [...]}} over a worker record's valid
+    credentials. An empty list means unrestricted in that dimension, so two
+    credentials with one code merge to the wider scope."""
+    scopes: Dict[str, Dict[str, List[str]]] = {}
+    for credential in worker["credentials"]:
+        if credential["validity"] not in VALID_CREDENTIAL_STATES:
+            continue
+        fresh = {"equipment": list(credential["equipment_scope"]), "site": list(credential["site_scope"])}
+        entry = scopes.get(credential["code"])
+        if entry is None:
+            scopes[credential["code"]] = fresh
+            continue
+        for key, values in fresh.items():
+            if not entry[key] or not values:
+                entry[key] = []
+            else:
+                entry[key] += [value for value in values if value not in entry[key]]
+    return scopes
 
 
 class FleetBridge:
@@ -191,8 +213,12 @@ class FleetBridge:
             self.bind_new_operator(operator)
 
     def _sync_operator(self, operator: Any, announce: bool = True) -> bool:
-        """Make operator.certifications equal the worker's valid credential codes."""
-        codes = self.service.valid_credential_codes(operator.worker_id)
+        """Make operator.certifications equal the worker's valid credential
+        codes, and operator.certification_scopes their equipment and site
+        scopes. Returns True (and announces) only when the codes changed."""
+        worker = self.service.get_worker(operator.worker_id)
+        codes = worker["valid_credential_codes"]
+        operator.certification_scopes = credential_scopes(worker)
         if codes == list(operator.certifications):
             return False
         previous = list(operator.certifications)

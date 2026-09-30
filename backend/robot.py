@@ -102,6 +102,10 @@ class Robot:
         self.low_battery_warned = False
         self.blocked_by: Optional[str] = None
         self.last_error: Optional[str] = None
+        # A physical safety wait (e.g. "PERSON_ON_CROSSING") and the tick it
+        # began — see Simulator._safety_wait. None when not waiting for safety.
+        self.wait_reason: Optional[str] = None
+        self.wait_started_tick: Optional[int] = None
 
         # Predictive maintenance (see backend/maintenance.py): the
         # odometer/charge-cycle reading at the last maintenance sign-off
@@ -148,6 +152,9 @@ class Robot:
         self.planned_path = []
         self.target_position = None
         self.target_name = None
+        # No route, nothing to wait on: the next route re-checks from scratch.
+        self.wait_reason = None
+        self.wait_started_tick = None
 
     def set_path(self, path: List[Cell], target_name: Optional[str] = None) -> None:
         self.current_path = list(path)
@@ -278,6 +285,7 @@ class Robot:
             "battery_consumed": round(self.battery_consumed, 1),
             "replan_count": self.replan_count,
             "blocked_by": self.blocked_by,
+            "wait_reason": self.wait_reason,
             "last_error": self.last_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,

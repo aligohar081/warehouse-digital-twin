@@ -49,6 +49,18 @@ class Operator:
         # same shift state.
         self.shift_start_hour: Optional[int] = shift_start_hour
         self.shift_end_hour: Optional[int] = shift_end_hour
+        # Where the person is on the floor (backend/people.py): a zone key, or
+        # None when off the floor. While walking to `transit_to` (until
+        # `transit_until_tick`) `zone` still names the zone they left and they
+        # are in transit between the two; only a walk that crosses the
+        # pedestrian walkway strip counts as "on the walkway" (people.on_walkway).
+        self.zone: Optional[str] = None
+        self.transit_to: Optional[str] = None
+        self.transit_until_tick: Optional[int] = None
+        # {code: {"equipment": [...], "site": [...]}} for each valid credential,
+        # synced from the workforce record with `certifications`. An empty list
+        # means that credential is unrestricted in that dimension.
+        self.certification_scopes: Dict[str, Dict[str, List[str]]] = {}
         self.created_at = now_iso()
         self.updated_at = now_iso()
 
@@ -59,8 +71,14 @@ class Operator:
     def set_status(self, status: OperatorStatus) -> OperatorStatus:
         previous = self.status
         self.status = status
+        if status == OperatorStatus.OFF_DUTY:  # an off-duty person is not on the floor
+            self.zone = self.transit_to = self.transit_until_tick = None
         self.touch()
         return previous
+
+    @property
+    def in_transit(self) -> bool:
+        return self.transit_to is not None
 
     @property
     def is_available(self) -> bool:
@@ -99,6 +117,11 @@ class Operator:
             "failed_tasks": self.failed_tasks,
             "shift_start_hour": self.shift_start_hour,
             "shift_end_hour": self.shift_end_hour,
+            "zone": self.zone,
+            "transit_to": self.transit_to,
+            "transit_until_tick": self.transit_until_tick,
+            "certification_scopes": {code: {key: list(values) for key, values in scope.items()}
+                                     for code, scope in self.certification_scopes.items()},
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -120,4 +143,8 @@ class Operator:
         operator.created_at = data.get("created_at", operator.created_at)
         operator.updated_at = data.get("updated_at", operator.updated_at)
         operator.worker_id = data.get("worker_id")
+        operator.zone = data.get("zone")
+        operator.transit_to = data.get("transit_to")
+        operator.transit_until_tick = data.get("transit_until_tick")
+        operator.certification_scopes = dict(data.get("certification_scopes") or {})
         return operator

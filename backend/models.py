@@ -102,6 +102,8 @@ CONFIG: Dict[str, Any] = {
     # and the speed a loaded forklift or heavy hauler keeps (× its top speed).
     "CELL_SIZE_M": 1.5,
     "LOADED_SPEED_FACTOR": 0.7,
+    # People on the new floor (backend/people.py) walk between zones at this pace.
+    "PERSON_WALK_SPEED_MPS": 1.2,
 }
 
 
@@ -503,6 +505,10 @@ class LogCategory(str, enum.Enum):
     CI = "CI"
     DIGITAL_TWIN = "DIGITAL_TWIN"
     FLEET = "FLEET"
+    # Multi-embodiment floor: people, orders, stock and equipment; and the
+    # physical safety waits robots obey around people.
+    OPERATIONS = "OPERATIONS"
+    SAFETY = "SAFETY"
 
 
 class EventType(str, enum.Enum):
@@ -580,6 +586,12 @@ class EventType(str, enum.Enum):
     INVENTORY_CHANGED = "INVENTORY_CHANGED"
     OTA_JOB_UPDATED = "OTA_JOB_UPDATED"
     OPERATOR_CERTIFICATIONS_CHANGED = "OPERATOR_CERTIFICATIONS_CHANGED"
+    # A robot started / stopped a physical safety wait (a WAITING with a
+    # wait_reason, e.g. PERSON_ON_CROSSING) — see Simulator._safety_wait.
+    ROBOT_SAFETY_WAIT = "ROBOT_SAFETY_WAIT"
+    ROBOT_SAFETY_RESUMED = "ROBOT_SAFETY_RESUMED"
+    # A person finished walking from one zone to another (backend/people.py).
+    PERSON_MOVED = "PERSON_MOVED"
 
 
 class ActionType(str, enum.Enum):
