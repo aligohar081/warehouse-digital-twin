@@ -149,8 +149,73 @@ def test_best_cell_in_zone_respects_the_profile(dc, nav):
     assert nav.best_cell_in_zone(dc.zones["tote_aisle_1"].cells, (10, 3), profile=AMR) is not None
 
 
+def _bfs_shortest_path_length(warehouse: Warehouse, start, goal) -> int:
+    """Independent BFS oracle using only is_inside and is_walkable.
+    Returns the shortest path length (number of cells after start), or -1 if unreachable.
+    """
+    from collections import deque
+    if not warehouse.is_walkable(*start):
+        return -1
+    if start == goal and warehouse.is_walkable(*goal):
+        return 0
+    seen = {start}
+    queue = deque([(start, 0)])
+    while queue:
+        (x, y), dist = queue.popleft()
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if (nx, ny) in seen or not warehouse.is_inside(nx, ny):
+                continue
+            if warehouse.is_walkable(nx, ny):
+                if (nx, ny) == goal:
+                    return dist + 1
+                seen.add((nx, ny))
+                queue.append(((nx, ny), dist + 1))
+    return -1
+
+
 def test_classic_routing_is_unchanged_without_a_profile():
+    """Verify classic routing against an independent BFS oracle built from is_walkable."""
     classic = Warehouse()
     nav = NavigationEngine(classic)
-    assert nav.find_path((3, 8), (16, 8)) == nav.find_path((3, 8), (16, 8), profile=None, layer=GROUND)
-    assert classic.neighbors((8, 7)) == classic.neighbors((8, 7), None)
+
+    # Test cases: at least 3 pairs, including one routing around shelving
+    test_cases = [
+        ((3, 8), (16, 8), "straight path"),      # straight aisle
+        ((3, 7), (16, 9), "route around shelf"),  # must navigate around shelving
+        ((5, 2), (15, 12), "across warehouse"),   # long path
+    ]
+
+    for start, goal, description in test_cases:
+        oracle_length = _bfs_shortest_path_length(classic, start, goal)
+        assert oracle_length >= 0, f"Oracle: no path for {description}"
+
+        path = nav.find_path(start, goal, allow_goal_adjacent=False, profile=None, layer=GROUND)
+        assert path is not None, f"find_path failed for {description}"
+        assert path[-1] == goal, f"Path doesn't reach goal for {description}"
+        assert len(path) == oracle_length, f"Path length {len(path)} != oracle {oracle_length} for {description}"
+
+        # Check all cells after start are walkable
+        for cell in path:
+            assert classic.is_walkable(*cell), f"Cell {cell} not walkable in {description}"
+
+        # Check consecutive cells are 4-adjacent
+        for i in range(len(path) - 1):
+            x1, y1 = path[i]
+            x2, y2 = path[i + 1]
+            assert abs(x2 - x1) + abs(y2 - y1) == 1, f"Non-adjacent cells {path[i]}, {path[i+1]} in {description}"
+
+    # Verify neighbors() matches plain 4-connected check for several cells
+    test_cells = [
+        (8, 7),   # interior
+        (3, 1),   # near edge
+        (9, 6),   # next to shelf
+    ]
+    for cell in test_cells:
+        x, y = cell
+        expected = {
+            (nx, ny)
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+            if classic.is_inside(nx, ny) and classic.is_walkable(nx, ny)
+        }
+        actual = set(classic.neighbors(cell))
+        assert actual == expected, f"neighbors({cell}) mismatch: {actual} != {expected}"
