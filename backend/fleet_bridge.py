@@ -150,10 +150,13 @@ class FleetBridge:
                     self.twin.logger.warning(
                         LogCategory.FLEET,
                         f"{robot.name}: asset {robot.asset_id} can't be re-bound ({exc}) — commissioning a new one")
-                    model = self.service.get_robot(robot.asset_id)["model_code"]
+                    failed, robot.asset_id = robot.asset_id, None
+                    model = self.service.get_robot(failed)["model_code"]
+                    if self.service.model_class(model) != robot.robot_class:  # the id now names another class
+                        model = CLASS_DEFAULT_MODELS.get(robot.robot_class)
                     # Robots not yet re-bound still carry their saved asset_id, so none of those is "spare".
-                    robot.asset_id = None
-                    self.bind_new_robot(robot, asset_id=self.spare_floor_asset(model), adopt=False)
+                    spare = self.spare_floor_asset(model, exclude={failed}) if model else None
+                    self.bind_new_robot(robot, asset_id=spare, adopt=False)
                 continue
             missing, robot.asset_id = robot.asset_id, None
             self.bind_new_robot(robot, adopt=False)

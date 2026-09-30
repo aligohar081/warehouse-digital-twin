@@ -186,6 +186,19 @@ def test_load_state_survives_a_decommissioned_asset(twin, tmp_path):
                for r in twin.logger.records)
 
 
+def test_load_state_survives_an_asset_id_reused_by_another_class(twin, tmp_path):
+    reused = twin.add_robot(name="Lifter", robot_class="FORKLIFT").asset_id
+    path = twin.save_state(str(tmp_path / "state.json"))
+    twin.reset()  # reseeds the inventory, so commissioned asset ids start over
+    assert twin.add_robot(name="Runner", robot_class="AMR").asset_id == reused  # the id now names an AMR
+    twin.load_state(path)  # must not raise or leave the twin half-loaded
+    lifter = twin.find_robot("Lifter")
+    assert lifter.asset_id and lifter.asset_id != reused
+    assert twin.inventory.get_robot(lifter.asset_id)["model"]["embodiment_class"] == "FORKLIFT"
+    assert twin.find_robot("Robo-01").asset_id == "AST-000101"
+    assert twin.find_operator("Sam").worker_id == "E-10001"
+
+
 # --------------------------------------------------------------------------- #
 # Runtime effects (Simulator.tick → FleetBridge.on_tick)
 # --------------------------------------------------------------------------- #
