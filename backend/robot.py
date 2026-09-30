@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
+from .embodiment import GROUND, MobilityProfile
 from .models import (
     APPROVED_FIRMWARE_VERSIONS,
     CONFIG,
@@ -74,6 +75,12 @@ class Robot:
         # The asset lifecycle status that made the fleet bridge stop this
         # robot (e.g. MAINTENANCE), so it only ever resumes robots it stopped.
         self.fleet_hold: Optional[str] = None
+        # What this robot's body lets it do (backend/embodiment.py), from its
+        # bound asset's catalog model. Set by the fleet bridge on a layered
+        # floor; None on classic, where every robot drives as it always has.
+        self.mobility: Optional[MobilityProfile] = None
+        # The layer the robot occupies and routes on. Only drones leave GROUND.
+        self.layer: str = GROUND
 
         # Statistics
         self.completed_tasks = 0
@@ -158,8 +165,12 @@ class Robot:
     # Motion & energy
     # ------------------------------------------------------------------ #
     def ready_to_step(self, dt: float) -> bool:
-        """Accumulate travel credit; returns True when one cell may be traversed."""
-        self.move_accumulator += self.speed * dt
+        """Accumulate travel credit; returns True when one cell may be traversed.
+        A loaded forklift or heavy hauler travels at LOADED_SPEED_FACTOR."""
+        speed = self.speed
+        if self.carrying_box and self.mobility is not None and self.mobility.slows_when_loaded:
+            speed *= CONFIG["LOADED_SPEED_FACTOR"]
+        self.move_accumulator += speed * dt
         if self.move_accumulator >= 1.0:
             self.move_accumulator -= 1.0
             return True
@@ -236,6 +247,7 @@ class Robot:
             "component_firmware": dict(self.component_firmware),
             "ota_installing": self.ota_installing,
             "fleet_hold": self.fleet_hold,
+            "mobility": self.mobility.to_dict() if self.mobility is not None else None,
             # Raw baselines, for save/load round-tripping...
             "maintenance_baseline_distance": self.maintenance_baseline_distance,
             "maintenance_baseline_charges": self.maintenance_baseline_charges,

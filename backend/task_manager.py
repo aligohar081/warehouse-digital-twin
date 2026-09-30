@@ -30,6 +30,7 @@ from .models import (
     now_iso,
 )
 from .eligibility import agent_eligibility, operator_eligibility, robot_eligibility
+from .embodiment import GROUND
 from .llm import narrate
 from .task_planner import PlanningError
 
@@ -968,12 +969,14 @@ class TaskManager:
             TaskType.MIXED_MAINTENANCE_MISSION,
             TaskType.BATCH_DELIVER,
         )
+        # A named robot's targets are resolved for its own body and layer.
+        route: Dict[str, Any] = {"profile": robot.mobility, "layer": robot.layer} if robot else {}
         if needs_destination:
             if not task.destination:
                 return False, "This task type needs a destination"
             origin = robot.position if robot else next(iter(twin.robots.values())).position
             try:
-                planner.resolve_target(task.destination, origin)
+                planner.resolve_target(task.destination, origin, **route)
             except PlanningError as exc:
                 return False, str(exc)
 
@@ -981,36 +984,38 @@ class TaskManager:
         if task.source:
             try:
                 origin = robot.position if robot else next(iter(twin.robots.values())).position
-                planner.resolve_target(task.source, origin)
+                planner.resolve_target(task.source, origin, **route)
             except PlanningError as exc:
                 return False, f"Invalid source: {exc}"
 
         # Reachability
         if task.type != TaskType.CHARGE_ROBOT and robot is not None:
             try:
-                target_cell, _ = self._primary_target(task, robot.position)
+                target_cell, _ = self._primary_target(task, robot.position, **route)
             except PlanningError as exc:
                 return False, str(exc)
-            if target_cell is not None and not twin.navigation.path_exists(robot.position, target_cell):
+            if target_cell is not None and not twin.navigation.path_exists(robot.position, target_cell, **route):
                 return False, f"No path from {robot.name} to ({target_cell[0]},{target_cell[1]})"
 
         return True, None
 
-    def _primary_target(self, task: Task, origin: Cell) -> Tuple[Optional[Cell], str]:
+    def _primary_target(self, task: Task, origin: Cell, profile: Optional[Any] = None,
+                        layer: str = GROUND) -> Tuple[Optional[Cell], str]:
         planner = self.twin.planner
+        route = {"profile": profile, "layer": layer}
         if task.type in (TaskType.PICK_AND_DELIVER, TaskType.PICK_BOX, TaskType.MOVE_BOX):
-            return planner.resolve_target(task.box_id, origin)
+            return planner.resolve_target(task.box_id, origin, **route)
         if task.type == TaskType.BATCH_DELIVER:
-            return planner.resolve_target(task.box_ids[0], origin) if task.box_ids else (None, "")
+            return planner.resolve_target(task.box_ids[0], origin, **route) if task.box_ids else (None, "")
         if task.type == TaskType.DELIVER_BOX:
             robot = self.twin.find_robot(task.robot_id) if task.robot_id else None
             if robot is not None and robot.carrying_box == task.box_id:
-                return planner.resolve_target(task.destination, origin)
-            return planner.resolve_target(task.box_id, origin)
+                return planner.resolve_target(task.destination, origin, **route)
+            return planner.resolve_target(task.box_id, origin, **route)
         if task.type in (TaskType.MOVE_ROBOT, TaskType.MIXED_MAINTENANCE_MISSION):
-            return planner.resolve_target(task.destination, origin)
+            return planner.resolve_target(task.destination, origin, **route)
         if task.type == TaskType.CHARGE_ROBOT:
-            return planner.resolve_target("charging_station", origin)
+            return planner.resolve_target("charging_station", origin, **route)
         return None, ""
 
     # ------------------------------------------------------------------ #
@@ -1079,7 +1084,8 @@ class TaskManager:
                 continue
             distance = None
             if target_cell is not None:
-                distance = twin.navigation.distance(robot.position, target_cell)
+                distance = twin.navigation.distance(robot.position, target_cell,
+                                                    profile=robot.mobility, layer=robot.layer)
                 if distance is None:
                     continue
             distance = distance if distance is not None else 0

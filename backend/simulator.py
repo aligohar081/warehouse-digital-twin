@@ -337,12 +337,14 @@ class Simulator:
         if extra_blocked:
             blocked |= extra_blocked
         path = twin.navigation.find_path(
-            robot.position, target, blocked=blocked, allow_goal_adjacent=False, is_replan=replan
+            robot.position, target, blocked=blocked, allow_goal_adjacent=False, is_replan=replan,
+            profile=robot.mobility, layer=robot.layer,
         )
         if path is None:
             # Is the route only blocked by robots, or genuinely impossible?
             static_path = twin.navigation.find_path(
-                robot.position, target, allow_goal_adjacent=False
+                robot.position, target, allow_goal_adjacent=False,
+                profile=robot.mobility, layer=robot.layer,
             )
             if static_path is None:
                 twin.events.emit(
@@ -445,7 +447,7 @@ class Simulator:
         occupied = twin.other_robot_cells(robot.id)
         options = [
             cell
-            for cell in twin.warehouse.neighbors(robot.position)
+            for cell in twin.warehouse.neighbors(robot.position, robot.mobility, robot.layer)
             if cell not in occupied and cell != blocker.position
         ]
         if not options:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .embodiment import GROUND, MobilityProfile
 from .models import (
     CONFIG,
     Action,
@@ -38,8 +39,11 @@ class TaskPlanner:
         origin: Cell,
         blocked: Optional[Set[Cell]] = None,
         prefer_free: bool = False,
+        profile: Optional[MobilityProfile] = None,
+        layer: str = GROUND,
     ) -> Tuple[Cell, str]:
-        """Turn a location specification into a concrete grid cell."""
+        """Turn a location specification into a concrete grid cell that a robot
+        with `profile` can use on `layer` (no profile: any drivable cell)."""
         warehouse = self.twin.warehouse
         nav = self.twin.navigation
         blocked = set(blocked or ())
@@ -63,7 +67,8 @@ class TaskPlanner:
         if cell is not None:
             if not warehouse.is_inside(*cell):
                 raise PlanningError(f"Coordinates {cell} are outside the warehouse")
-            resolved = cell if warehouse.is_walkable(*cell) else warehouse.nearest_walkable(cell, blocked)
+            resolved = cell if warehouse.passable(cell, profile, layer) \
+                else warehouse.nearest_walkable(cell, blocked, profile=profile, layer=layer)
             if resolved is None:
                 raise PlanningError(f"No drivable cell near {cell}")
             return resolved, warehouse.label_for_cell(resolved)
@@ -75,7 +80,8 @@ class TaskPlanner:
             if prefer_free:
                 occupied = {b.position for b in self.twin.boxes.values()}
                 prefer = {c for c in zone.cells if c not in occupied}
-            chosen = nav.best_cell_in_zone(zone.cells, origin, blocked=blocked, prefer=prefer)
+            chosen = nav.best_cell_in_zone(zone.cells, origin, blocked=blocked, prefer=prefer,
+                                           profile=profile, layer=layer)
             if chosen is None:
                 raise PlanningError(f"{zone.label} is not reachable right now")
             return chosen, zone.label
@@ -96,7 +102,7 @@ class TaskPlanner:
         origin = robot.position
         total_cells = 0
         for waypoint in waypoints:
-            distance = nav.distance(origin, waypoint)
+            distance = nav.distance(origin, waypoint, profile=robot.mobility, layer=robot.layer)
             if distance is None:
                 distance = abs(origin[0] - waypoint[0]) + abs(origin[1] - waypoint[1])
             total_cells += distance
@@ -119,6 +125,8 @@ class TaskPlanner:
         )
 
         blocked = self.twin.other_robot_cells(robot.id)
+        # Every target is resolved for this robot's own body and layer.
+        route = {"profile": robot.mobility, "layer": robot.layer}
         actions: List[Action] = []
         waypoints: List[Cell] = []
         handling_ops = 0
@@ -127,9 +135,9 @@ class TaskPlanner:
             box = self.twin.find_box(task.box_id)
             if box is None:
                 raise PlanningError(f"Box '{task.box_id}' does not exist")
-            pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked)
+            pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked, **route)
             drop_cell, drop_label = self.resolve_target(
-                task.destination, pick_cell, blocked, prefer_free=True
+                task.destination, pick_cell, blocked, prefer_free=True, **route
             )
             logger.info(
                 LogCategory.PLANNER,
@@ -163,9 +171,9 @@ class TaskPlanner:
                 box = self.twin.find_box(box_id)
                 if box is None:
                     raise PlanningError(f"Box '{box_id}' does not exist")
-                pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked)
+                pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked, **route)
                 drop_cell, drop_label = self.resolve_target(
-                    task.destination, pick_cell, blocked, prefer_free=True
+                    task.destination, pick_cell, blocked, prefer_free=True, **route
                 )
                 actions.extend([
                     Action(ActionType.NAVIGATE, f"Navigate to {box.name}", pick_cell, pick_label, box.id),
@@ -177,7 +185,7 @@ class TaskPlanner:
                 handling_ops += 2
 
         elif task.type == TaskType.MOVE_ROBOT:
-            cell, label = self.resolve_target(task.destination, robot.position, blocked)
+            cell, label = self.resolve_target(task.destination, robot.position, blocked, **route)
             actions = [Action(ActionType.NAVIGATE, f"Navigate to {label}", cell, label)]
             waypoints = [cell]
 
@@ -187,7 +195,7 @@ class TaskPlanner:
             # the operator's sign-off are logged by TaskManager
             # (start_task/complete_task), not planned as actions here —
             # they're not physical steps a robot executes.
-            cell, label = self.resolve_target(task.destination, robot.position, blocked)
+            cell, label = self.resolve_target(task.destination, robot.position, blocked, **route)
             actions = [Action(ActionType.NAVIGATE, f"Inspect {label}", cell, label)]
             waypoints = [cell]
 
@@ -195,7 +203,7 @@ class TaskPlanner:
             box = self.twin.find_box(task.box_id)
             if box is None:
                 raise PlanningError(f"Box '{task.box_id}' does not exist")
-            pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked)
+            pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked, **route)
             actions = [
                 Action(ActionType.NAVIGATE, f"Navigate to {box.name}", pick_cell, pick_label, box.id),
                 Action(ActionType.PICK, f"Pick {box.name}", pick_cell, pick_label, box.id),
@@ -209,7 +217,7 @@ class TaskPlanner:
                 raise PlanningError(f"Box '{task.box_id}' does not exist")
             if robot.carrying_box == box.id:
                 drop_cell, drop_label = self.resolve_target(
-                    task.destination, robot.position, blocked, prefer_free=True
+                    task.destination, robot.position, blocked, prefer_free=True, **route
                 )
                 actions = [
                     Action(ActionType.NAVIGATE, f"Carry {box.name} to {drop_label}", drop_cell, drop_label, box.id),
@@ -218,9 +226,9 @@ class TaskPlanner:
                 waypoints = [drop_cell]
                 handling_ops = 1
             else:
-                pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked)
+                pick_cell, pick_label = self.resolve_target(box.id, robot.position, blocked, **route)
                 drop_cell, drop_label = self.resolve_target(
-                    task.destination, pick_cell, blocked, prefer_free=True
+                    task.destination, pick_cell, blocked, prefer_free=True, **route
                 )
                 actions = [
                     Action(ActionType.NAVIGATE, f"Navigate to {box.name}", pick_cell, pick_label, box.id),
@@ -232,7 +240,7 @@ class TaskPlanner:
                 handling_ops = 2
 
         elif task.type == TaskType.CHARGE_ROBOT:
-            cell, label = self.resolve_target("charging_station", robot.position, blocked)
+            cell, label = self.resolve_target("charging_station", robot.position, blocked, **route)
             actions = [
                 Action(ActionType.NAVIGATE, f"Navigate to {label}", cell, label),
                 Action(ActionType.CHARGE, "Charge to 100%", cell, label),
@@ -248,7 +256,7 @@ class TaskPlanner:
             task.battery_estimate = required
             if robot.battery < required:
                 charge_cell, charge_label = self.resolve_target(
-                    "charging_station", robot.position, blocked
+                    "charging_station", robot.position, blocked, **route
                 )
                 logger.warning(
                     LogCategory.BATTERY,

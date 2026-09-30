@@ -17,6 +17,7 @@ from __future__ import annotations
 import random
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from .embodiment import MobilityProfile
 from .inventory import InventoryService, NotFound, reseed
 from .inventory.catalog_data import CLASS_DEFAULT_MODELS
 from .inventory.core import SYSTEM
@@ -46,6 +47,19 @@ class FleetBridge:
             reseed(self.service, demo=demo)
             self._ota_ticks.clear()
             self._battery_base.clear()
+
+    # ---- embodiment ------------------------------------------------------ #
+    def model_profile(self, model_code: str) -> MobilityProfile:
+        """The body a robot of catalog model `model_code` has (spec §5.1)."""
+        model = self.service.get_model(model_code)
+        return MobilityProfile.from_model(model["spec"], model["embodiment_class"])
+
+    def floor_profile(self, model_code: str) -> Optional[MobilityProfile]:
+        """The profile a robot of `model_code` moves by on this twin's floor:
+        None on classic, where every robot keeps today's behaviour."""
+        if self.twin.warehouse.layout_name == "classic":
+            return None
+        return self.model_profile(model_code)
 
     # ---- binding -------------------------------------------------------- #
     def robot_for_asset(self, asset_id: Optional[str]) -> Optional[Any]:
@@ -101,6 +115,7 @@ class FleetBridge:
             )
             record = service.get_robot(change["aggregate_id"])
         robot.asset_id = record["asset_id"]
+        robot.mobility = self.floor_profile(record["model_code"])
         reported = record["reported"] or {}
         if adopt:
             robot.firmware_version = reported.get("software_version") or record["declared_software_version"]
@@ -216,7 +231,10 @@ class FleetBridge:
                   "subject_id": change.get("subject_id")},
         )
         if change["aggregate_type"] == "ROBOT_ASSET":
-            if robot is not None:  # UPDATING is derived from the jobs, never hand-set per job
+            if robot is not None:
+                # The body follows the asset's catalog model on every asset change.
+                robot.mobility = self.floor_profile(change["after"]["model_code"])
+                # UPDATING is derived from the jobs, never hand-set per job.
                 installing = any(j["state"] == "INSTALLING" for j in change["after"]["active_ota_jobs"])
                 if installing != robot.ota_installing:
                     robot.ota_installing = installing

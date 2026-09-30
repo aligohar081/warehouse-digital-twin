@@ -197,6 +197,22 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
             "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX", "CHARGE_ROBOT",
         ],
     },
+    # Fixed pack-cell arm: it never drives, and being mains-powered it never
+    # actually needs CHARGE_ROBOT — but the rule above still applies. Only a
+    # floor with fixed stations (distribution_center) can hold one.
+    "ARM": {
+        "label": "Arm (fixed pack cell)",
+        "speed": 0.7,
+        "allowed_task_types": ["CHARGE_ROBOT"],
+    },
+    "HUMANOID": {
+        "label": "Humanoid (supervised, general purpose)",
+        "speed": 0.8,
+        "allowed_task_types": [
+            "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX",
+            "MOVE_ROBOT", "CHARGE_ROBOT",
+        ],
+    },
 }
 
 #: Every certification this project's toy trust-layer actually knows the

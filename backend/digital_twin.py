@@ -15,6 +15,7 @@ from typing import Any, Deque, Dict, List, Optional, Set
 from .agent import Agent
 from .box import Box
 from .event_system import EventSystem
+from .embodiment import MobilityProfile
 from .fleet_bridge import FleetBridge
 from .inventory import NotFound as InventoryNotFound
 from .inventory import open_inventory
@@ -305,14 +306,8 @@ class DigitalTwin:
             if self.find_robot(name) is not None:
                 raise ValueError(f"A robot called '{name}' already exists")
 
-            candidate = position or self.warehouse.resolve_zone("parking_area").cells[0]
-            if not self.warehouse.is_inside(*candidate):
-                raise ValueError(f"Position {candidate} is outside the warehouse")
-            occupied = set(self.robot_cells().keys())
-            spawn = candidate if (self.warehouse.is_walkable(*candidate) and candidate not in occupied) \
-                else self.warehouse.nearest_walkable(candidate, occupied)
-            if spawn is None:
-                raise ValueError("No free drivable cell available for a new robot")
+            if position is not None and not self.warehouse.is_inside(*position):
+                raise ValueError(f"Position {position} is outside the warehouse")
 
             # A robot class (see models.ROBOT_CLASS_PRESETS) is only a
             # convenience default applied at creation time — explicit
@@ -336,7 +331,20 @@ class DigitalTwin:
                     f"Unknown robot_class '{robot_class}' (known: {sorted(ROBOT_CLASS_PRESETS)})"
                 )
             preset = ROBOT_CLASS_PRESETS[normalized_class]
-            effective_speed = speed if speed is not None else preset.get("speed")
+
+            # The robot's body (backend/embodiment.py), read from its catalog
+            # model, decides where it may stand. On a layered floor it also
+            # decides how the robot routes and how fast it drives; on classic
+            # the robot keeps its preset speed and today's routing.
+            model = self._model_for(normalized_class, model_code, asset_id)
+            body = self.fleet.model_profile(model) if model else None
+            mobility = body if self.layout_name != "classic" else None
+            spawn = self._spawn_cell(position, body, mobility)
+
+            if speed is not None:
+                effective_speed = speed
+            else:
+                effective_speed = mobility.speed_cells_s if mobility is not None else preset.get("speed")
             effective_allowed = allowed_task_types if allowed_task_types else preset.get("allowed_task_types")
 
             robot = Robot(
@@ -355,6 +363,42 @@ class DigitalTwin:
             position=cell_dict(spawn),
         )
         return robot
+
+    def _model_for(self, robot_class: str, model_code: Optional[str], asset_id: Optional[str]) -> Optional[str]:
+        """The catalog model a new robot will be bound as (see FleetBridge.bind_new_robot)."""
+        if model_code:
+            return model_code
+        if asset_id and self.inventory.has_asset(asset_id):
+            return self.inventory.get_robot(asset_id)["model_code"]
+        return CLASS_DEFAULT_MODELS.get(robot_class)
+
+    def _spawn_cell(self, position: Optional[Cell], body: Optional[MobilityProfile],
+                    mobility: Optional[MobilityProfile]) -> Cell:
+        """Where a new robot starts. Fixed equipment goes on a free station
+        cell of its own; anything else on the requested (or default) cell, or
+        the nearest free cell its floor profile may use."""
+        occupied = set(self.robot_cells())
+        if body is not None and body.is_fixed:
+            stations = self.warehouse.fixed_stations
+            if not stations:
+                raise ValueError(f"A {body.embodiment_class} is fixed equipment and the "
+                                 f"{self.layout_name} floor has no station for it")
+            cell = tuple(position) if position else next((c for c in stations if c not in occupied), None)
+            if cell is None:
+                raise ValueError("Every fixed station is already taken")
+            if cell not in stations:
+                raise ValueError(f"({cell[0]},{cell[1]}) is not a fixed station (stations: {sorted(stations)})")
+            if cell in occupied:
+                raise ValueError(f"The station at ({cell[0]},{cell[1]}) is already taken")
+            return cell
+        home = "drone_pad" if mobility is not None and mobility.is_air else "parking_area"
+        candidate = position or self.warehouse.resolve_zone(home).cells[0]
+        if self.warehouse.passable(candidate, mobility) and candidate not in occupied:
+            return candidate
+        spawn = self.warehouse.nearest_walkable(candidate, occupied, profile=mobility)
+        if spawn is None:
+            raise ValueError("No free drivable cell available for a new robot")
+        return spawn
 
     def set_robot_capabilities(self, robot_id: str, allowed_task_types: Optional[List[str]]) -> Robot:
         """(Re)configure which TaskType values `robot_id` may be assigned.
@@ -591,7 +635,7 @@ class DigitalTwin:
             robot.carrying_box = None
         occupied = {r.position for r in self.robots.values() if r.id != robot.id}
         home = robot.home if robot.home not in occupied else self.warehouse.nearest_walkable(
-            robot.home, occupied
+            robot.home, occupied, profile=robot.mobility
         )
         robot.position = home or robot.position
         robot.battery = 100.0
