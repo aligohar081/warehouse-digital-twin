@@ -17,7 +17,8 @@ def release_id_for(kind: str, target_code: str, version: str) -> str:
 
 
 def make_release_row(kind: str, target_code: str, version: str, released_at: str, status: str,
-                     min_hw_rev: Optional[str], supplier_name: str) -> Dict[str, Any]:
+                     min_hw_rev: Optional[str], supplier_name: str,
+                     known_issues: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     row = {
         "release_id": release_id_for(kind, target_code, version),
         "kind": kind,
@@ -29,6 +30,7 @@ def make_release_row(kind: str, target_code: str, version: str, released_at: str
         "status": status,
     }
     row["sbom_json"], row["sbom_sha256"] = serialize_sbom(build_sbom(row, supplier_name))
+    row["known_issues"] = list(known_issues or [])  # after the SBOM: it is not part of the bill of materials
     return row
 
 

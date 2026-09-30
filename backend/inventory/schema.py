@@ -10,13 +10,13 @@ from __future__ import annotations
 import secrets
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 JSON_COLUMNS = frozenset({
     "hw_revisions", "spec", "safety_standards", "component_layout",
     "role_codes", "site_codes", "issuer_types", "scope_dimensions",
     "equipment_scope", "task_scope", "site_scope",
-    "component_firmware", "battery", "diff", "after",
+    "component_firmware", "battery", "diff", "after", "known_issues",
 })
 
 DDL = """
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS software_release (
     status      TEXT NOT NULL,
     sbom_json   TEXT NOT NULL,
     sbom_sha256 TEXT NOT NULL,
+    known_issues TEXT NOT NULL DEFAULT '[]',
     UNIQUE (kind, target_code, version)
 );
 CREATE TABLE IF NOT EXISTS robot_asset (

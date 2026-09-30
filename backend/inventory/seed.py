@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from .catalog import make_release_row
+from .catalog import make_release_row, release_id_for
 from .catalog_data import (
     AI_POLICY_RELEASES, COMPONENT_FIRMWARE_MIN_HW, COMPONENT_FIRMWARE_VERSIONS,
-    CREDENTIAL_DEFINITIONS, EXTRA_ROBOT_SOFTWARE_RELEASES, MANUFACTURERS, PART_MODELS,
+    CREDENTIAL_DEFINITIONS, EXTRA_ROBOT_SOFTWARE_RELEASES, KNOWN_ISSUES, MANUFACTURERS, PART_MODELS,
     ROBOT_MODELS, ROBOT_SOFTWARE_MIN_HW, ROBOT_SOFTWARE_RELEASES,
 )
 from .documents import iso
@@ -23,6 +23,9 @@ def seed_catalog(service) -> None:
     def released(days: int) -> str:
         return iso(now - timedelta(days=days))
 
+    def issues(kind: str, target_code: str, version: str):
+        return KNOWN_ISSUES.get(release_id_for(kind, target_code, version), [])
+
     with service.transaction():
         for row in MANUFACTURERS:
             store.insert("manufacturer", row)
@@ -37,7 +40,8 @@ def seed_catalog(service) -> None:
             for version, days, status in ROBOT_SOFTWARE_RELEASES + EXTRA_ROBOT_SOFTWARE_RELEASES.get(code, []):
                 store.insert("software_release", make_release_row(
                     "ROBOT_SOFTWARE", code, version, released(days), status,
-                    ROBOT_SOFTWARE_MIN_HW.get((code, version)), model_supplier[code]))
+                    ROBOT_SOFTWARE_MIN_HW.get((code, version)), model_supplier[code],
+                    issues("ROBOT_SOFTWARE", code, version)))
             for version, days, status in AI_POLICY_RELEASES.get(code, []):
                 store.insert("software_release", make_release_row(
                     "AI_POLICY_MODEL", code, version, released(days), status, None, model_supplier[code]))
@@ -45,4 +49,5 @@ def seed_catalog(service) -> None:
             for version, days, status in ((previous, 300, "SUPERSEDED"), (current, 60, "CURRENT")):
                 store.insert("software_release", make_release_row(
                     "COMPONENT_FIRMWARE", part_number, version, released(days), status,
-                    COMPONENT_FIRMWARE_MIN_HW.get((part_number, version)), part_supplier[part_number]))
+                    COMPONENT_FIRMWARE_MIN_HW.get((part_number, version)), part_supplier[part_number],
+                    issues("COMPONENT_FIRMWARE", part_number, version)))

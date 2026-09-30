@@ -169,7 +169,10 @@ class DigitalTwin:
 
         # Fleet-manager + workforce source systems (backend/inventory) and the
         # bridge that binds every live robot/operator to its record.
-        self.inventory = open_inventory(inventory_path, demo=demo, settings=lambda: CONFIG)
+        # Seeded under the profile named after the floor: "classic" keeps A's
+        # two-site seed, "distribution_center" puts everyone at WH-01.
+        self.inventory = open_inventory(inventory_path, demo=demo, settings=lambda: CONFIG,
+                                        profile=self.layout_name)
         self.fleet = FleetBridge(self, self.inventory)
 
         # The classic demo seed only fits the classic floor; the

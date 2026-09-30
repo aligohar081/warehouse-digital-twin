@@ -82,7 +82,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "GROUND", "clearance": "NARROW", "max_payload_kg": 50, "max_lift_m": 0.6,
         "max_shelf_level": 1, "max_speed_mps": 1.5, "footprint_mm": [700, 500], "mass_kg": 95,
         "ip_rating": "IP54", "battery": _battery("LFP", 1200, 8, 1.5), "box_kinds": ["TOTE", "ITEM"],
-        "supervision": None,
+        "supervision": None, "lift_speed_mps": 0.5, "grasp_s": 2.0, "place_s": 1.5,
     }, ["ANSI/A3 R15.08-1", "ISO 3691-4"], [
         ("compute", "LW-LC8"), ("safety_controller", "AC-SC2"), ("drive_left", "AC-DU1"),
         ("drive_right", "AC-DU1"), ("battery", "AC-B12"), ("lidar", "WT-L360"),
@@ -93,7 +93,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "GROUND", "clearance": "NARROW", "max_payload_kg": 0, "max_lift_m": 0,
         "max_shelf_level": 0, "max_speed_mps": 2.0, "footprint_mm": [600, 450], "mass_kg": 60,
         "ip_rating": "IP54", "battery": _battery("LFP", 1200, 10, 1.5), "box_kinds": [],
-        "supervision": None,
+        "supervision": None, "lift_speed_mps": 0.5,
     }, ["ANSI/A3 R15.08-1"], [
         ("compute", "LW-LC8"), ("safety_controller", "AC-SC2"), ("drive_left", "AC-DU1"),
         ("drive_right", "AC-DU1"), ("battery", "AC-B12"), ("lidar", "WT-L360"),
@@ -103,7 +103,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "GROUND", "clearance": "NARROW", "max_payload_kg": 30, "max_lift_m": 1.2,
         "max_shelf_level": 1, "max_speed_mps": 1.8, "footprint_mm": [800, 600], "mass_kg": 120,
         "ip_rating": "IP54", "battery": _battery("LFP", 1200, 7, 1.5), "box_kinds": ["TOTE", "ITEM"],
-        "supervision": None,
+        "supervision": None, "lift_speed_mps": 0.5, "grasp_s": 2.5, "place_s": 1.5,
     }, ["ANSI/A3 R15.08-1", "ISO 10218-1"], [
         ("compute", "LW-LC8"), ("safety_controller", "AC-SC2"), ("drive_left", "AC-DU1"),
         ("drive_right", "AC-DU1"), ("battery", "AC-B12"), ("lidar", "WT-L360"),
@@ -113,7 +113,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "GROUND", "clearance": "WIDE", "max_payload_kg": 1200, "max_lift_m": 4.5,
         "max_shelf_level": 4, "max_speed_mps": 1.2, "footprint_mm": [2100, 1100], "mass_kg": 1450,
         "ip_rating": "IP54", "battery": _battery("lead-acid", 14400, 7, 8), "box_kinds": ["PALLET"],
-        "supervision": None,
+        "supervision": None, "lift_speed_mps": 0.3, "grasp_s": 3.0, "place_s": 3.0,
     }, ["ISO 3691-4", "ANSI/ITSDF B56.5"], [
         ("compute", "LW-LC8"), ("safety_controller", "NW-SC4"), ("traction_drive", "NW-DU5"),
         ("battery", "NW-B24"), ("lidar", "WT-L360"), ("safety_scanner_front", "WT-SS2"),
@@ -124,7 +124,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "GROUND", "clearance": "WIDE", "max_payload_kg": 300, "max_lift_m": 0.3,
         "max_shelf_level": 0, "max_speed_mps": 1.0, "footprint_mm": [1400, 900], "mass_kg": 380,
         "ip_rating": "IP54", "battery": _battery("lead-acid", 14400, 9, 8), "box_kinds": ["TOTE", "PALLET"],
-        "supervision": None,
+        "supervision": None, "lift_speed_mps": 0.5, "grasp_s": 3.0, "place_s": 3.0,
     }, ["ISO 3691-4"], [
         ("compute", "LW-LC8"), ("safety_controller", "NW-SC4"), ("traction_drive", "NW-DU5"),
         ("battery", "NW-B24"), ("lidar", "WT-L360"), ("safety_scanner_front", "WT-SS2"),
@@ -134,7 +134,8 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "AIR", "clearance": None, "max_payload_kg": 0, "max_lift_m": 12,
         "max_shelf_level": 4, "max_speed_mps": 3.0, "footprint_mm": [450, 450], "mass_kg": 2.1,
         "ip_rating": "IP43", "battery": _battery("LiPo", 150, 0.37, 1.0), "box_kinds": [],
-        "flight_time_min": 22, "supervision": None,
+        "flight_time_min": 22, "supervision": None, "lift_speed_mps": 0.5,
+        "takeoff_s": 4.0, "land_s": 5.0, "scan_s": 3.0,
     }, ["IEC 62133-2"], [
         ("flight_controller", "CT-FC3"), ("compute", "LW-LC8"), ("battery", "CT-B150"),
         ("rotors", "CT-R4"), ("scanner", "WT-R1"), ("camera", "WT-D3"), ("imu", "WT-I9"),
@@ -143,6 +144,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "FIXED", "clearance": None, "max_payload_kg": 10, "reach_mm": 1300,
         "max_speed_mps": 1.0, "repeatability_mm": 0.05, "mass_kg": 33, "ip_rating": "IP54",
         "battery": None, "power": "mains 230 V", "box_kinds": ["ITEM"], "supervision": None,
+        "lift_speed_mps": 0.5, "grasp_s": 2.5, "place_s": 1.5,
     }, ["ISO 10218-1", "ISO/TS 15066"], [
         ("compute", "LW-LC16"), ("safety_controller", "FB-SC6"), ("joints", "FB-J6"),
         ("force_torque", "FB-FT6"), ("wrist_camera", "WT-D3"), ("gripper", "FB-G2"),
@@ -152,7 +154,7 @@ ROBOT_MODELS: List[Dict[str, Any]] = [
         "movement": "GROUND", "clearance": "NARROW", "max_payload_kg": 25, "max_lift_m": 1.8,
         "max_shelf_level": 2, "max_speed_mps": 1.2, "height_mm": 1750, "mass_kg": 70,
         "ip_rating": "IP44", "battery": _battery("NMC", 2000, 4, 2), "box_kinds": ["TOTE", "ITEM"],
-        "supervision": "humanoid_supervision",
+        "supervision": "humanoid_supervision", "lift_speed_mps": 0.5, "grasp_s": 3.0, "place_s": 2.0,
     }, ["ISO 12100", "ISO 13849-1"], [
         ("compute", "LW-LC16"), ("safety_controller", "TS-SC1"), ("actuators", "TS-A28"),
         ("battery", "TS-B20"), ("stereo_camera_left", "WT-D3"), ("stereo_camera_right", "WT-D3"),
@@ -197,6 +199,22 @@ COMPONENT_FIRMWARE_VERSIONS: Dict[str, Tuple[str, str]] = {
     "CT-FC3": ("4.4.0", "4.5.2"),
 }
 COMPONENT_FIRMWARE_MIN_HW: Dict[Tuple[str, str], str] = {("WT-L360", "2.0.1"): "B"}
+
+#: Known issues shipped with a release, keyed by release_id. Each effect is
+#: what that release does to the readings of one component type (the
+#: sensor models apply them — multi-embodiment spec §13.2).
+KNOWN_ISSUES: Dict[str, List[Dict[str, Any]]] = {
+    "AC-TR50:SW:2.2.1": [{
+        "code": "ODOMETRY_HEADING_DRIFT", "component_type": "DRIVE_UNIT",
+        "summary": "Wheel-odometry heading drifts 0.5 degrees per metre travelled",
+        "effect": {"heading_drift_deg_per_m": 0.5},
+    }],
+    "FB-FT6:FW:3.2.0": [{
+        "code": "FORCE_TORQUE_Z_OFFSET", "component_type": "FORCE_TORQUE",
+        "summary": "Force-torque firmware reports an 8 N offset on the z axis",
+        "effect": {"force_z_offset_n": 8.0},
+    }],
+}
 
 AI_POLICY_RELEASES: Dict[str, List[Tuple[str, int, str]]] = {
     "FB-CX10": [("grasp-3.1.0", 200, "SUPERSEDED"), ("grasp-3.2.0", 45, "CURRENT")],
