@@ -144,6 +144,7 @@ class Simulator:
             self._detect_collisions()
             self._auto_charge()
             self._check_maintenance()
+            self._tick_fleet()
             if twin.tick_count % CONFIG["AUTHORIZATION_CHECK_EVERY_TICKS"] == 0:
                 self._check_authorization_changes()
             if twin.tick_count % CONFIG["SHIFT_CHECK_EVERY_TICKS"] == 0:
@@ -820,6 +821,15 @@ class Simulator:
                     f"(shift {operator.shift_start_hour}-{operator.shift_end_hour})",
                     category=LogCategory.TASK,
                 )
+
+    def _tick_fleet(self) -> None:
+        """Inventory runtime (backend/fleet_bridge.py): OTA progress, robot
+        heartbeats and credential expiry. An inventory failure must never stop
+        the physical simulation, so it is logged rather than raised."""
+        try:
+            self.twin.fleet.on_tick(self.twin.tick_count)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            self.twin.logger.error(LogCategory.FLEET, f"Fleet bridge error: {exc!r}")
 
     # ------------------------------------------------------------------ #
     # Streaming

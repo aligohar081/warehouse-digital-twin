@@ -126,3 +126,159 @@ def test_load_state_survives_a_decommissioned_asset(twin, tmp_path):
     assert twin.find_operator("Sam").worker_id == "E-10001"
     assert any(r["category"] == "FLEET" and r["level"] == "WARNING" and "AST-000101" in r["message"]
                for r in twin.logger.records)
+
+
+# --------------------------------------------------------------------------- #
+# Runtime effects (Simulator.tick → FleetBridge.on_tick)
+# --------------------------------------------------------------------------- #
+import time
+from datetime import datetime, timedelta, timezone
+
+from backend.models import CONFIG, SimulationStatus
+from backend.simulator import Simulator
+
+
+@pytest.fixture
+def sim(twin):
+    simulator = Simulator(twin)
+    twin.simulation_status = SimulationStatus.RUNNING
+    return simulator
+
+
+def ticks(sim, count):
+    for _ in range(count):
+        sim.tick()
+
+
+def run_until(sim, predicate, max_ticks=400):
+    for _ in range(max_ticks):
+        if predicate():
+            return
+        sim.tick()
+    raise AssertionError("condition never became true")
+
+
+def job_state(twin, job_id):
+    return twin.inventory.get_ota_job(job_id)["state"]
+
+
+def observations(twin, asset_id):
+    return [c for c in twin.inventory.robot_history(asset_id) if c["aggregate_type"] == "ROBOT_OBSERVATION"]
+
+
+def test_heartbeat_reports_runtime_truth_only_when_it_changes(twin, sim):
+    every = CONFIG["FLEET_HEARTBEAT_EVERY_TICKS"]
+    ticks(sim, every * 3)
+    quiet = len(observations(twin, "AST-000101"))
+    ticks(sim, every * 3)
+    assert len(observations(twin, "AST-000101")) == quiet  # nothing changed, nothing logged
+    twin.find_robot("Robo-01").firmware_version = "0.9.0-beta"
+    ticks(sim, every)
+    record = twin.inventory.get_robot("AST-000101")
+    assert record["reported"]["software_version"] == "0.9.0-beta"
+    assert record["flags"]["software_mismatch"] and record["flags"]["running_unknown_software"]
+    assert record["reported"]["operational_mode"] == "IDLE"
+    assert not twin.inventory.get_robot("AST-000201")["flags"]["report_stale"]  # remote sites check in too
+
+
+def test_ota_runs_through_the_simulator_and_waits_for_an_idle_robot(twin, sim):
+    job = twin.fleet.mutate(twin.inventory.start_ota, "AST-000101", "AC-TR50:SW:2.2.0")["subject_id"]
+    robot = twin.find_robot("Robo-01")
+    twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": "Robo-01", "destination": "loading_zone"})
+    ticks(sim, CONFIG["OTA_DOWNLOAD_TICKS"] + 3)
+    assert robot.current_task is not None and job_state(twin, job) == "DOWNLOADING"  # waits while busy
+    run_until(sim, lambda: job_state(twin, job) == "INSTALLING")
+    assert robot.current_task is None and robot.ota_installing and not robot.is_available
+    run_until(sim, lambda: job_state(twin, job) == "REPORTED")
+    assert robot.firmware_version == "2.2.0" and not robot.ota_installing and robot.is_available
+    record = twin.inventory.get_robot("AST-000101")
+    assert record["reported"]["software_version"] == "2.2.0" and record["declared_software_version"] == "2.1.0"
+    twin.fleet.mutate(twin.inventory.verify_ota, job, verified_by="E-10003")
+    assert twin.inventory.get_robot("AST-000101")["flags"]["software_mismatch"] is False
+    assert any(e["event"] == "OTA_JOB_UPDATED" for e in twin.events.query(limit=500))
+
+
+def test_ota_failure_knob(twin, sim, monkeypatch):
+    monkeypatch.setitem(CONFIG, "OTA_FAILURE_RISK", 1.0)
+    job = twin.fleet.mutate(twin.inventory.start_ota, "AST-000102", "AC-TR50:SW:2.2.0")["subject_id"]
+    run_until(sim, lambda: job_state(twin, job) == "FAILED")
+    robot = twin.find_robot("Robo-02")
+    assert robot.firmware_version == "2.1.0" and not robot.ota_installing
+    assert any(e["event"] == "OTA_JOB_UPDATED" and e["level"] == "WARNING" for e in twin.events.query(limit=500))
+
+
+def test_rollback_restores_the_previous_running_version(twin, sim):
+    job = twin.fleet.mutate(twin.inventory.start_ota, "AST-000101", "AC-TR50:SW:2.2.0")["subject_id"]
+    run_until(sim, lambda: job_state(twin, job) == "REPORTED")
+    twin.fleet.mutate(twin.inventory.rollback_ota, job, "Localisation regression")
+    assert twin.find_robot("Robo-01").firmware_version == "2.1.0"
+    assert twin.inventory.get_robot("AST-000101")["reported"]["software_version"] == "2.1.0"
+
+
+def test_off_floor_assets_update_without_a_robot(twin, sim):
+    job = twin.fleet.mutate(twin.inventory.start_ota, "AST-000201", "AC-TR50:SW:2.1.1")["subject_id"]
+    run_until(sim, lambda: job_state(twin, job) == "REPORTED")
+    assert twin.inventory.get_robot("AST-000201")["reported"]["software_version"] == "2.1.1"
+
+
+def test_lifecycle_changes_stop_and_resume_the_floor_robot(twin):
+    robot = twin.find_robot("Robo-01")
+    wo = twin.fleet.mutate(twin.inventory.open_work_order, "AST-000101", "CORRECTIVE", "Bumper cracked")["subject_id"]
+    assert robot.status == RobotStatus.STOPPED and robot.fleet_hold == "MAINTENANCE"
+    twin.fleet.mutate(twin.inventory.swap_component, wo, "lidar", performed_by="E-10003", hw_revision="A")
+    assert robot.component_firmware["lidar"] == "1.9.4"  # a rev-A lidar can't run 2.0.1
+    assert twin.inventory.get_robot("AST-000101")["reported"]["component_firmware"]["lidar"] == "1.9.4"
+    twin.fleet.mutate(twin.inventory.close_work_order, wo, "Bumper and lidar replaced")
+    assert robot.status == RobotStatus.IDLE and robot.fleet_hold is None
+
+
+def test_a_user_stop_is_not_undone_by_the_fleet(twin):
+    robot = twin.find_robot("Robo-02")
+    twin.stop_robot(robot.id, reason="user")
+    wo = twin.fleet.mutate(twin.inventory.open_work_order, "AST-000102", "CORRECTIVE", "x")["subject_id"]
+    twin.fleet.mutate(twin.inventory.close_work_order, wo, "done")
+    assert robot.status == RobotStatus.STOPPED
+
+
+def test_revoking_a_credential_removes_it_from_the_operator(twin):
+    sam = twin.find_operator("Sam")
+    credential = next(c for c in twin.inventory.get_worker("E-10001")["credentials"] if c["code"] == "electrical_safety")
+    twin.fleet.mutate(twin.inventory.revoke_credential, credential["credential_id"], "Audit finding")
+    assert sam.certifications == ["safety_inspection"]
+    changed = [e for e in twin.events.query(limit=200) if e["event"] == "OPERATOR_CERTIFICATIONS_CHANGED"]
+    assert changed and changed[-1]["level"] == "WARNING"
+
+
+def test_credential_expiry_is_picked_up_on_the_shift_check_cadence(twin, sim):
+    with twin.inventory.at(datetime.now(timezone.utc) + timedelta(days=400)):
+        ticks(sim, CONFIG["SHIFT_CHECK_EVERY_TICKS"])
+    assert twin.find_operator("Lee").certifications == []
+
+
+def test_api_style_mutations_during_a_running_simulator_thread_do_not_deadlock(twin):
+    simulator = Simulator(twin)
+    simulator.start()
+    simulator.start_thread()
+    try:
+        started = time.time()
+        for i in range(20):
+            twin.fleet.mutate(twin.inventory.admin_edit, "AST-000201", {"fleet_id": f"F-{i}"}, "stress")
+            twin.fleet.mutate(twin.inventory.report_state, "AST-000201",
+                              {"health_state": "DEGRADED" if i % 2 else "OK"})
+        assert time.time() - started < 5
+        time.sleep(0.3)
+        assert twin.tick_count > 0
+    finally:
+        simulator.stop_thread()
+
+
+def test_a_swap_during_install_clears_updating(twin, sim):
+    robot = twin.find_robot("Robo-01")
+    wo = twin.fleet.mutate(twin.inventory.open_work_order, "AST-000101", "CORRECTIVE", "Lidar drifting")["subject_id"]
+    lidar = next(c for c in twin.inventory.get_robot("AST-000101")["components"] if c["slot"] == "lidar")
+    job = twin.fleet.mutate(twin.inventory.start_ota, "AST-000101", "WT-L360:FW:1.9.4",
+                            component_id=lidar["component_id"])["subject_id"]
+    run_until(sim, lambda: job_state(twin, job) == "INSTALLING")
+    assert robot.ota_installing
+    twin.fleet.mutate(twin.inventory.swap_component, wo, "lidar")
+    assert job_state(twin, job) == "FAILED" and not robot.ota_installing

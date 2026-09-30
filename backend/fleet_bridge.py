@@ -14,15 +14,17 @@ _on_change only after its transaction has committed.
 """
 from __future__ import annotations
 
+import random
 from typing import Any, Callable, Dict, Optional
 
 from .inventory import InventoryService, NotFound, reseed
 from .inventory.catalog_data import CLASS_DEFAULT_MODELS
 from .inventory.core import SYSTEM
-from .models import EventType, LogCategory, LogLevel, RobotStatus
+from .models import CONFIG, EventType, LogCategory, LogLevel, RobotStatus
 
 FLOOR_SITE = "WH-01"
 WARNING_ACTIONS = frozenset({"OTA_FAILED", "CREDENTIAL_REVOKED"})
+LIFECYCLE_ACTIONS = frozenset({"STATUS_CHANGED", "DECOMMISSIONED", "WORK_ORDER_OPENED", "WORK_ORDER_CLOSED"})
 
 
 class FleetBridge:
@@ -182,6 +184,8 @@ class FleetBridge:
 
     # ---- inventory change listener -------------------------------------- #
     def _on_change(self, change: Dict[str, Any]) -> None:
+        """Announce every inventory change on the twin's event bus, then apply
+        its physical effect on the floor (runs after the change committed)."""
         action = change["action"]
         robot = (self.robot_for_asset(change["aggregate_id"])
                  if change["aggregate_type"] in ("ROBOT_ASSET", "ROBOT_OBSERVATION") else None)
@@ -196,3 +200,169 @@ class FleetBridge:
                   "aggregate_id": change["aggregate_id"], "action": action,
                   "subject_id": change.get("subject_id")},
         )
+        if change["aggregate_type"] == "ROBOT_ASSET":
+            if (robot is not None and robot.ota_installing
+                    and not any(j["state"] == "INSTALLING" for j in change["after"]["active_ota_jobs"])):
+                robot.ota_installing = False  # the job that was installing ended (failed, swapped out, decommissioned)
+            if action in LIFECYCLE_ACTIONS and robot is not None:
+                self._apply_lifecycle(robot, change["after"]["lifecycle_status"])
+            if action == "COMPONENT_SWAPPED":
+                new = next((c for c in change["after"]["components"]
+                            if c["component_id"] == change["subject_id"]), None)
+                if new is not None:
+                    version = (self.service.get_release(new["firmware_release_id"])["version"]
+                               if new["firmware_release_id"] else None)
+                    self._set_component_firmware(change["aggregate_id"], robot, new["slot"], version)
+            elif action == "OTA_ROLLED_BACK":
+                job = self.service.get_ota_job(change["subject_id"])
+                self._set_running_version(job["asset_id"], robot, job["kind"], job["slot"], job["from_version"])
+            elif action == "OTA_FAILED":
+                self._ota_ticks.pop(change["subject_id"], None)
+                if robot is not None:
+                    robot.ota_installing = False
+        elif change["aggregate_type"] == "WORKER":
+            for operator in list(self.twin.operators.values()):
+                if operator.worker_id == change["aggregate_id"]:
+                    self._sync_operator(operator)
+
+
+    # ---- physical effects ----------------------------------------------- #
+    def _apply_lifecycle(self, robot: Any, status: str) -> None:
+        """A floor robot whose asset leaves IN_SERVICE is stopped; it is
+        resumed on return — but only if the fleet was what stopped it."""
+        if status == "IN_SERVICE":
+            if robot.fleet_hold is not None:
+                robot.fleet_hold = None
+                if robot.status == RobotStatus.STOPPED:
+                    self.twin.resume_robot(robot.id, reason="asset back in service")
+            return
+        if robot.fleet_hold is None and robot.status == RobotStatus.STOPPED:
+            return  # stopped by someone else — leave it to them
+        if robot.fleet_hold != status:
+            robot.fleet_hold = status
+            if robot.status != RobotStatus.STOPPED:
+                self.twin.stop_robot(robot.id, reason=f"asset {status.lower().replace('_', ' ')}")
+
+    def _set_component_firmware(self, asset_id: str, robot: Optional[Any], slot: str,
+                                version: Optional[str]) -> None:
+        if robot is not None:
+            if version is None:
+                robot.component_firmware.pop(slot, None)
+            else:
+                robot.component_firmware[slot] = version
+            robot.touch()
+            self._report_robot(robot)
+            return
+        reported = self.service.get_robot(asset_id)["reported"] or {}
+        firmware = dict(reported.get("component_firmware") or {})
+        if version is None:
+            firmware.pop(slot, None)
+        else:
+            firmware[slot] = version
+        self.service.report_state(asset_id, {"component_firmware": firmware})
+
+    def _set_running_version(self, asset_id: str, robot: Optional[Any], kind: str,
+                             slot: Optional[str], version: Optional[str]) -> None:
+        """What an install (or rollback) physically does: change what runs."""
+        if kind == "COMPONENT_FIRMWARE":
+            self._set_component_firmware(asset_id, robot, slot, version)
+            return
+        if robot is not None:
+            if kind == "ROBOT_SOFTWARE":
+                robot.firmware_version = version
+            else:
+                robot.ai_policy_version = version
+            robot.touch()
+            self._report_robot(robot)
+            return
+        if kind == "ROBOT_SOFTWARE":
+            self.service.report_state(asset_id, {"software_version": version,
+                                                 "os_version": self.service.os_version_for(version)})
+        else:
+            self.service.report_state(asset_id, {"ai_policy_version": version})
+
+    # ---- runtime (Simulator.tick, twin.lock held) ----------------------- #
+    def on_tick(self, tick: int) -> None:
+        self._advance_ota()
+        if tick % max(1, int(CONFIG["FLEET_HEARTBEAT_EVERY_TICKS"])) == 0:
+            self.heartbeat()
+        if tick % max(1, int(CONFIG["SHIFT_CHECK_EVERY_TICKS"])) == 0:
+            self.sync_all_operators()
+
+    def heartbeat(self) -> None:
+        """Every floor robot reports what it is running; the other sites'
+        online robots check in (reported_at only)."""
+        bound = set()
+        for robot in list(self.twin.robots.values()):
+            if robot.asset_id and self.service.has_asset(robot.asset_id):
+                bound.add(robot.asset_id)
+                self._report_robot(robot)
+        self.service.touch_remote_reports(exclude=bound)
+
+    def _report_robot(self, robot: Any) -> None:
+        if robot.status == RobotStatus.ERROR:
+            health = "FAULT"
+        elif robot.maintenance_alerted:
+            health = "DEGRADED"
+        else:
+            health = "OK"
+        zone = self.twin.warehouse.zone_of_cell(robot.position)
+        reported: Dict[str, Any] = {
+            "software_version": robot.firmware_version,
+            "os_version": self.service.os_version_for(robot.firmware_version),
+            "ai_policy_version": robot.ai_policy_version,
+            "component_firmware": dict(robot.component_firmware),
+            "health_state": health,
+            "connectivity": "ONLINE",
+            "operational_mode": "UPDATING" if robot.ota_installing else robot.status.value,
+            "zone": zone.key if zone else None,
+        }
+        base = self._battery_base.get(robot.asset_id)
+        if base is not None:
+            extra = max(0, robot.charging_sessions - base["offset"])
+            reported["battery"] = {
+                "soc_pct": round(robot.battery, 1),
+                "cycle_count": int(base["cycles"] + extra),
+                "soh_pct": round(max(0.0, base["soh"] - 0.02 * extra), 2),
+            }
+        self.service.report_state(robot.asset_id, reported)
+
+    def _advance_ota(self) -> None:
+        """STAGED → DOWNLOADING at once; DOWNLOADING for OTA_DOWNLOAD_TICKS
+        (and until a floor robot is idle); INSTALLING for OTA_INSTALL_TICKS,
+        during which the robot takes no work; then the new version runs and
+        the job is REPORTED (or FAILED, per OTA_FAILURE_RISK)."""
+        for job in self.service.active_ota_jobs():
+            job_id, state = job["job_id"], job["state"]
+            robot = self.robot_for_asset(job["asset_id"])
+            if state == "STAGED":
+                self.service.transition_ota(job_id, "DOWNLOADING")
+                self._ota_ticks[job_id] = 0
+                continue
+            ticks = self._ota_ticks.get(job_id, 0) + 1
+            self._ota_ticks[job_id] = ticks
+            if state == "DOWNLOADING":
+                if ticks < CONFIG["OTA_DOWNLOAD_TICKS"] or (robot is not None and robot.current_task is not None):
+                    continue
+                self.service.transition_ota(job_id, "INSTALLING")
+                self._ota_ticks[job_id] = 0
+                if robot is not None:
+                    robot.ota_installing = True
+            elif state == "INSTALLING":
+                if ticks < CONFIG["OTA_INSTALL_TICKS"]:
+                    continue
+                self._ota_ticks.pop(job_id, None)
+                if robot is not None:
+                    robot.ota_installing = False
+                if random.random() < CONFIG.get("OTA_FAILURE_RISK", 0.0):
+                    self.service.transition_ota(job_id, "FAILED",
+                                                failure_reason="install failed: image signature verification error")
+                    continue
+                self._set_running_version(job["asset_id"], robot, job["kind"], job["slot"], job["version"])
+                self.service.transition_ota(job_id, "REPORTED")
+
+    def sync_all_operators(self) -> None:
+        """Catch credentials that expired (or became effective) with time."""
+        for operator in list(self.twin.operators.values()):
+            if operator.worker_id and self.service.has_worker(operator.worker_id):
+                self._sync_operator(operator)
