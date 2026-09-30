@@ -132,7 +132,14 @@ class FleetBridge:
         """Re-attach robots and operators restored by DigitalTwin.load_state."""
         for robot in list(self.twin.robots.values()):
             if robot.asset_id and self.service.has_asset(robot.asset_id):
-                self.bind_new_robot(robot, asset_id=robot.asset_id, adopt=False)
+                try:
+                    self.bind_new_robot(robot, asset_id=robot.asset_id, adopt=False)
+                except ValueError as exc:
+                    self.twin.logger.warning(
+                        LogCategory.FLEET,
+                        f"{robot.name}: asset {robot.asset_id} can't be re-bound ({exc}) — commissioning a new one")
+                    robot.asset_id = None
+                    self.bind_new_robot(robot, adopt=False)
                 continue
             missing, robot.asset_id = robot.asset_id, None
             self.bind_new_robot(robot, adopt=False)

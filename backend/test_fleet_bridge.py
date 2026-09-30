@@ -99,3 +99,30 @@ def test_the_existing_firmware_gate_still_sees_runtime_firmware(twin):
     twin.find_robot("Robo-01").firmware_version = "0.9.0-beta"
     task = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": "Robo-01", "destination": "loading_zone"})
     assert task.status is TaskStatus.FAILED and "unapproved firmware" in task.error
+
+
+def test_boot_survives_a_decommissioned_demo_asset(tmp_path):
+    path = str(tmp_path / "inventory.sqlite3")
+    first = make_twin(tmp_path, inventory_path=path)
+    first.fleet.mutate(first.inventory.decommission, "AST-000101", "scrapped")
+    second = make_twin(tmp_path, inventory_path=path)  # must not raise
+    robo1 = second.find_robot("Robo-01")
+    assert robo1 is not None and robo1.asset_id and robo1.asset_id != "AST-000101"
+    assert second.inventory.get_robot(robo1.asset_id)["lifecycle_status"] == "IN_SERVICE"
+    assert second.find_robot("Robo-02").asset_id == "AST-000102"  # the other demo robot is untouched
+    warnings = [r for r in second.logger.records
+                if r["category"] == "FLEET" and r["level"] == "WARNING" and "AST-000101" in r["message"]]
+    assert len(warnings) == 1 and "decommissioned" in warnings[0]["message"]
+
+
+def test_load_state_survives_a_decommissioned_asset(twin, tmp_path):
+    path = twin.save_state(str(tmp_path / "state.json"))
+    twin.fleet.mutate(twin.inventory.decommission, "AST-000101", "scrapped")
+    twin.load_state(path)  # must not raise or leave the twin half-loaded
+    robo1 = twin.find_robot("Robo-01")
+    assert robo1.asset_id and robo1.asset_id != "AST-000101"
+    assert twin.inventory.get_robot(robo1.asset_id)["lifecycle_status"] == "IN_SERVICE"
+    assert twin.find_robot("Robo-02").asset_id == "AST-000102"
+    assert twin.find_operator("Sam").worker_id == "E-10001"
+    assert any(r["category"] == "FLEET" and r["level"] == "WARNING" and "AST-000101" in r["message"]
+               for r in twin.logger.records)

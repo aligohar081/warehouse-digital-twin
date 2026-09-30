@@ -175,7 +175,15 @@ class DigitalTwin:
     # ------------------------------------------------------------------ #
     def load_demo(self, create_tasks: bool = True) -> None:
         for name, position in DEMO_ROBOTS:
-            self.add_robot(name=name, position=position, asset_id=DEMO_ASSET_IDS.get(name))
+            try:
+                self.add_robot(name=name, position=position, asset_id=DEMO_ASSET_IDS.get(name))
+            except ValueError as exc:
+                # A persisted inventory may have retired the demo's asset; the
+                # twin must still boot, so commission a fresh one instead.
+                self.logger.warning(
+                    LogCategory.FLEET,
+                    f"{name}: demo asset {DEMO_ASSET_IDS.get(name)} is unusable ({exc}) — commissioning a new one")
+                self.add_robot(name=name, position=position)
         for name, position, weight, source, destination in DEMO_BOXES:
             self.add_box(name=name, position=position, weight=weight,
                          source=source, destination=destination)
