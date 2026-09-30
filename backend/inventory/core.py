@@ -10,6 +10,7 @@ lock order in the system.
 from __future__ import annotations
 
 import hashlib
+import logging
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence
@@ -17,6 +18,8 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Seque
 from .documents import diff_documents, iso, utc_now
 from .errors import NotFound
 from .store import InventoryStore
+
+logger = logging.getLogger("backend.inventory")
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "CALIBRATION_DUE_SOON_DAYS": 14,
@@ -119,7 +122,12 @@ class ServiceCore:
                 pending, self._pending = self._pending, []
         for change in pending:
             for listener in list(self._listeners):
-                listener(change)
+                try:
+                    listener(change)
+                except Exception:
+                    # One listener's failure must not break delivery to others or compromise
+                    # the already-committed write. Log and continue.
+                    logger.exception("Inventory listener %r failed on change %s (%s)", listener, change["seq"], change["action"])
 
     def transaction(self):
         """Group several actions into one transaction (listeners fire once it commits)."""
@@ -190,10 +198,16 @@ class ServiceCore:
         after_seq, resync = 0, False
         if cursor:
             cursor_epoch, separator, seq_text = str(cursor).partition(":")
-            if not separator or not seq_text.isdigit():
+            if not separator or not seq_text or not seq_text.isascii() or not seq_text.isdigit():
                 raise ValueError(f"Malformed cursor {cursor!r} (expected '<epoch>:<seq>')")
+            try:
+                seq_int = int(seq_text)
+                if seq_int > 2**63 - 1:
+                    raise ValueError(f"Malformed cursor {cursor!r} (expected '<epoch>:<seq>')")
+            except (ValueError, OverflowError):
+                raise ValueError(f"Malformed cursor {cursor!r} (expected '<epoch>:<seq>')") from None
             if cursor_epoch == epoch:
-                after_seq = int(seq_text)
+                after_seq = seq_int
             else:
                 resync = True
         rows = self.store.changes(FEEDS[feed], after_seq, limit + 1)

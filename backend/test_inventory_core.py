@@ -49,6 +49,32 @@ def test_listeners_fire_after_commit_and_not_on_rollback(service):
     assert service.store.count("change_log") == 1
 
 
+def test_listeners_are_isolated_from_failures(service, caplog):
+    seen = []
+
+    def failing_listener(change):
+        raise RuntimeError("listener broke")
+
+    def good_listener(change):
+        seen.append(change["action"])
+
+    service.subscribe(failing_listener)
+    service.subscribe(good_listener)
+
+    # Two records in one transaction: both should commit despite listener failure
+    with service.transaction():
+        service._record(aggregate_type="ROBOT_ASSET", aggregate_id="AST-1", revision=1, action="ONE", before=None, after={})
+        service._record(aggregate_type="ROBOT_ASSET", aggregate_id="AST-2", revision=1, action="TWO", before=None, after={})
+
+    # Transaction should succeed without raising
+    assert seen == ["ONE", "TWO"]  # good_listener got both despite failing_listener's exception
+    assert service.store.count("change_log") == 2
+
+    # Check that the failure was logged
+    assert "Inventory listener" in caplog.text
+    assert "failed on change" in caplog.text
+
+
 def test_at_backdates_the_clock_temporarily(service):
     earlier = NOW - timedelta(days=10)
     with service.at(earlier):
@@ -99,6 +125,12 @@ def test_bad_feed_arguments_are_value_errors(service):
         service.changes("fleet", cursor="garbage")
     with pytest.raises(ValueError):
         service.changes("fleet", limit="many")
+    # Oversized sequence numbers should raise ValueError, not OverflowError
+    with pytest.raises(ValueError):
+        service.changes("fleet", cursor=f"{service.store.epoch()}:99999999999999999999")
+    # Non-ASCII digits should raise ValueError
+    with pytest.raises(ValueError):
+        service.changes("fleet", cursor=f"{service.store.epoch()}:²")
     assert service.changes("fleet", limit=10_000)["items"] == []  # capped, not an error
 
 
