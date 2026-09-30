@@ -32,6 +32,10 @@ class Operator:
         # models.OPERATOR_ROLE_PRESETS) — purely informational after
         # that; certifications/shift can still be changed independently.
         self.role: Optional[str] = role
+        # The workforce-system record this operator is (backend/fleet_bridge.py).
+        # When set, `certifications` is kept in sync with that worker's valid
+        # credentials — the inventory is the source of truth for qualifications.
+        self.worker_id: Optional[str] = None
         self.status: OperatorStatus = OperatorStatus.AVAILABLE
         self.current_task: Optional[str] = None
         self.completed_tasks = 0
@@ -88,6 +92,7 @@ class Operator:
             "name": self.name,
             "certifications": list(self.certifications),
             "role": self.role,
+            "worker_id": self.worker_id,
             "status": self.status.value,
             "current_task": self.current_task,
             "completed_tasks": self.completed_tasks,
@@ -114,4 +119,5 @@ class Operator:
         operator.failed_tasks = data.get("failed_tasks", 0)
         operator.created_at = data.get("created_at", operator.created_at)
         operator.updated_at = data.get("updated_at", operator.updated_at)
+        operator.worker_id = data.get("worker_id")
         return operator

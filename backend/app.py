@@ -83,6 +83,7 @@ def create_app(
     twin = twin or DigitalTwin(
         log_dir=os.path.join(BASE_DIR, "logs"),
         data_dir=os.path.join(BASE_DIR, "data"),
+        inventory_path=os.path.join(BASE_DIR, "data", "inventory.sqlite3"),
     )
     broadcaster = Broadcaster()
     simulator = Simulator(twin, broadcaster=broadcaster)

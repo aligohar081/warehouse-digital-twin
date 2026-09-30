@@ -15,6 +15,9 @@ from typing import Any, Deque, Dict, List, Optional, Set
 from .agent import Agent
 from .box import Box
 from .event_system import EventSystem
+from .fleet_bridge import FleetBridge
+from .inventory import NotFound as InventoryNotFound
+from .inventory import open_inventory
 from .logger import WarehouseLogger
 from .models import (
     ACTIVE_TASK_STATES,
@@ -66,6 +69,12 @@ DEMO_ROBOTS = [
     ("Robo-02", (16, 8)),
 ]
 
+#: The inventory records (backend/inventory/demo_seed.py) the demo robots
+#: and operators are bound to — separate maps so the tuples above stay
+#: exactly as they were.
+DEMO_ASSET_IDS = {"Robo-01": "AST-000101", "Robo-02": "AST-000102"}
+DEMO_WORKER_IDS = {"Sam": "E-10001", "Lee": "E-10002"}
+
 DEMO_BOXES = [
     ("Box-A", (3, 5), 12.5, "shelf_a", "loading_zone"),
     ("Box-B", (9, 5), 8.0, "shelf_b", "packing_area"),
@@ -95,6 +104,7 @@ class DigitalTwin:
         persist_logs: bool = True,
         demo: bool = True,
         demo_tasks: bool = True,
+        inventory_path: str = ":memory:",
     ) -> None:
         self.lock = threading.RLock()
         self.log_dir = log_dir
@@ -152,6 +162,11 @@ class DigitalTwin:
             category=LogCategory.WAREHOUSE,
         )
 
+        # Fleet-manager + workforce source systems (backend/inventory) and the
+        # bridge that binds every live robot/operator to its record.
+        self.inventory = open_inventory(inventory_path, demo=demo, settings=lambda: CONFIG)
+        self.fleet = FleetBridge(self, self.inventory)
+
         if demo:
             self.load_demo(create_tasks=demo_tasks)
 
@@ -160,14 +175,14 @@ class DigitalTwin:
     # ------------------------------------------------------------------ #
     def load_demo(self, create_tasks: bool = True) -> None:
         for name, position in DEMO_ROBOTS:
-            self.add_robot(name=name, position=position)
+            self.add_robot(name=name, position=position, asset_id=DEMO_ASSET_IDS.get(name))
         for name, position, weight, source, destination in DEMO_BOXES:
             self.add_box(name=name, position=position, weight=weight,
                          source=source, destination=destination)
         for name, model_version in DEMO_AGENTS:
             self.add_agent(name=name, model_version=model_version)
         for name, certifications in DEMO_OPERATORS:
-            self.add_operator(name=name, certifications=certifications)
+            self.add_operator(name=name, certifications=certifications, worker_id=DEMO_WORKER_IDS.get(name))
         if create_tasks:
             for payload in DEMO_TASKS:
                 try:
@@ -256,6 +271,8 @@ class DigitalTwin:
         speed: Optional[float] = None,
         allowed_task_types: Optional[List[str]] = None,
         robot_class: Optional[str] = None,
+        model_code: Optional[str] = None,
+        asset_id: Optional[str] = None,
     ) -> Robot:
         with self.lock:
             robot_id = self.ids.next("robot", 2)
@@ -277,7 +294,18 @@ class DigitalTwin:
             # `speed`/`allowed_task_types` always win, and either can be
             # changed independently afterwards through the normal
             # endpoints, same as a hand-configured robot.
-            normalized_class = (robot_class or "AMR").upper()
+            normalized_class = (robot_class or "").upper() or None
+            if model_code:
+                try:
+                    model_class = self.inventory.model_class(model_code)
+                except InventoryNotFound as exc:
+                    raise ValueError(str(exc)) from None
+                if normalized_class and normalized_class != model_class:
+                    raise ValueError(f"Model {model_code} is a {model_class}, not a {normalized_class}")
+                normalized_class = model_class
+            elif asset_id and not normalized_class and self.inventory.has_asset(asset_id):
+                normalized_class = self.inventory.get_robot(asset_id)["model"]["embodiment_class"]
+            normalized_class = normalized_class or "AMR"
             if normalized_class not in ROBOT_CLASS_PRESETS:
                 raise ValueError(
                     f"Unknown robot_class '{robot_class}' (known: {sorted(ROBOT_CLASS_PRESETS)})"
@@ -291,6 +319,7 @@ class DigitalTwin:
                 allowed_task_types=effective_allowed,
                 robot_class=normalized_class,
             )
+            self.fleet.bind_new_robot(robot, model_code=model_code, asset_id=asset_id)
             self.robots[robot.id] = robot
 
         self.events.emit(
@@ -398,6 +427,7 @@ class DigitalTwin:
         shift_start_hour: Optional[int] = None,
         shift_end_hour: Optional[int] = None,
         role: Optional[str] = None,
+        worker_id: Optional[str] = None,
     ) -> Operator:
         with self.lock:
             operator_id = self.ids.next("operator")
@@ -426,6 +456,7 @@ class DigitalTwin:
                 shift_start_hour=effective_start, shift_end_hour=effective_end,
                 role=normalized_role,
             )
+            self.fleet.bind_new_operator(operator, worker_id=worker_id)
             self.operators[operator.id] = operator
 
         self.events.emit(
@@ -668,6 +699,7 @@ class DigitalTwin:
                 self.statistics[key] = 0
             self.navigation = NavigationEngine(self.warehouse)
             self.planner = TaskPlanner(self)
+            self.fleet.reseed()
         self.events.emit(
             EventType.SIMULATION_RESET,
             "Warehouse reset to the initial demo configuration",
@@ -962,6 +994,7 @@ class DigitalTwin:
                 task.sequence = sequence
                 self.tasks.tasks[task.id] = task
             self.tasks._sequence = sequence
+            self.fleet.rebind_all()
             self.scheduler.load_dict(payload.get("schedules", {}))
             self.statistics.update(payload.get("statistics", {}))
             simulation = payload.get("simulation", {})

@@ -63,6 +63,17 @@ class Robot:
         self.current_path: List[Cell] = []
         self.planned_path: List[Cell] = []
         self.carrying_box: Optional[str] = None
+        # Inventory binding (backend/fleet_bridge.py): which fleet-manager
+        # asset this physical robot is, and what it is actually running
+        # beyond its main robot software (firmware_version above).
+        self.asset_id: Optional[str] = None
+        self.ai_policy_version: Optional[str] = None
+        self.component_firmware: Dict[str, str] = {}
+        # True while an OTA update installs — the robot can't take work.
+        self.ota_installing: bool = False
+        # The asset lifecycle status that made the fleet bridge stop this
+        # robot (e.g. MAINTENANCE), so it only ever resumes robots it stopped.
+        self.fleet_hold: Optional[str] = None
 
         # Statistics
         self.completed_tasks = 0
@@ -112,7 +123,11 @@ class Robot:
 
     @property
     def is_available(self) -> bool:
-        return self.status in (RobotStatus.IDLE, RobotStatus.CHARGING) and self.current_task is None
+        return (
+            self.status in (RobotStatus.IDLE, RobotStatus.CHARGING)
+            and self.current_task is None
+            and not self.ota_installing
+        )
 
     @property
     def is_halted(self) -> bool:
@@ -216,6 +231,11 @@ class Robot:
             "firmware_version": self.firmware_version,
             "allowed_task_types": list(self.allowed_task_types) if self.allowed_task_types else None,
             "robot_class": self.robot_class,
+            "asset_id": self.asset_id,
+            "ai_policy_version": self.ai_policy_version,
+            "component_firmware": dict(self.component_firmware),
+            "ota_installing": self.ota_installing,
+            "fleet_hold": self.fleet_hold,
             # Raw baselines, for save/load round-tripping...
             "maintenance_baseline_distance": self.maintenance_baseline_distance,
             "maintenance_baseline_charges": self.maintenance_baseline_charges,
@@ -262,6 +282,10 @@ class Robot:
         robot.maintenance_baseline_charges = data.get("maintenance_baseline_charges", 0)
         robot.last_maintenance_at = data.get("last_maintenance_at")
         robot.maintenance_alerted = data.get("maintenance_alerted", False)
+        robot.asset_id = data.get("asset_id")
+        robot.ai_policy_version = data.get("ai_policy_version")
+        robot.component_firmware = dict(data.get("component_firmware") or {})
+        robot.fleet_hold = data.get("fleet_hold")
         robot.home = cell_tuple(data.get("home")) or robot.position
         robot.orientation = data.get("orientation", "EAST")
         robot.status = RobotStatus(data.get("status", "IDLE"))

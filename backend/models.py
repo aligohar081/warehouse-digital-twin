@@ -86,6 +86,18 @@ CONFIG: Dict[str, Any] = {
     # claimed, whether you run that via `python -m backend.run_evals`,
     # `GET /api/tasks/{id}/eval`, or the promptfoo suite in evals/.
     "FALSE_SUCCESS_RISK": 0.0,
+    # Fleet & workforce inventory — see backend/inventory and
+    # backend/fleet_bridge.py. Heartbeats: how often each floor robot
+    # reports its running software/health to the fleet manager. OTA: how
+    # many ticks a download and an install take. OTA_FAILURE_RISK (0.0 by
+    # default, like the other risk knobs) fails an install at the last step.
+    "FLEET_HEARTBEAT_EVERY_TICKS": 10,
+    "OTA_DOWNLOAD_TICKS": 5,
+    "OTA_INSTALL_TICKS": 8,
+    "OTA_FAILURE_RISK": 0.0,
+    "CALIBRATION_DUE_SOON_DAYS": 14,
+    "CREDENTIAL_EXPIRING_SOON_DAYS": 30,
+    "REPORT_STALE_SECONDS": 300,
 }
 
 
@@ -457,6 +469,7 @@ class LogCategory(str, enum.Enum):
     USER = "USER"
     CI = "CI"
     DIGITAL_TWIN = "DIGITAL_TWIN"
+    FLEET = "FLEET"
 
 
 class EventType(str, enum.Enum):
@@ -531,6 +544,9 @@ class EventType(str, enum.Enum):
     TWIN_SYNCHRONIZED = "TWIN_SYNCHRONIZED"
     CI_STARTED = "CI_STARTED"
     CI_COMPLETED = "CI_COMPLETED"
+    INVENTORY_CHANGED = "INVENTORY_CHANGED"
+    OTA_JOB_UPDATED = "OTA_JOB_UPDATED"
+    OPERATOR_CERTIFICATIONS_CHANGED = "OPERATOR_CERTIFICATIONS_CHANGED"
 
 
 class ActionType(str, enum.Enum):

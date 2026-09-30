@@ -4,5 +4,6 @@ __pycache__/
 logs/*.log
 logs/events.json
 data/warehouse_state.json
+data/inventory.sqlite3*
 .pytest_cache/
 evals/.env
