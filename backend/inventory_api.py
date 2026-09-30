@@ -31,9 +31,18 @@ def _list(value: Any) -> List[str]:
     raise ValueError("expected a list or a comma-separated string")
 
 
-def _opt(data: Dict[str, Any], key: str) -> Optional[Any]:
+def _text(data: Dict[str, Any], key: str) -> Optional[str]:
+    """A string-valued body field: missing, null or blank -> None; a string is
+    stripped; a bare number is stringified; anything else (a list, an object,
+    a bool) is a 400 instead of a TypeError deep in the service."""
     value = data.get(key)
-    return None if value == "" else value
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    raise ValueError(f"{key} must be a string")
 
 
 def register_inventory_routes(app, twin, api_error) -> None:
@@ -111,14 +120,14 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def fleet_publish_release():
         data = body()
-        change = fleet.mutate(service.publish_release, data.get("kind"), data.get("target_code"),
-                              data.get("version"), min_hw_rev=_opt(data, "min_hw_rev"))
+        change = fleet.mutate(service.publish_release, _text(data, "kind"), _text(data, "target_code"),
+                              _text(data, "version"), min_hw_rev=_text(data, "min_hw_rev"))
         return jsonify({"ok": True, "change": change, "release": service.get_release(change["subject_id"])}), 201
 
     @app.post("/api/fleet/releases/<release_id>/recall")
     @guarded
     def fleet_recall_release(release_id: str):
-        change = fleet.mutate(service.recall_release, release_id, body().get("reason"))
+        change = fleet.mutate(service.recall_release, release_id, _text(body(), "reason"))
         return jsonify({"ok": True, "change": change, "release": service.get_release(release_id)})
 
     # ---- robots --------------------------------------------------------- #
@@ -133,10 +142,10 @@ def register_inventory_routes(app, twin, api_error) -> None:
     def fleet_commission_robot():
         data = body()
         change = fleet.mutate(
-            service.commission_robot, data.get("model_code"), data.get("site_code"), _opt(data, "home_zone"),
-            serial_number=_opt(data, "serial_number"), asset_tag=_opt(data, "asset_tag"),
-            hw_revision=_opt(data, "hw_revision"), software_release_id=_opt(data, "software_release_id"),
-            fleet_id=_opt(data, "fleet_id"),
+            service.commission_robot, _text(data, "model_code"), _text(data, "site_code"), _text(data, "home_zone"),
+            serial_number=_text(data, "serial_number"), asset_tag=_text(data, "asset_tag"),
+            hw_revision=_text(data, "hw_revision"), software_release_id=_text(data, "software_release_id"),
+            fleet_id=_text(data, "fleet_id"),
         )
         return robot_response(change, 201)
 
@@ -149,8 +158,10 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def fleet_admin_edit(asset_id: str):
         data = body()
-        reason = data.pop("reason", None)
-        return robot_response(fleet.mutate(service.admin_edit, asset_id, data, reason))
+        reason = _text(data, "reason")
+        data.pop("reason", None)
+        fields = {key: _text(data, key) for key in data}
+        return robot_response(fleet.mutate(service.admin_edit, asset_id, fields, reason))
 
     @app.get("/api/fleet/robots/<asset_id>/history")
     @guarded
@@ -161,46 +172,46 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def fleet_set_status(asset_id: str):
         data = body()
-        return robot_response(fleet.mutate(service.set_lifecycle_status, asset_id, data.get("status"), data.get("reason")))
+        return robot_response(fleet.mutate(service.set_lifecycle_status, asset_id, _text(data, "status"), _text(data, "reason")))
 
     @app.post("/api/fleet/robots/<asset_id>/decommission")
     @guarded
     def fleet_decommission(asset_id: str):
-        return robot_response(fleet.mutate(service.decommission, asset_id, body().get("reason")))
+        return robot_response(fleet.mutate(service.decommission, asset_id, _text(body(), "reason")))
 
     @app.post("/api/fleet/robots/<asset_id>/ota")
     @guarded
     def fleet_start_ota(asset_id: str):
         data = body()
-        change = fleet.mutate(service.start_ota, asset_id, data.get("release_id"),
-                              component_id=_opt(data, "component_id"))
+        change = fleet.mutate(service.start_ota, asset_id, _text(data, "release_id"),
+                              component_id=_text(data, "component_id"))
         return robot_response(change, 201)
 
     @app.post("/api/fleet/ota/<job_id>/verify")
     @guarded
     def fleet_verify_ota(job_id: str):
-        return robot_response(fleet.mutate(service.verify_ota, job_id, verified_by=_opt(body(), "verified_by")))
+        return robot_response(fleet.mutate(service.verify_ota, job_id, verified_by=_text(body(), "verified_by")))
 
     @app.post("/api/fleet/ota/<job_id>/rollback")
     @guarded
     def fleet_rollback_ota(job_id: str):
-        return robot_response(fleet.mutate(service.rollback_ota, job_id, body().get("reason")))
+        return robot_response(fleet.mutate(service.rollback_ota, job_id, _text(body(), "reason")))
 
     @app.post("/api/fleet/components/<component_id>/calibrations")
     @guarded
     def fleet_record_calibration(component_id: str):
         data = body()
-        change = fleet.mutate(service.record_calibration, component_id, data.get("result"),
-                              performed_by=_opt(data, "performed_by"), method=_opt(data, "method") or "FIELD",
-                              certificate_ref=_opt(data, "certificate_ref"))
+        change = fleet.mutate(service.record_calibration, component_id, _text(data, "result"),
+                              performed_by=_text(data, "performed_by"), method=_text(data, "method") or "FIELD",
+                              certificate_ref=_text(data, "certificate_ref"))
         return robot_response(change, 201)
 
     @app.post("/api/fleet/robots/<asset_id>/work-orders")
     @guarded
     def fleet_open_work_order(asset_id: str):
         data = body()
-        change = fleet.mutate(service.open_work_order, asset_id, data.get("type"), data.get("description"),
-                              technician_id=_opt(data, "technician_id"))
+        change = fleet.mutate(service.open_work_order, asset_id, _text(data, "type"), _text(data, "description"),
+                              technician_id=_text(data, "technician_id"))
         return robot_response(change, 201)
 
     @app.post("/api/fleet/work-orders/<wo_id>/swap")
@@ -208,13 +219,13 @@ def register_inventory_routes(app, twin, api_error) -> None:
     def fleet_swap_component(wo_id: str):
         data = body()
         return robot_response(fleet.mutate(
-            service.swap_component, wo_id, data.get("slot"), performed_by=_opt(data, "performed_by"),
-            hw_revision=_opt(data, "hw_revision"), part_number=_opt(data, "part_number")))
+            service.swap_component, wo_id, _text(data, "slot"), performed_by=_text(data, "performed_by"),
+            hw_revision=_text(data, "hw_revision"), part_number=_text(data, "part_number")))
 
     @app.post("/api/fleet/work-orders/<wo_id>/close")
     @guarded
     def fleet_close_work_order(wo_id: str):
-        return robot_response(fleet.mutate(service.close_work_order, wo_id, body().get("resolution")))
+        return robot_response(fleet.mutate(service.close_work_order, wo_id, _text(body(), "resolution")))
 
     @app.get("/api/fleet/changes")
     @guarded
@@ -233,7 +244,8 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def workforce_register_worker():
         data = body()
-        display_name = data.pop("display_name", None)
+        display_name = _text(data, "display_name")
+        data.pop("display_name", None)
         unknown = set(data.keys()) - set(REGISTER_WORKER_FIELDS)
         if unknown:
             raise ValueError(f"Field(s) not allowed in a worker record: {sorted(unknown)}")
@@ -241,10 +253,7 @@ def register_inventory_routes(app, twin, api_error) -> None:
         for key in REGISTER_WORKER_FIELDS:
             if key not in data:
                 continue
-            value = data[key]
-            if key in ("role_codes", "site_codes"):
-                value = _list(value)
-            kwargs[key] = value
+            kwargs[key] = _list(data[key]) if key in ("role_codes", "site_codes") else _text(data, key)
         return worker_response(fleet.mutate(service.register_worker, display_name, **kwargs), 201)
 
     @app.get("/api/workforce/workers/<worker_id>")
@@ -256,7 +265,8 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def workforce_update_worker(worker_id: str):
         data = body()
-        reason = data.pop("reason", None)
+        reason = _text(data, "reason")
+        data.pop("reason", None)
         unknown = set(data.keys()) - set(UPDATE_WORKER_FIELDS)
         if unknown:
             raise ValueError(f"Field(s) not allowed in a worker record: {sorted(unknown)}")
@@ -264,10 +274,12 @@ def register_inventory_routes(app, twin, api_error) -> None:
         for key in UPDATE_WORKER_FIELDS:
             if key not in data:
                 continue
-            value = data[key]
             if key in ("role_codes", "site_codes"):
-                value = _list(value)
-            kwargs[key] = value
+                kwargs[key] = _list(data[key])
+            elif key == "organization":
+                kwargs[key] = _text(data, key) or ""  # blank stays "given but empty" so the service rejects it
+            else:
+                kwargs[key] = _text(data, key)
         return worker_response(fleet.mutate(service.update_worker, worker_id, reason, **kwargs))
 
     @app.get("/api/workforce/workers/<worker_id>/history")
@@ -279,20 +291,20 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def workforce_employment_status(worker_id: str):
         data = body()
-        return worker_response(fleet.mutate(service.set_employment_status, worker_id, data.get("status"),
-                                            data.get("reason")))
+        return worker_response(fleet.mutate(service.set_employment_status, worker_id, _text(data, "status"),
+                                            _text(data, "reason")))
 
     @app.post("/api/workforce/workers/<worker_id>/credentials")
     @guarded
     def workforce_issue_credential(worker_id: str):
         data = body()
         change = fleet.mutate(
-            service.issue_credential, worker_id, data.get("code"), _opt(data, "issuer") or "Site Training Office",
-            effective_from=_opt(data, "effective_from"), expires_at=_opt(data, "expires_at"),
+            service.issue_credential, worker_id, _text(data, "code"), _text(data, "issuer") or "Site Training Office",
+            effective_from=_text(data, "effective_from"), expires_at=_text(data, "expires_at"),
             equipment_scope=_list(data.get("equipment_scope")), task_scope=_list(data.get("task_scope")),
-            site_scope=_list(data.get("site_scope")), supervision_requirement=_opt(data, "supervision_requirement"),
-            verification_status=_opt(data, "verification_status") or "SOURCE_VERIFIED",
-            credential_number=_opt(data, "credential_number"),
+            site_scope=_list(data.get("site_scope")), supervision_requirement=_text(data, "supervision_requirement"),
+            verification_status=_text(data, "verification_status") or "SOURCE_VERIFIED",
+            credential_number=_text(data, "credential_number"),
         )
         return worker_response(change, 201)
 
@@ -300,9 +312,9 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @guarded
     def workforce_record_training(worker_id: str):
         data = body()
-        change = fleet.mutate(service.record_training, worker_id, data.get("course_code"),
-                              _opt(data, "course_version") or "1", completed_at=_opt(data, "completed_at"),
-                              expires_at=_opt(data, "expires_at"))
+        change = fleet.mutate(service.record_training, worker_id, _text(data, "course_code"),
+                              _text(data, "course_version") or "1", completed_at=_text(data, "completed_at"),
+                              expires_at=_text(data, "expires_at"))
         return worker_response(change, 201)
 
     @app.get("/api/workforce/credential-definitions")
@@ -313,18 +325,18 @@ def register_inventory_routes(app, twin, api_error) -> None:
     @app.post("/api/workforce/credentials/<credential_id>/renew")
     @guarded
     def workforce_renew_credential(credential_id: str):
-        return worker_response(fleet.mutate(service.renew_credential, credential_id, _opt(body(), "expires_at")))
+        return worker_response(fleet.mutate(service.renew_credential, credential_id, _text(body(), "expires_at")))
 
     @app.post("/api/workforce/credentials/<credential_id>/verify")
     @guarded
     def workforce_verify_credential(credential_id: str):
         return worker_response(fleet.mutate(service.verify_credential, credential_id,
-                                            body().get("verification_status")))
+                                            _text(body(), "verification_status")))
 
     @app.post("/api/workforce/credentials/<credential_id>/revoke")
     @guarded
     def workforce_revoke_credential(credential_id: str):
-        return worker_response(fleet.mutate(service.revoke_credential, credential_id, body().get("reason")))
+        return worker_response(fleet.mutate(service.revoke_credential, credential_id, _text(body(), "reason")))
 
     @app.get("/api/workforce/changes")
     @guarded

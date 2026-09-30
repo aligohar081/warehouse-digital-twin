@@ -150,3 +150,28 @@ def test_fleet_page_is_served_and_linked(client):
     assert client.get("/fleet.js").status_code == 200
     assert client.get("/fleet.css").status_code == 200
     assert b'href="/fleet.html"' in client.get("/").data
+
+
+def test_non_string_scalars_in_a_body_are_a_400_not_a_500(client):
+    def refused(response, field):
+        assert response.status_code == 400
+        assert f"{field} must be a string" in response.get_json()["error"]
+
+    refused(client.post("/api/fleet/robots/AST-000201/ota", json={"release_id": ["x"]}), "release_id")
+    refused(client.post("/api/workforce/workers/E-10002/credentials", json={"code": {"a": 1}}), "code")
+    refused(client.patch("/api/fleet/robots/AST-000201", json={"fleet_id": {"a": 1}, "reason": "x"}), "fleet_id")
+    refused(client.patch("/api/fleet/robots/AST-000201", json={"fleet_id": "F", "reason": ["x"]}), "reason")
+    refused(client.post("/api/fleet/robots", json={"model_code": "AC-TR50", "site_code": True}), "site_code")
+    refused(client.post("/api/workforce/workers", json={"display_name": ["Pat"]}), "display_name")
+    refused(client.post("/api/workforce/workers", json={"display_name": "Pat", "organization": {"a": 1}}),
+            "organization")
+    refused(client.patch("/api/workforce/workers/E-10002", json={"reason": "x", "supervisor_id": [1]}),
+            "supervisor_id")
+    assert client.get("/api/fleet/robots/AST-000201").get_json()["robot"]["fleet_id"] == "WH-02-FLEET"  # untouched
+
+
+def test_scalar_fields_are_stripped_and_numbers_are_stringified(client):
+    made = client.post("/api/fleet/robots", json={"model_code": " AC-TR50 ", "site_code": "WH-02", "serial_number": 4711})
+    assert made.status_code == 201 and made.get_json()["robot"]["serial_number"] == "4711"
+    blank = client.patch("/api/workforce/workers/E-10002", json={"reason": "x", "organization": "  "})
+    assert blank.status_code == 400 and "organization cannot be empty" in blank.get_json()["error"]
