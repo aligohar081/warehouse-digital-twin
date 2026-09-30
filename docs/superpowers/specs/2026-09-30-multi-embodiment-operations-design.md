@@ -64,7 +64,7 @@ After this spec: B (twin → PWA ingestion and passport re-mint), then F (the tw
 
 ## 2. Architecture
 
-New and changed units. Each unit has one job, and the twin imports them. Nothing in `backend/inventory/` changes except the seed (§4.1).
+New and changed units. Each unit has one job, and the twin imports them. Nothing in `backend/inventory/` changes except the seed (§4.1) and the release rows' new `known_issues` column (§13.2), which bumps the inventory `SCHEMA_VERSION` to 3.
 
 | Unit | Responsibility | Step |
 |---|---|---|
@@ -169,7 +169,7 @@ The layout exposes `required_zones`, which the system checks read (§10.5). They
 
 **Clearance is a per-cell attribute.** A cell's clearance is `WIDE` if any zone containing it is marked WIDE, otherwise `NARROW` if any zone marks it NARROW. A walkable cell that no zone marks, such as (1..6, 1) or (1..3, 6), defaults to `NARROW`.
 
-**A cell may belong to several zones.** Examples: `cross_aisle` overlaps a crossing cell's neighbours, and `patrol_loop` overlaps the aisles. `zone_of_cell` returns the most specific zone: the smallest by cell count, with ties broken by declaration order. `zones_of_cell` returns all of them.
+**A cell may belong to several zones.** Examples: `cross_aisle` overlaps a crossing cell's neighbours, and `patrol_loop` overlaps the aisles. `patrol_loop` is a route (`route=True`), not a place. `zone_of_cell` returns the most specific non-route zone: the smallest by cell count, with ties broken by declaration order. `zones_of_cell` returns all of them, routes included.
 
 **Slots.** A slot is a (rack or shelf cell, level) pair. There are 4 × 9 × 5 = 180 pallet slots and 4 × 9 × 3 = 108 tote slots. Each slot is served from a face cell:
 - pallet racks from the pallet aisle named in the table: rack y2 from y3, y5 from y4, y6 from y7, and y9 from y8;
@@ -332,7 +332,7 @@ Lift adds `m × g × Δh / 3600 / 0.6` Wh, where m is the load plus the carriage
 - `transit_until_tick` and `transit_to` (walking between zones);
 - `certification_scopes`: `{code: {"equipment": [...], "site": [...]}}`, synced from inventory credentials alongside `certifications`.
 
-**Movement.** A move from zone A to zone B takes `manhattan(centre A, centre B) × CELL_SIZE_M ÷ 1.2 m/s`. During the move the person is "in transit on the walkway", which is what triggers crossing waits (§5.3). People are not grid entities and don't block robots, except through the rules below.
+**Movement.** A move from zone A to zone B takes `manhattan(centre A, centre B) × CELL_SIZE_M ÷ 1.2 m/s`. During the move the person is in neither zone. A move is "in transit on the walkway" only when it crosses the walkway: the two zone centres lie on opposite sides of the walkway strip, or either end is the walkway zone itself. Only such a move triggers crossing waits (§5.3). People are not grid entities and don't block robots, except through the rules below.
 
 **Who drives movement.** The shift engine moves people (§11.3), and so do human jobs (§9.2). An `OFF_DUTY` operator has `zone = None`. On the new floor, shift status follows the simulated shift clock (§11.4).
 
