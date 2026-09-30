@@ -79,6 +79,28 @@ def test_commission_validation(inv):
     assert inv.store.count("robot_asset") == 1  # failed commissions left nothing behind
 
 
+def test_a_generated_serial_never_collides_with_one_that_was_supplied(clock):
+    probe = open_inventory(":memory:", demo=False, clock=clock)
+    commission(probe, serial_number="ACM-TR50-2026-01001")  # the generator's very first value
+    upcoming = int(probe.store.get_meta("counter:serial:ACME")) + 1  # what it would hand out next
+    inv = open_inventory(":memory:", demo=False, clock=clock)
+    taken = f"ACM-TR50-2026-{upcoming:05d}"
+    first = commission(inv, serial_number=taken)
+    second = commission(inv)  # the generator reaches `taken`; it must skip it, not raise Conflict
+    assert inv.get_robot(first)["serial_number"] == taken
+    assert inv.get_robot(second)["serial_number"] not in ("", taken)
+
+
+def test_generated_serials_stay_unique_if_the_counter_is_replayed(inv):
+    first = commission(inv)
+    inv.store.set_meta("counter:serial:ACME", "1000")  # e.g. counters restored from an older backup
+    second = commission(inv)
+    robots = [inv.get_robot(asset) for asset in (first, second)]
+    assert len({r["serial_number"] for r in robots}) == 2
+    components = [c["serial"] for r in robots for c in r["components"]]
+    assert len(set(components)) == len(components)
+
+
 def test_an_older_release_can_be_commissioned_and_models_without_battery_report_none(inv):
     asset = commission(inv, software_release_id="AC-TR50:SW:2.1.0")
     assert inv.get_robot(asset)["reported"]["software_version"] == "2.1.0"

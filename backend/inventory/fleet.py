@@ -83,10 +83,20 @@ class FleetMixin:
                             action=action, before=before, after=self._asset_document(asset_id),
                             actor=actor, reason=reason, subject_id=subject_id)
 
-    def _new_serial(self, manufacturer: Mapping[str, Any], code: str) -> str:
-        number = self.store.bump_counter(f"serial:{manufacturer['manufacturer_id']}", start=1001)
+    def _new_serial(self, manufacturer: Mapping[str, Any], code: str, component: bool = False) -> str:
+        """The next generated serial that no existing asset (or, for a part, component)
+        carries — an explicitly supplied serial may already have claimed it."""
         short = code.split("-", 1)[-1]
-        return f"{manufacturer['serial_prefix']}-{short}-{self.now().year}-{number:05d}"
+        while True:
+            number = self.store.bump_counter(f"serial:{manufacturer['manufacturer_id']}", start=1001)
+            serial = f"{manufacturer['serial_prefix']}-{short}-{self.now().year}-{number:05d}"
+            if component:
+                taken = self.store.exists("component", "serial", serial)
+            else:
+                taken = self.store.count("robot_asset", "manufacturer_id = ? AND serial_number = ?",
+                                         (manufacturer["manufacturer_id"], serial)) > 0
+            if not taken:
+                return serial
 
     def _install_component(self, asset_id: str, slot: str, part_number: str,
                            hw_revision: Optional[str]) -> Dict[str, Any]:
@@ -99,7 +109,7 @@ class FleetMixin:
         row = {
             "component_id": self.store.next_id("CMP-", "component", "component_id", 7),
             "asset_id": asset_id, "slot": slot, "part_number": part_number,
-            "serial": self._new_serial(manufacturer, part_number), "hw_revision": hw,
+            "serial": self._new_serial(manufacturer, part_number, component=True), "hw_revision": hw,
             "firmware_release_id": release["release_id"] if release else None,
             "installed_at": self.now_iso(), "removed_at": None, "status": "INSTALLED",
         }
