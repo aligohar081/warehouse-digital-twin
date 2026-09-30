@@ -172,7 +172,9 @@ class DigitalTwin:
         self.inventory = open_inventory(inventory_path, demo=demo, settings=lambda: CONFIG)
         self.fleet = FleetBridge(self, self.inventory)
 
-        if demo:
+        # The classic demo seed only fits the classic floor; the
+        # distribution-centre floor has no twin seed yet and boots empty.
+        if demo and self.layout_name == "classic":
             self.load_demo(create_tasks=demo_tasks)
 
     # ------------------------------------------------------------------ #
@@ -726,7 +728,8 @@ class DigitalTwin:
             category=LogCategory.SYSTEM,
             level=LogLevel.WARNING,
         )
-        self.load_demo(create_tasks=demo_tasks)
+        if self.layout_name == "classic":
+            self.load_demo(create_tasks=demo_tasks)
 
     def synchronize(self) -> None:
         self.last_sync = now_iso()

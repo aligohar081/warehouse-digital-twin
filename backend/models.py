@@ -283,6 +283,19 @@ class CellType(str, enum.Enum):
     PARKING = "PARKING"
     ROBOT = "ROBOT"
     BOX = "BOX"
+    # The distribution-centre floor (backend/layouts/distribution_center.py).
+    # Classic never uses these, and WALKABLE_CELLS below stays classic's set.
+    DOCK = "DOCK"
+    DOCK_DOOR = "DOCK_DOOR"
+    STAGING = "STAGING"
+    PALLET_RACK = "PALLET_RACK"
+    TOTE_SHELF = "TOTE_SHELF"
+    WALKWAY = "WALKWAY"
+    STATION = "STATION"
+    CONVEYOR = "CONVEYOR"
+    SORTER = "SORTER"
+    WORKSHOP = "WORKSHOP"
+    DRONE_PAD = "DRONE_PAD"
 
 
 #: Cell types a robot is allowed to drive through.

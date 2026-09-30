@@ -10,8 +10,11 @@ from collections import deque
 from typing import Any, Dict, List, Optional, Set
 
 from .layouts import build_layout
-from .layouts.base import Zone  # noqa: F401  (re-exported; Zone used to live here)
+from .layouts.base import NARROW, WIDE, Slot, Zone
 from .models import Cell, CellType, manhattan
+
+#: Cell types no robot ever occupies or flies through.
+_SOLID = {CellType.WALL, CellType.DOCK_DOOR}
 
 
 class Warehouse:
@@ -25,7 +28,37 @@ class Warehouse:
         self.zones: Dict[str, Zone] = plan.zones
         self.aliases: Dict[str, str] = plan.aliases
         self.walkable_types: Set[CellType] = plan.walkable_types
+        self.walkable_extras: Set[Cell] = plan.walkable_extras
+        self.crossings: Dict[Cell, str] = plan.crossings
+        self.slots: Dict[str, Slot] = plan.slots
+        self.fixed_stations: Dict[Cell, str] = plan.fixed_stations
         self.required_zones = plan.required_zones
+        self._index()
+
+    def _index(self) -> None:
+        """Per-cell lookups derived once from the zones: which zones hold a
+        cell, its clearance class, the no-fly set and the slots at a cell."""
+        self._cell_zones: Dict[Cell, List[Zone]] = {}
+        for zone in self.zones.values():
+            for cell in zone.cells:
+                self._cell_zones.setdefault(cell, []).append(zone)
+        self._no_fly: Set[Cell] = {
+            cell for zone in self.zones.values() if zone.attributes.get("no_fly") for cell in zone.cells
+        }
+        self._clearance: Dict[Cell, str] = {}
+        for y in range(self.height):
+            for x in range(self.width):
+                if not self.is_walkable(x, y):
+                    continue
+                cell = (x, y)
+                marks = {zone.attributes.get("clearance") for zone in self._cell_zones.get(cell, [])}
+                if cell in self.crossings:
+                    self._clearance[cell] = self.crossings[cell]
+                else:
+                    self._clearance[cell] = WIDE if WIDE in marks else NARROW
+        self._slots_at: Dict[Cell, List[Slot]] = {}
+        for slot in sorted(self.slots.values(), key=lambda s: s.level):
+            self._slots_at.setdefault(slot.cell, []).append(slot)
 
     # ------------------------------------------------------------------ #
     # Queries
@@ -39,7 +72,9 @@ class Warehouse:
         return self.grid[y][x]
 
     def is_walkable(self, x: int, y: int) -> bool:
-        return self.cell_type(x, y) in self.walkable_types
+        """Drivable by a robot with no mobility profile: on classic, exactly
+        WALKABLE_CELLS; on a layered floor, what a narrow ground robot may use."""
+        return self.cell_type(x, y) in self.walkable_types or (x, y) in self.walkable_extras
 
     def walkable_cells(self) -> List[Cell]:
         return [
@@ -65,11 +100,47 @@ class Warehouse:
             key = self.aliases.get(str(name).strip().lower().replace(" ", "_"))
         return self.zones.get(key) if key else None
 
+    def zones_of_cell(self, cell: Cell) -> List[Zone]:
+        """Every zone containing `cell`, in declaration order."""
+        return list(self._cell_zones.get(cell, ()))
+
     def zone_of_cell(self, cell: Cell) -> Optional[Zone]:
-        for zone in self.zones.values():
-            if cell in zone.cells:
-                return zone
-        return None
+        """The most specific place containing `cell`: the smallest non-route
+        zone by cell count, ties going to the zone declared first. Route zones
+        (patrol_loop) are paths, not places, so only zones_of_cell lists them."""
+        zones = [zone for zone in self._cell_zones.get(cell, ()) if "route" not in zone.attributes]
+        if not zones:
+            return None
+        return min(zones, key=lambda zone: len(zone.cells))  # min() keeps the first of equals
+
+    def clearance(self, cell: Cell) -> Optional[str]:
+        """WIDE or NARROW for a walkable cell (WIDE wins where zones
+        overlap; unmarked cells are NARROW); None for anything else."""
+        return self._clearance.get(cell)
+
+    def is_crossing(self, cell: Cell) -> bool:
+        return cell in self.crossings
+
+    def is_no_fly(self, cell: Cell) -> bool:
+        return cell in self._no_fly
+
+    def is_flyable(self, cell: Cell) -> bool:
+        """A drone may fly over `cell`: any interior, non-wall cell outside
+        the no-fly zones (racks and shelves included)."""
+        x, y = cell
+        if not (0 < x < self.width - 1 and 0 < y < self.height - 1):
+            return False
+        return self.grid[y][x] not in _SOLID and cell not in self._no_fly
+
+    def slot(self, slot_id: str) -> Optional[Slot]:
+        return self.slots.get(slot_id)
+
+    def slots_at(self, cell: Cell) -> List[Slot]:
+        """The slots of one rack or shelf cell, lowest level first."""
+        return list(self._slots_at.get(cell, ()))
+
+    def slot_at(self, cell: Cell, level: int) -> Optional[Slot]:
+        return next((slot for slot in self._slots_at.get(cell, ()) if slot.level == level), None)
 
     def label_for_cell(self, cell: Cell) -> str:
         zone = self.zone_of_cell(cell)
