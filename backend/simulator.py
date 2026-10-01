@@ -948,8 +948,12 @@ class Simulator:
     def _begin_lift(self, robot: Any, task: Any, action: Any) -> int:
         profile = robot.mobility
         slot = self._slot_for(action)
-        level = action.level if action.level is not None else (slot.level if slot else None)
-        ok, reason = reach_ok(level, profile.max_shelf_level)
+        if slot is not None:
+            if action.level is not None and action.level != slot.level:
+                raise ValueError(f"level {action.level} does not match slot {slot.slot_id}, "
+                                 f"which is on level {slot.level}")
+            action.level = slot.level  # the step reports the level it resolved
+        ok, reason = reach_ok(action.level, profile.max_shelf_level)
         if not ok:
             raise ValueError(reason)
         height = slot.height_m if slot else float(action.params.get("height_m", 0.0))
@@ -980,9 +984,12 @@ class Simulator:
     def _begin_takeoff(self, robot: Any, task: Any, action: Any) -> int:
         if not robot.mobility.is_air:
             raise ValueError("it cannot fly")
+        if robot.layer != GROUND:
+            raise ValueError("it is already flying")
         altitude = float(action.params.get("altitude_m", HOVER_CLEARANCE_M))
+        ticks = step_ticks(robot.mobility, "TAKEOFF")  # before the layer changes: no timing leaves it grounded
         self.twin.set_robot_layer(robot.id, AIR, altitude_m=altitude)
-        return step_ticks(robot.mobility, "TAKEOFF")
+        return ticks
 
     def _finish_takeoff(self, robot: Any, task: Any, action: Any) -> bool:
         return True
@@ -1019,9 +1026,17 @@ class Simulator:
             raise ValueError(f"it is already holding {robot.carrying_box}")
         if "from_conveyor" in params:
             cell = tuple(params["from_conveyor"])
-            item = twin.equipment.conveyor.item_at(cell) if twin.equipment is not None else None
+            if twin.equipment is None or cell not in twin.equipment.conveyor:
+                raise ValueError(f"({cell[0]},{cell[1]}) is not a conveyor cell")
+            if cell != self._arm_work_cell(robot) and manhattan(cell, robot.position) > 1:
+                raise ValueError(f"conveyor cell ({cell[0]},{cell[1]}) is out of reach")
+            item = twin.equipment.conveyor.item_at(cell)
             if item is None or (params.get("order_id") and item.order_id != params["order_id"]):
                 raise ValueError(f"no item for {params.get('order_id')} on conveyor cell ({cell[0]},{cell[1]})")
+            if item.stop_at != cell:
+                # An item riding past would be gone before a grasp (or a retry) ends.
+                raise ValueError(f"the item on conveyor cell ({cell[0]},{cell[1]}) is not being held there")
+            params["item_id"] = item.box_id  # what it set out to take: finish checks it is still the one there
         elif "unit_from" in params:
             tote = twin.find_box(params["unit_from"])
             if tote is None:
@@ -1045,6 +1060,11 @@ class Simulator:
 
     def _finish_grasp(self, robot: Any, task: Any, action: Any) -> bool:
         twin, params = self.twin, action.params
+        if "from_conveyor" in params:
+            cell = tuple(params["from_conveyor"])
+            there = twin.equipment.conveyor.item_at(cell)
+            if there is None or there.box_id != params.get("item_id"):
+                raise ValueError(f"the item it was grasping is no longer on conveyor cell ({cell[0]},{cell[1]})")
         if robot.mobility.embodiment_class in GRASPING_CLASSES and twin.faults.roll("grasp_fail"):
             misses = int(params.get("misses", 0)) + 1
             params["misses"] = misses
@@ -1092,7 +1112,10 @@ class Simulator:
         box = self.twin.find_box(robot.carrying_box)
         if box is None:
             raise ValueError("it is not holding anything")
-        if "into_carton" not in action.params:
+        if "into_carton" in action.params:
+            if box.order_id != action.params["into_carton"]:
+                raise ValueError(f"{box.name} is for order {box.order_id}, not {action.params['into_carton']}")
+        else:
             slot = self._slot_for(action)
             if slot is None:
                 raise ValueError("it was given no slot to place into")
@@ -1169,6 +1192,8 @@ class Simulator:
 
     def _begin_place_on_conveyor(self, robot: Any, task: Any, action: Any) -> Optional[int]:
         twin, cell = self.twin, action.target
+        if cell is None:
+            raise ValueError("it was given no conveyor cell to place on")
         if twin.equipment is None or cell not in twin.equipment.conveyor:
             raise ValueError(f"({cell[0]},{cell[1]}) is not a conveyor cell")
         if manhattan(cell, robot.position) > 1:
@@ -1199,6 +1224,8 @@ class Simulator:
                              f"(known: {', '.join(WAIT_CLEAR_REASONS)})")
         if self.twin.equipment is None:
             raise ValueError("this floor has no conveyor")
+        if not action.params.get("cell"):
+            raise ValueError("it was given no conveyor cell to wait on")
         return 0
 
     def _finish_wait_clear(self, robot: Any, task: Any, action: Any) -> bool:
