@@ -34,6 +34,7 @@ class LineItem:
     task_id: Optional[str] = None
     stop_at: Optional[Cell] = None   # an arm's working cell it waits on
     ticks: int = 0                   # ticks on its current cell (or in the sorter)
+    routed_to: Optional[str] = None  # the dock the sorter decided on, once, for a carton inside it
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -316,9 +317,13 @@ class Equipment:
                 continue
             box = twin.find_box(item.box_id)
             lane = box.destination if box.destination in sorter.lanes else sorter.lanes[0]
-            dock = lane
-            if twin.faults.roll("mis_sort"):
-                dock = next(other for other in sorter.lanes if other != lane)
+            if item.routed_to is None:
+                # Decided once per carton, so a full dock doesn't re-roll the
+                # fault (and use up an armed one) on every tick it waits.
+                item.routed_to = lane
+                if twin.faults.roll("mis_sort"):
+                    item.routed_to = next((other for other in sorter.lanes if other != lane), lane)
+            dock = item.routed_to
             cell = self.free_dock_cell(dock)
             if cell is None:
                 continue  # the dock is full: the carton waits in the sorter
