@@ -110,6 +110,10 @@ CONFIG: Dict[str, Any] = {
     "STOCK_AUTO_RECONCILE_UNITS": 2,
     "CARTON_TARE_KG": 0.3,
     "TOTE_TARE_KG": 1.5,
+    # The conveyor line and sorter (backend/equipment.py): belt speed, and how
+    # long the sorter takes to pull a carton in and to drop it on its dock.
+    "CONVEYOR_SPEED_MPS": 0.5,
+    "SORTER_TRANSFER_S": 2.0,
     # Injected faults (backend/faults.py), all 0.0-1.0 and off by default like
     # FALSE_SUCCESS_RISK: a drone count off by 1-3, a forklift placing a level
     # off, an arm or picker missing a grasp, a conveyor segment jamming per
@@ -620,6 +624,11 @@ class EventType(str, enum.Enum):
     ROBOT_SAFETY_RESUMED = "ROBOT_SAFETY_RESUMED"
     # A person finished walking from one zone to another (backend/people.py).
     PERSON_MOVED = "PERSON_MOVED"
+    # Floor equipment (backend/equipment.py): a box changed hands (robot,
+    # conveyor, arm, sorter, dock), and a conveyor segment jammed or was cleared.
+    HANDOFF = "HANDOFF"
+    CONVEYOR_JAMMED = "CONVEYOR_JAMMED"
+    CONVEYOR_CLEARED = "CONVEYOR_CLEARED"
 
 
 class ActionType(str, enum.Enum):

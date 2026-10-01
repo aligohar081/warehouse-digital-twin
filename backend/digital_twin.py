@@ -16,6 +16,7 @@ from .agent import Agent
 from .box import Box
 from .event_system import EventSystem
 from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, LAYERS, MobilityProfile
+from .equipment import Equipment, LineItem
 from .faults import FaultInjector
 from .fleet_bridge import FleetBridge
 from .goods import StockLedger
@@ -136,6 +137,9 @@ class DigitalTwin:
         # true quantities (backend/goods.py) — the single source of truth for
         # stock. Empty on the classic floor, which has no slots.
         self.stock = StockLedger(self.warehouse)
+        # The conveyor line, the sorter and their hand-off log (backend/
+        # equipment.py); None on a floor without them (classic).
+        self.equipment: Optional[Equipment] = Equipment.for_floor(self)
         self.agents: Dict[str, Agent] = {}
         self.operators: Dict[str, Operator] = {}
 
@@ -486,6 +490,9 @@ class DigitalTwin:
                 spot = (int(position[0]), int(position[1]))
                 if not self.warehouse.is_inside(*spot):
                     raise ValueError(f"Position {spot} is outside the warehouse")
+                on_line = self.equipment is not None and spot in self.equipment.conveyor
+                if on_line and not self.equipment.conveyor.is_free(spot):
+                    raise ValueError(f"Conveyor cell {spot} is occupied")
             else:
                 default = self.warehouse.resolve_zone("shelf_a")
                 if position is None and default is None:
@@ -515,6 +522,9 @@ class DigitalTwin:
             if slot:  # recorded first: a taken slot raises before the box exists
                 self.stock.put(slot, box.id, sku, int(quantity), kind=box_kind.value)
                 box.slot = slot
+            elif self.equipment is not None and spot in self.equipment.conveyor:
+                self.equipment.conveyor.load(spot, LineItem(box.id, order_id=order_id))  # it rides the line
+                box.status = BoxStatus.DELIVERING
             self.boxes[box.id] = box
 
         data = None
@@ -881,6 +891,7 @@ class DigitalTwin:
             self.scheduler.clear()
             self.faults.clear()
             self.stock = StockLedger(self.warehouse)
+            self.equipment = Equipment.for_floor(self)
             for key in self.statistics:
                 self.statistics[key] = 0
             self.navigation = NavigationEngine(self.warehouse)

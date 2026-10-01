@@ -144,6 +144,8 @@ class Simulator:
                     if task is not None and not task.is_terminal:
                         twin.tasks.fail_task(task, f"Controller error: {exc}")
 
+            if twin.equipment is not None:
+                twin.equipment.tick()  # the conveyor and sorter move after robots place items
             self._detect_collisions()
             self._auto_charge()
             self._check_maintenance()
