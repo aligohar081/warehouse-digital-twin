@@ -17,14 +17,17 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from datetime import datetime
 
-from . import people
-from .eligibility import robot_eligibility
+from . import goods, people
+from .eligibility import reach_ok, robot_eligibility
+from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, lift_ticks, step_ticks
+from .goods import carton_weight_kg
 from .maintenance import maintenance_reason
 from .models import (
     CONFIG,
     ActionType,
     Cell,
     CellType,
+    BoxKind,
     BoxStatus,
     EventType,
     LogCategory,
@@ -37,10 +40,32 @@ from .models import (
     TaskStatus,
     TaskType,
     cell_dict,
+    manhattan,
 )
 
 PICK_TICKS = 4
 DELIVER_TICKS = 4
+
+#: The job types that predate physical durations: their PICK and DELIVER keep
+#: PICK_TICKS / DELIVER_TICKS on every floor. The PICK and DELIVER of every
+#: newer job type take the body's grasp_s / place_s (spec §5.4).
+TIMED_BY_TICKS = frozenset({
+    TaskType.PICK_AND_DELIVER, TaskType.PICK_BOX, TaskType.DELIVER_BOX,
+    TaskType.MOVE_BOX, TaskType.BATCH_DELIVER,
+})
+
+#: Job steps with a physical duration, run by Simulator._act_step.
+STEP_ACTIONS = frozenset({
+    ActionType.LIFT_TO, ActionType.LOWER, ActionType.TAKEOFF, ActionType.LAND,
+    ActionType.GRASP, ActionType.PLACE, ActionType.PLACE_ON_CONVEYOR, ActionType.WAIT_CLEAR,
+})
+
+#: The conditions a WAIT_CLEAR step can wait out.
+WAIT_CLEAR_REASONS = ("CONVEYOR_OCCUPIED", "AWAITING_ITEM")
+
+#: Bodies whose grasp can miss (GRASP_FAIL_RISK), and how often they retry.
+GRASPING_CLASSES = frozenset({"ARM", "PICKER"})
+GRASP_RETRIES = 2
 
 
 class Simulator:
@@ -181,6 +206,7 @@ class Simulator:
         task = twin.tasks.get(robot.current_task) if robot.current_task else None
 
         if task is None:
+            robot.activity = None
             if robot.status == RobotStatus.CHARGING:
                 self._continue_idle_charge(robot)
             elif robot.status != RobotStatus.IDLE:
@@ -192,6 +218,7 @@ class Simulator:
             return
         if task.is_terminal:
             robot.current_task = None
+            robot.activity = None
             robot.clear_path()
             robot.set_status(RobotStatus.IDLE)
             return
@@ -202,6 +229,7 @@ class Simulator:
         if action is None:
             twin.tasks.complete_task(task)
             return
+        robot.activity = action.type.value
 
         if action.type == ActionType.NAVIGATE:
             self._act_navigate(robot, task, action)
@@ -211,6 +239,8 @@ class Simulator:
             self._act_deliver(robot, task, action)
         elif action.type == ActionType.CHARGE:
             self._act_charge(robot, task, action)
+        elif action.type in STEP_ACTIONS:
+            self._act_step(robot, task, action)
         elif action.type == ActionType.COMPLETE:
             action.done = True
             twin.tasks.complete_task(task)
@@ -251,6 +281,8 @@ class Simulator:
                 TaskStatus.TRANSPORTING if robot.carrying_box else TaskStatus.IN_PROGRESS,
                 action.description,
             )
+            if robot.mobility is not None:
+                self._emit_step(robot, task, action)
 
         if not robot.current_path or robot.target_position != target:
             if not self._plan_path(robot, task, target, action.target_name, replan=False):
@@ -590,10 +622,12 @@ class Simulator:
                 box_id=box.id,
                 position=cell_dict(robot.position),
             )
+            if robot.mobility is not None:
+                self._emit_step(robot, task, action)
             return
 
         robot.action_timer += 1
-        if robot.action_timer < PICK_TICKS:
+        if robot.action_timer < self._handling_ticks(robot, task, "GRASP", PICK_TICKS):
             return
 
         previous = box.set_status(BoxStatus.CARRIED)
@@ -616,7 +650,9 @@ class Simulator:
             task_id=task.id,
             box_id=box.id,
             position=cell_dict(robot.position),
+            data=self._load_data(robot, box) if robot.mobility is not None else None,
         )
+        self._staging_handoff(robot, task, box, into_robot=True, arrived=True)
         self._check_battery_thresholds(robot, task)
         self._advance(task)
 
@@ -644,10 +680,12 @@ class Simulator:
                 box_id=box.id,
                 position=cell_dict(robot.position),
             )
+            if robot.mobility is not None:
+                self._emit_step(robot, task, action)
             return
 
         robot.action_timer += 1
-        if robot.action_timer < DELIVER_TICKS:
+        if robot.action_timer < self._handling_ticks(robot, task, "PLACE", DELIVER_TICKS):
             return
 
         previous = box.set_status(BoxStatus.DELIVERED)
@@ -694,14 +732,494 @@ class Simulator:
             box_id=box.id,
             position=cell_dict(robot.position),
         )
+        self._staging_handoff(robot, task, box, into_robot=False, arrived=not false_success)
         self._check_battery_thresholds(robot, task)
         self._advance(task)
+
+    def _handling_ticks(self, robot: Any, task: Any, step: str, classic_ticks: int) -> int:
+        """How long a PICK (step GRASP) or DELIVER (step PLACE) takes: the
+        body's grasp_s / place_s for a new job type, PICK_TICKS / DELIVER_TICKS
+        for the older ones and for any robot without a floor profile."""
+        profile = robot.mobility
+        if profile is None or task.type in TIMED_BY_TICKS:
+            return classic_ticks
+        if (profile.grasp_s if step == "GRASP" else profile.place_s) is None:
+            return classic_ticks
+        return step_ticks(profile, step)
+
+    def _load_data(self, robot: Any, box: Any) -> Dict[str, Any]:
+        """What a pick or lift reports: the load's kind and true and declared
+        weights, against the body's limits — what payload_within_limit reads."""
+        profile = robot.mobility
+        return {
+            "kind": box.kind.value, "true_weight_kg": box.true_weight_kg,
+            "declared_weight_kg": box.declared_weight_kg, "max_payload_kg": profile.max_payload_kg,
+            "max_shelf_level": profile.max_shelf_level, "embodiment_class": profile.embodiment_class,
+        }
+
+    def _staging_handoff(self, robot: Any, task: Any, box: Any, into_robot: bool, arrived: bool) -> None:
+        """A robot picking from, or dropping at, a staging area hands the box
+        over to or from that area (spec §8.3). `arrived` is False when the
+        box never reached the receiver (a false-success delivery)."""
+        twin = self.twin
+        if twin.equipment is None or robot.mobility is None:
+            return
+        zone = next((z for z in twin.warehouse.zones_of_cell(robot.position)
+                     if z.cell_type is CellType.STAGING), None)
+        if zone is None:
+            return
+        observed = {"present": True, "weight_kg": box.true_weight_kg} if arrived else {"present": False}
+        giver, receiver = (zone.key, robot.id) if into_robot else (robot.id, zone.key)
+        twin.equipment.record(box, giver, receiver, robot.position,
+                              {"present": True, "weight_kg": box.declared_weight_kg}, observed, task.id)
+
+    # ---- job steps (spec §5.4) ----------------------------------------- #
+    def _act_step(self, robot: Any, task: Any, action: Any) -> None:
+        """One tick of a job step: hold for a physical wait; begin (check the
+        step can happen, work out how many ticks it takes, announce it);
+        wait out the duration; finish (make it so, and say what happened).
+        A step that can't happen fails its task with the reason."""
+        if self._step_hold(robot, task, action):
+            return
+        if not action.started:
+            try:
+                ticks = self._begin_step(robot, task, action)
+            except ValueError as exc:
+                self.twin.tasks.fail_task(task, f"{robot.name} {action.type.value} failed: {exc}")
+                return
+            if ticks is None:
+                return  # its precondition isn't met yet: it waits
+            action.started = True
+            action.params["ticks"] = int(ticks)
+            robot.action_timer = 0
+            self._emit_step(robot, task, action)
+            return
+        robot.set_status(self._step_status(robot, action))
+        robot.action_timer += 1
+        if robot.action_timer < action.params.get("ticks", 0):
+            return
+        try:
+            finished = self._finish_step(robot, task, action)
+        except ValueError as exc:
+            self.twin.tasks.fail_task(task, f"{robot.name} {action.type.value} failed: {exc}")
+            return
+        if finished:
+            self._advance(task)
+
+    def _step_status(self, robot: Any, action: Any) -> RobotStatus:
+        if action.type is ActionType.GRASP:
+            return RobotStatus.PICKING
+        if action.type in (ActionType.PLACE, ActionType.PLACE_ON_CONVEYOR):
+            return RobotStatus.DELIVERING
+        if action.type is ActionType.WAIT_CLEAR:
+            return RobotStatus.WAITING
+        if action.type in (ActionType.LIFT_TO, ActionType.LOWER):
+            return RobotStatus.CARRYING if robot.carrying_box else RobotStatus.PICKING
+        return RobotStatus.MOVING
+
+    def _emit_step(self, robot: Any, task: Any, action: Any) -> None:
+        """ROBOT_STEP for `action` starting."""
+        box = self.twin.find_box(robot.carrying_box or action.box_id)
+        self._step_event(robot, task, action.type.value, action.description, level=action.level, box=box)
+
+    def _step_event(self, robot: Any, task: Any, step: str, description: str, level: Optional[int] = None,
+                    box: Optional[Any] = None, zone: Optional[str] = None,
+                    present: Optional[List[str]] = None) -> None:
+        """ROBOT_STEP: a step starts. It carries what the evaluation's safety
+        checks read: who is next to the robot (`present`, default the people
+        around it), whether it is supervised, the level, and the load's true
+        and declared weights. `zone` defaults to the robot's own."""
+        twin = self.twin
+        if zone is None:
+            here = twin.warehouse.zone_of_cell(robot.position)
+            zone = here.key if here else None
+        if present is None:
+            present = [person.id for person in self._people_near(robot)]
+        twin.events.emit(
+            EventType.ROBOT_STEP,
+            f"{robot.name}: {description}",
+            category=LogCategory.ROBOT,
+            level=LogLevel.DEBUG,
+            robot_id=robot.id,
+            task_id=task.id,
+            box_id=box.id if box else None,
+            position=cell_dict(robot.position),
+            data={
+                "step": step,
+                "zone": zone,
+                "people_present": list(present),
+                "supervision_ok": None,
+                "level": level,
+                "true_weight_kg": box.true_weight_kg if box else None,
+                "declared_weight_kg": box.declared_weight_kg if box else None,
+                "embodiment_class": robot.mobility.embodiment_class,
+                "layer": robot.layer,
+            },
+        )
+
+    def _people_near(self, robot: Any) -> List[Any]:
+        """The people a robot working where it stands is next to: for an arm,
+        everyone in its fenced pack cell; for anything else, everyone in a
+        zone that holds its cell."""
+        station = self.twin.warehouse.fixed_stations.get(robot.position)
+        if station is not None and robot.mobility is not None and robot.mobility.is_fixed:
+            return people.people_in(self.twin, station)
+        return people.people_at(self.twin, robot.position)
+
+    def _step_hold(self, robot: Any, task: Any, action: Any) -> bool:
+        """A physical wait before or during a step (spec §10.3): an arm pauses
+        while the conveyor is jammed at or upstream of its working cell."""
+        work_cell = self._arm_work_cell(robot)
+        if work_cell is not None:
+            jam = self.twin.equipment.conveyor.jam_upstream_of(work_cell)
+            if jam is not None:
+                self._safety_wait(robot, task, "CONVEYOR_JAMMED", jam)
+                return True
+        if robot.wait_reason == "CONVEYOR_JAMMED":
+            self._safety_resume(robot, task)
+        return False
+
+    def _arm_work_cell(self, robot: Any) -> Optional[Cell]:
+        """The conveyor cell a fixed arm works; None for anything else."""
+        twin = self.twin
+        if twin.equipment is None or robot.mobility is None or not robot.mobility.is_fixed:
+            return None
+        station = twin.warehouse.fixed_stations.get(robot.position)
+        return twin.equipment.arm_cells.get(station) if station else None
+
+    def _begin_step(self, robot: Any, task: Any, action: Any) -> Optional[int]:
+        """Check the step can start; returns its ticks, or None to wait."""
+        if robot.mobility is None:
+            raise ValueError("it has no physical body on this floor")
+        begin = {
+            ActionType.LIFT_TO: self._begin_lift, ActionType.LOWER: self._begin_lower,
+            ActionType.TAKEOFF: self._begin_takeoff, ActionType.LAND: self._begin_land,
+            ActionType.GRASP: self._begin_grasp, ActionType.PLACE: self._begin_place,
+            ActionType.PLACE_ON_CONVEYOR: self._begin_place_on_conveyor,
+            ActionType.WAIT_CLEAR: self._begin_wait_clear,
+        }[action.type]
+        ticks = begin(robot, task, action)
+        if ticks is None:
+            robot.set_status(RobotStatus.WAITING)
+            return None
+        robot.set_status(self._step_status(robot, action))
+        if action.type is ActionType.GRASP:
+            status = TaskStatus.PICKING
+        elif action.type in (ActionType.PLACE, ActionType.PLACE_ON_CONVEYOR):
+            status = TaskStatus.DELIVERING
+        else:
+            status = TaskStatus.TRANSPORTING if robot.carrying_box else TaskStatus.IN_PROGRESS
+        self.twin.tasks.set_status(task, status, action.description)
+        return ticks
+
+    def _finish_step(self, robot: Any, task: Any, action: Any) -> bool:
+        """Make the step so; False keeps it going (a retry, or still waiting)."""
+        finish = {
+            ActionType.LIFT_TO: self._finish_lift, ActionType.LOWER: self._finish_lower,
+            ActionType.TAKEOFF: self._finish_takeoff, ActionType.LAND: self._finish_land,
+            ActionType.GRASP: self._finish_grasp, ActionType.PLACE: self._finish_place,
+            ActionType.PLACE_ON_CONVEYOR: self._finish_place_on_conveyor,
+            ActionType.WAIT_CLEAR: self._finish_wait_clear,
+        }[action.type]
+        return finish(robot, task, action)
+
+    def _slot_for(self, action: Any) -> Optional[Any]:
+        if not action.slot_id:
+            return None
+        slot = self.twin.warehouse.slot(action.slot_id)
+        if slot is None:
+            raise ValueError(f"slot {action.slot_id} does not exist")
+        return slot
+
+    def _emit_effect(self, event: EventType, robot: Any, task: Any, message: str,
+                     box: Optional[Any] = None, **data: Any) -> None:
+        """LIFTED / LOWERED / PLACED: what a step physically did."""
+        payload = dict(data)
+        profile = robot.mobility
+        payload.update(embodiment_class=profile.embodiment_class, max_shelf_level=profile.max_shelf_level,
+                       max_payload_kg=profile.max_payload_kg)
+        if box is not None:
+            payload.update(box_id=box.id, kind=box.kind.value, true_weight_kg=box.true_weight_kg,
+                           declared_weight_kg=box.declared_weight_kg)
+        self.twin.events.emit(event, message, category=LogCategory.ROBOT, robot_id=robot.id, task_id=task.id,
+                              box_id=box.id if box else None, position=cell_dict(robot.position), data=payload)
+
+    # LIFT_TO / LOWER: the height difference ÷ lift_speed_mps
+    def _begin_lift(self, robot: Any, task: Any, action: Any) -> int:
+        profile = robot.mobility
+        slot = self._slot_for(action)
+        level = action.level if action.level is not None else (slot.level if slot else None)
+        ok, reason = reach_ok(level, profile.max_shelf_level)
+        if not ok:
+            raise ValueError(reason)
+        height = slot.height_m if slot else float(action.params.get("height_m", 0.0))
+        if height > profile.max_lift_m + 1e-9:
+            raise ValueError(f"{height:.1f} m is above its {profile.max_lift_m:.1f} m lift")
+        action.params["height_m"] = height
+        return lift_ticks(profile, robot.lift_height_m, height)
+
+    def _finish_lift(self, robot: Any, task: Any, action: Any) -> bool:
+        height = action.params["height_m"]
+        robot.lift_height_m = height
+        self._emit_effect(EventType.LIFTED, robot, task,
+                          f"{robot.name} lifted to level {action.level} ({height:.1f} m)",
+                          self.twin.find_box(robot.carrying_box),
+                          level=action.level, height_m=height, slot=action.slot_id)
+        return True
+
+    def _begin_lower(self, robot: Any, task: Any, action: Any) -> int:
+        return lift_ticks(robot.mobility, robot.lift_height_m, 0.0)
+
+    def _finish_lower(self, robot: Any, task: Any, action: Any) -> bool:
+        robot.lift_height_m = 0.0
+        self._emit_effect(EventType.LOWERED, robot, task, f"{robot.name} lowered to the floor",
+                          self.twin.find_box(robot.carrying_box), height_m=0.0)
+        return True
+
+    # TAKEOFF / LAND: takeoff_s / land_s, and only on the drone pad
+    def _begin_takeoff(self, robot: Any, task: Any, action: Any) -> int:
+        if not robot.mobility.is_air:
+            raise ValueError("it cannot fly")
+        altitude = float(action.params.get("altitude_m", HOVER_CLEARANCE_M))
+        self.twin.set_robot_layer(robot.id, AIR, altitude_m=altitude)
+        return step_ticks(robot.mobility, "TAKEOFF")
+
+    def _finish_takeoff(self, robot: Any, task: Any, action: Any) -> bool:
+        return True
+
+    def _begin_land(self, robot: Any, task: Any, action: Any) -> int:
+        x, y = robot.position
+        if robot.layer != AIR:
+            raise ValueError("it is not flying")
+        if self.twin.warehouse.cell_type(x, y) is not CellType.DRONE_PAD:
+            raise ValueError(f"({x},{y}) is not a drone pad cell")
+        if robot.position in self.twin.robot_cells(GROUND):
+            raise ValueError(f"the pad cell ({x},{y}) is taken")
+        return step_ticks(robot.mobility, "LAND")
+
+    def _finish_land(self, robot: Any, task: Any, action: Any) -> bool:
+        self.twin.set_robot_layer(robot.id, GROUND)
+        return True
+
+    # GRASP / PLACE: grasp_s / place_s
+    def _in_slot(self, box: Any, slot: Any) -> bool:
+        """Is `box` physically standing in `slot` right now?"""
+        return (box.status in (BoxStatus.STORED, BoxStatus.RESERVED)
+                and (box.true_slot or box.slot) == slot.slot_id and box.position == slot.cell)
+
+    def _check_forks(self, robot: Any, slot: Any) -> None:
+        """A forklift engages a slot only with its forks at the slot's height."""
+        if robot.mobility.embodiment_class == "FORKLIFT" and abs(robot.lift_height_m - slot.height_m) > 0.01:
+            raise ValueError(f"its forks are at {robot.lift_height_m:.1f} m but slot {slot.slot_id} "
+                             f"is at {slot.height_m:.1f} m")
+
+    def _begin_grasp(self, robot: Any, task: Any, action: Any) -> int:
+        twin, params = self.twin, action.params
+        if robot.carrying_box:
+            raise ValueError(f"it is already holding {robot.carrying_box}")
+        if "from_conveyor" in params:
+            cell = tuple(params["from_conveyor"])
+            item = twin.equipment.conveyor.item_at(cell) if twin.equipment is not None else None
+            if item is None or (params.get("order_id") and item.order_id != params["order_id"]):
+                raise ValueError(f"no item for {params.get('order_id')} on conveyor cell ({cell[0]},{cell[1]})")
+        elif "unit_from" in params:
+            tote = twin.find_box(params["unit_from"])
+            if tote is None:
+                raise ValueError(f"tote {params['unit_from']} does not exist")
+            if manhattan(tote.position, robot.position) > 1:
+                raise ValueError(f"{tote.name} at ({tote.position[0]},{tote.position[1]}) is out of reach")
+        else:
+            box = twin.find_box(action.box_id)
+            if box is None:
+                raise ValueError(f"box {action.box_id} does not exist")
+            slot = self._slot_for(action)
+            if slot is not None:
+                if robot.position not in slot.faces:
+                    raise ValueError(f"it is not at a face of slot {slot.slot_id}")
+                if not self._in_slot(box, slot):
+                    raise ValueError(f"{box.name} is not in slot {slot.slot_id}")
+                self._check_forks(robot, slot)
+            elif box.position != robot.position:
+                raise ValueError(f"{box.name} is at ({box.position[0]},{box.position[1]}), not where it stands")
+        return step_ticks(robot.mobility, "GRASP")
+
+    def _finish_grasp(self, robot: Any, task: Any, action: Any) -> bool:
+        twin, params = self.twin, action.params
+        if robot.mobility.embodiment_class in GRASPING_CLASSES and twin.faults.roll("grasp_fail"):
+            misses = int(params.get("misses", 0)) + 1
+            params["misses"] = misses
+            if misses > GRASP_RETRIES:
+                raise ValueError(f"it missed the grasp {misses} times")
+            robot.action_timer = 0
+            twin.logger.warning(LogCategory.ROBOT, f"{robot.name} missed its grasp — retry {misses} of {GRASP_RETRIES}",
+                                robot_id=robot.id, task_id=task.id, position=cell_dict(robot.position))
+            return False
+        if "from_conveyor" in params:
+            box, _ = twin.equipment.take(tuple(params["from_conveyor"]), robot.id, task.id)
+        elif "unit_from" in params:
+            tote = twin.find_box(params["unit_from"])
+            declared, true = goods.take_units(twin, tote, 1)
+            box = twin.add_box(kind="ITEM", position=robot.position, sku=tote.sku, quantity=1,
+                               weight=declared, true_weight_kg=true, order_id=params.get("order_id"))
+        else:
+            box = twin.find_box(action.box_id)
+            if box.kind is BoxKind.PALLET and box.slot:
+                goods.release(twin, box)  # a pallet leaves storage; a tote keeps its slot
+        previous = box.set_status(BoxStatus.CARRIED)
+        box.assigned_robot, box.assigned_task = robot.id, task.id
+        box.position = robot.position
+        box._picked_from_position = box.position
+        box.pick_count += 1
+        robot.carrying_box = box.id
+        twin.events.emit(
+            EventType.BOX_PICKED,
+            f"{robot.name} grasped {box.name} ({previous.value} → CARRIED)",
+            category=LogCategory.BOX,
+            robot_id=robot.id,
+            task_id=task.id,
+            box_id=box.id,
+            position=cell_dict(robot.position),
+            data=self._load_data(robot, box),
+        )
+        return True
+
+    def _slot_taken(self, slot: Any, box: Any) -> bool:
+        holder = self.twin.stock.box_in(slot.slot_id)
+        misplaced = any(other.true_slot == slot.slot_id for other in self.twin.boxes.values())
+        return (holder is not None and holder != box.id) or misplaced
+
+    def _begin_place(self, robot: Any, task: Any, action: Any) -> int:
+        box = self.twin.find_box(robot.carrying_box)
+        if box is None:
+            raise ValueError("it is not holding anything")
+        if "into_carton" not in action.params:
+            slot = self._slot_for(action)
+            if slot is None:
+                raise ValueError("it was given no slot to place into")
+            if robot.position not in slot.faces:
+                raise ValueError(f"it is not at a face of slot {slot.slot_id}")
+            if box.kind.value != slot.kind:
+                raise ValueError(f"a {box.kind.value} cannot go in {slot.kind} slot {slot.slot_id}")
+            if self._slot_taken(slot, box):
+                raise ValueError(f"slot {slot.slot_id} is taken")
+            self._check_forks(robot, slot)
+        return step_ticks(robot.mobility, "PLACE")
+
+    def _wrong_level_slot(self, slot: Any, box: Any) -> Optional[Any]:
+        """Where a WRONG_LEVEL fault puts a pallet: the free slot a level up
+        (else down) in the same rack cell, if there is one."""
+        for delta in (1, -1):
+            other = self.twin.warehouse.slot_at(slot.cell, slot.level + delta)
+            if other is not None and not self._slot_taken(other, box):
+                return other
+        return None
+
+    def _finish_place(self, robot: Any, task: Any, action: Any) -> bool:
+        twin = self.twin
+        box = twin.find_box(robot.carrying_box)
+        if "into_carton" in action.params:
+            return self._pack_into_carton(robot, task, action, box)
+        slot = self._slot_for(action)
+        actual = slot
+        if robot.mobility.embodiment_class == "FORKLIFT" and twin.faults.roll("wrong_level"):
+            actual = self._wrong_level_slot(slot, box) or slot
+        goods.store(twin, box, slot.slot_id, true_slot_id=actual.slot_id if actual is not slot else None)
+        box.set_status(BoxStatus.STORED)
+        box.assigned_robot = box.assigned_task = None
+        robot.carrying_box = None
+        robot.boxes_delivered += 1
+        twin.statistics["boxes_delivered"] += 1
+        # It reports the level it was sent to; true_level is where it really is.
+        self._emit_effect(EventType.PLACED, robot, task, f"{robot.name} placed {box.name} in {slot.slot_id}",
+                          box, slot=slot.slot_id, level=slot.level, true_level=actual.level)
+        return True
+
+    def _pack_into_carton(self, robot: Any, task: Any, action: Any, item: Any) -> bool:
+        """An arm puts an order item into the order's carton (spec §7.1): the
+        carton weighs its items plus CARTON_TARE_KG, and the item is consumed."""
+        twin = self.twin
+        order_id = action.params["into_carton"]
+        carton = next((box for box in twin.boxes.values()
+                       if box.kind is BoxKind.CARTON and box.order_id == order_id
+                       and box.status is BoxStatus.STORED and box.position == robot.position), None)
+        if carton is None:
+            tare = carton_weight_kg([])
+            carton = twin.add_box(kind="CARTON", position=robot.position, weight=tare, true_weight_kg=tare,
+                                  destination=action.params.get("lane"), order_id=order_id)
+        carton.declared_weight_kg = round(carton.declared_weight_kg + item.declared_weight_kg, 3)
+        carton.true_weight_kg = round(carton.true_weight_kg + item.true_weight_kg, 3)
+        carton.quantity += 1
+        carton.touch()
+        robot.carrying_box = None
+        del twin.boxes[item.id]  # packed: it is inside the carton now
+        self._emit_effect(EventType.PLACED, robot, task, f"{robot.name} packed {item.name} into {carton.name}",
+                          carton, into=carton.id, items=carton.quantity, order_id=order_id)
+        return True
+
+    # PLACE_ON_CONVEYOR(cell): place_s, once the cell is free
+    def _conveyor_load(self, robot: Any, action: Any) -> Optional[Any]:
+        """What goes on the line: the order's packed carton (an arm), or what
+        the robot holds."""
+        order_id = action.params.get("carton_for")
+        if order_id:
+            return next((box for box in self.twin.boxes.values()
+                         if box.kind is BoxKind.CARTON and box.order_id == order_id
+                         and box.status is BoxStatus.STORED and box.position == robot.position), None)
+        return self.twin.find_box(robot.carrying_box)
+
+    def _begin_place_on_conveyor(self, robot: Any, task: Any, action: Any) -> Optional[int]:
+        twin, cell = self.twin, action.target
+        if twin.equipment is None or cell not in twin.equipment.conveyor:
+            raise ValueError(f"({cell[0]},{cell[1]}) is not a conveyor cell")
+        if manhattan(cell, robot.position) > 1:
+            raise ValueError(f"conveyor cell ({cell[0]},{cell[1]}) is out of reach")
+        if self._conveyor_load(robot, action) is None:
+            raise ValueError("it has nothing to put on the conveyor")
+        if not twin.equipment.conveyor.is_free(cell):
+            return None  # an item is passing: wait for the cell to clear
+        return step_ticks(robot.mobility, "PLACE_ON_CONVEYOR")
+
+    def _finish_place_on_conveyor(self, robot: Any, task: Any, action: Any) -> bool:
+        twin, cell = self.twin, action.target
+        if not twin.equipment.conveyor.is_free(cell):
+            robot.set_status(RobotStatus.WAITING)
+            return False  # something rode onto the cell meanwhile
+        box = self._conveyor_load(robot, action)
+        stop = action.params.get("stop_at")
+        twin.equipment.place(box, cell, robot.id, task_id=task.id, order_id=box.order_id,
+                             stop_at=tuple(stop) if stop else None)
+        if robot.carrying_box == box.id:
+            robot.carrying_box = None
+        return True
+
+    # WAIT_CLEAR(reason): until the condition clears
+    def _begin_wait_clear(self, robot: Any, task: Any, action: Any) -> int:
+        if action.params.get("reason") not in WAIT_CLEAR_REASONS:
+            raise ValueError(f"it can't wait for {action.params.get('reason')!r} "
+                             f"(known: {', '.join(WAIT_CLEAR_REASONS)})")
+        if self.twin.equipment is None:
+            raise ValueError("this floor has no conveyor")
+        return 0
+
+    def _finish_wait_clear(self, robot: Any, task: Any, action: Any) -> bool:
+        conveyor, params = self.twin.equipment.conveyor, action.params
+        cell = tuple(params["cell"])
+        if params["reason"] == "CONVEYOR_OCCUPIED":
+            waiting = not conveyor.is_free(cell)
+        else:  # AWAITING_ITEM: until one of the order's items stands on the cell
+            item = conveyor.item_at(cell)
+            waiting = item is None or item.order_id != params.get("order_id")
+        if waiting:
+            robot.set_status(RobotStatus.WAITING)
+        return not waiting
 
     # ---- energy ------------------------------------------------------- #
     def _act_charge(self, robot: Any, task: Any, action: Any) -> None:
         twin = self.twin
         if not action.started:
             action.started = True
+            if robot.mobility is not None:
+                self._emit_step(robot, task, action)
             robot.charging_sessions += 1
             twin.statistics["charging_sessions"] += 1
             robot.set_status(RobotStatus.CHARGING)

@@ -84,6 +84,10 @@ class Robot:
         # and collisions compare (layer, x, y), so a drone over an AMR is fine.
         self.layer: str = GROUND
         self.altitude_m: float = 0.0
+        # The step the robot is on (an ActionType value, None when idle), and
+        # how high its forks or lift platform are raised (LIFT_TO / LOWER).
+        self.activity: Optional[str] = None
+        self.lift_height_m: float = 0.0
 
         # Statistics
         self.completed_tasks = 0
@@ -247,6 +251,8 @@ class Robot:
             "position": cell_dict(self.position),
             "layer": self.layer,
             "altitude_m": round(self.altitude_m, 2),
+            "activity": self.activity,
+            "lift_height_m": round(self.lift_height_m, 2),
             "home": cell_dict(self.home),
             "orientation": self.orientation,
             "speed": self.speed,
@@ -313,6 +319,8 @@ class Robot:
         robot.fleet_hold = data.get("fleet_hold")
         robot.layer = data.get("layer", GROUND)
         robot.altitude_m = float(data.get("altitude_m", 0.0))
+        robot.activity = data.get("activity")
+        robot.lift_height_m = float(data.get("lift_height_m", 0.0))
         robot.home = cell_tuple(data.get("home")) or robot.position
         robot.orientation = data.get("orientation", "EAST")
         robot.status = RobotStatus(data.get("status", "IDLE"))

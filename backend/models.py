@@ -629,6 +629,13 @@ class EventType(str, enum.Enum):
     HANDOFF = "HANDOFF"
     CONVEYOR_JAMMED = "CONVEYOR_JAMMED"
     CONVEYOR_CLEARED = "CONVEYOR_CLEARED"
+    # Job steps (Simulator._act_step): every step's start, with who is near
+    # and what the robot carries, then what a lift, a lowering and a
+    # placement physically did.
+    ROBOT_STEP = "ROBOT_STEP"
+    LIFTED = "LIFTED"
+    LOWERED = "LOWERED"
+    PLACED = "PLACED"
 
 
 class ActionType(str, enum.Enum):
@@ -638,6 +645,19 @@ class ActionType(str, enum.Enum):
     CHARGE = "CHARGE"
     WAIT = "WAIT"
     COMPLETE = "COMPLETE"
+    # Job steps with a physical duration (multi-embodiment spec §5.4), run by
+    # Simulator._act_step: lift or lower forks/platform to a slot level, a
+    # drone's take-off and landing, grasping and placing a box
+    # (in a slot, a carton or on the conveyor), and waiting until a condition
+    # on the floor clears.
+    LIFT_TO = "LIFT_TO"
+    LOWER = "LOWER"
+    TAKEOFF = "TAKEOFF"
+    LAND = "LAND"
+    GRASP = "GRASP"
+    PLACE = "PLACE"
+    PLACE_ON_CONVEYOR = "PLACE_ON_CONVEYOR"
+    WAIT_CLEAR = "WAIT_CLEAR"
 
 
 class SimulationStatus(str, enum.Enum):
@@ -661,6 +681,11 @@ class Action:
     box_id: Optional[str] = None
     started: bool = False
     done: bool = False
+    # A job step's slot and level (LIFT_TO, GRASP, PLACE, SCAN), and its other
+    # arguments — plain JSON values, cells as [x, y] (see Simulator._act_step).
+    level: Optional[int] = None
+    slot_id: Optional[str] = None
+    params: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -671,6 +696,9 @@ class Action:
             "box_id": self.box_id,
             "started": self.started,
             "done": self.done,
+            "level": self.level,
+            "slot_id": self.slot_id,
+            "params": dict(self.params),
         }
 
     @staticmethod
@@ -684,6 +712,9 @@ class Action:
             box_id=data.get("box_id"),
             started=data.get("started", False),
             done=data.get("done", False),
+            level=data.get("level"),
+            slot_id=data.get("slot_id"),
+            params=dict(data.get("params") or {}),
         )
 
 

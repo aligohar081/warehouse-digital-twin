@@ -692,7 +692,8 @@ class DigitalTwin:
         Only a robot whose floor profile flies may leave the ground, and it
         takes off and lands only on a drone-pad cell that no robot on the
         target layer holds. Instantaneous here; the TAKEOFF / LAND job steps
-        add the durations. Airborne altitude defaults to HOVER_CLEARANCE_M."""
+        add the durations. With no altitude, a take-off climbs to
+        HOVER_CLEARANCE_M and a drone already flying keeps its altitude."""
         robot = self.find_robot(robot_id)
         if robot is None:
             raise KeyError(f"Robot '{robot_id}' does not exist")
@@ -707,7 +708,10 @@ class DigitalTwin:
                 raise ValueError(f"{robot.name} cannot fly")
             altitude = 0.0
             if layer == AIR:
-                altitude = HOVER_CLEARANCE_M if altitude_m is None else float(altitude_m)
+                if altitude_m is not None:
+                    altitude = float(altitude_m)
+                else:
+                    altitude = robot.altitude_m if robot.layer == AIR else HOVER_CLEARANCE_M
                 if not 0.0 < altitude <= mobility.max_lift_m:
                     raise ValueError(f"Altitude must be above 0 and at most {mobility.max_lift_m} m")
             if layer != robot.layer:
@@ -744,6 +748,13 @@ class DigitalTwin:
         robot = self.find_robot(robot_id)
         if robot is None:
             raise KeyError(f"Robot '{robot_id}' does not exist")
+        occupied = {r.position for r in self.robots.values() if r.id != robot.id and r.layer == GROUND}
+        home = robot.home if robot.home not in occupied else self.warehouse.nearest_walkable(
+            robot.home, occupied, profile=robot.mobility
+        )
+        if home is None and robot.mobility is not None and robot.mobility.is_air:
+            # A drone lands only on its pad: with every pad cell taken there is nowhere to put it.
+            raise ValueError(f"No free drone pad cell to land {robot.name} on")
         task = self.tasks.get(robot.current_task) if robot.current_task else None
         if task is not None and not task.is_terminal:
             self.tasks.fail_task(task, f"{robot.name} was reset by the operator")
@@ -755,12 +766,9 @@ class DigitalTwin:
                 box.assigned_robot = None
                 box.assigned_task = None
             robot.carrying_box = None
-        occupied = {r.position for r in self.robots.values() if r.id != robot.id and r.layer == GROUND}
-        home = robot.home if robot.home not in occupied else self.warehouse.nearest_walkable(
-            robot.home, occupied, profile=robot.mobility
-        )
         robot.position = home or robot.position
         robot.layer, robot.altitude_m = GROUND, 0.0  # a reset robot is back on the ground
+        robot.lift_height_m, robot.activity = 0.0, None
         robot.battery = 100.0
         robot.clear_path()
         robot.current_task = None

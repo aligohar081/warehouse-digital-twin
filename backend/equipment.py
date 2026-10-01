@@ -199,7 +199,7 @@ class Equipment:
         if not self.conveyor.is_free(cell):
             raise ValueError(f"Conveyor cell ({cell[0]},{cell[1]}) is not free")
         box.position = tuple(cell)
-        box.assigned_robot = None
+        box.assigned_robot = box.assigned_task = None
         reported = {"present": True, "weight_kg": box.declared_weight_kg}
         if self.twin.faults.roll("handoff_loss"):
             box.set_status(BoxStatus.FAILED)
