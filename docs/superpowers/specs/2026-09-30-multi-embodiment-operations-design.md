@@ -437,11 +437,11 @@ New `TaskType` values:
 | `LOAD_TRUCK` | forklift | NAVIGATE outbound_staging → PICK → NAVIGATE dock_3 → DELIVER (the pallet becomes `SHIPPED`) |
 | `TOTE_TO_STATION` | AMR (level ≤ 1) or humanoid (level ≤ 2) | NAVIGATE face → LIFT_TO → GRASP → LOWER → NAVIGATE station tote drop → DELIVER |
 | `RETURN_TOTE` | AMR or humanoid | the reverse, to the tote's slot |
-| `PICK_ITEMS` | picker at Pick 1, or a person at Pick 2 | GRASP × n → PLACE_ON_CONVEYOR × n |
+| `PICK_ITEMS` | the robot picker at Pick 1 | GRASP × n → PLACE_ON_CONVEYOR × n |
 | `PACK_ORDER` | arm | GRASP each order item from its working conveyor cell → PLACE into the carton → PLACE_ON_CONVEYOR (carton) |
 | `CYCLE_COUNT` | drone | TAKEOFF → NAVIGATE (air) face → SCAN × levels → NAVIGATE pad → LAND |
 | `PATROL` | scout | NAVIGATE along `patrol_loop` → report anomalies |
-| `RETURNS_PUTAWAY` | humanoid | NAVIGATE returns_qc → GRASP tote → NAVIGATE face → PLACE |
+| `RETURNS_PUTAWAY` | humanoid | NAVIGATE returns_qc → GRASP tote → NAVIGATE face → LIFT_TO(level) → PLACE → LOWER |
 | `MANUAL_PICK` | person (Pick 2) | human job: walk to pick_station_2, pick n items onto the conveyor |
 | `CLEAR_JAM` | person | human job: walk to the jammed segment's zone, fix it (30 s). Requires `robot_cell_access` scoped to FB-CX10 when the jam is inside a pack cell. |
 
@@ -516,6 +516,7 @@ These are added to `DEFAULT_CHECKS`. Each returns "not applicable" (pass, with `
 | `count_consistent` | a `CYCLE_COUNT` reported success but the reported count ≠ the true count (catches false success) |
 | `handoff_consistent` | a `HANDOFF` with `giver_reported` present and `receiver_observed` absent |
 | `sort_correct` | a carton arrived at a dock other than its order's lane |
+| `placement_level_correct` | a `PLACED` event's `true_level` differs from its requested `level` (catches `WRONG_LEVEL_RISK`) |
 
 The task log's `TASK_STARTED` and terminal snapshots gain `layer`, `altitude_m`, box `kind`, `slot` and the true and declared weights, so these checks have their data. New fixtures go under `logs/eval_examples/`, one pass and one fail case per new check.
 
@@ -590,7 +591,8 @@ The engine moves people on shift:
 - Jordan follows the humanoid.
 - Noor and Mateo go to the workshop, or to a jam or work order.
 - Riley stays outside the pack cells.
-- Everyone takes a 15-minute break every 2 sim-hours, at staggered times, in `sw_floor`. Jordan's break makes the humanoid pause (`SUPERVISOR_ABSENT`). This is intended.
+- Everyone takes a 15-minute break every 2 sim-hours, at staggered times, in `sw_floor`. Breaks begin after the first two sim-hours of a shift.
+- A person in a zone that a waiting forklift or hauler needs to enter steps aside to the nearest zone those bodies can't drive in, for 30 s, so unloading never deadlocks. Jordan's break makes the humanoid pause (`SUPERVISOR_ABSENT`). This is intended.
 
 `CLEAR_JAM` goes to the nearest on-shift person with an in-scope `robot_cell_access`. Riley's credential is revoked, so the gate rejects Riley and the job goes to Mateo. If no one qualified is on shift, the gate rejects the job, the order records the reason, and the job is retried when someone qualifies.
 
@@ -825,7 +827,7 @@ Endpoints:
 - zero rule-check failures across all new checks;
 - at least one completed order of every kind;
 - no robot in `ERROR`;
-- no safety escalations;
+- no safety escalations (the 50-sim-minute soak ends before the first scheduled break; a longer run would see the intended `SUPERVISOR_ABSENT` escalations during Jordan's break);
 - mean tick time within the §1 budget.
 
 Then rerun with each risk at 0.2 and assert that the matching evaluation check catches it.
