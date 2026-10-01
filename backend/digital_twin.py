@@ -16,6 +16,7 @@ from .agent import Agent
 from .box import Box
 from .event_system import EventSystem
 from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, LAYERS, MobilityProfile
+from .faults import FaultInjector
 from .fleet_bridge import FleetBridge
 from .inventory import NotFound as InventoryNotFound
 from .inventory import open_inventory
@@ -139,6 +140,8 @@ class DigitalTwin:
         self.boot_time = time.time()
         self.last_sync = now_iso()
         self.ci_result: Optional[Dict[str, Any]] = None
+        # Armed one-shot faults and the CONFIG risks (backend/faults.py).
+        self.faults = FaultInjector()
 
         # Rolling samples for the dashboard's trend charts — see
         # record_history()/history_snapshot() and GET /api/statistics/history.
@@ -816,6 +819,7 @@ class DigitalTwin:
             self.ci_result = None
             self.history.clear()
             self.scheduler.clear()
+            self.faults.clear()
             for key in self.statistics:
                 self.statistics[key] = 0
             self.navigation = NavigationEngine(self.warehouse)

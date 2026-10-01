@@ -108,6 +108,18 @@ CONFIG: Dict[str, Any] = {
     # is reconciled automatically; a packed carton weighs its items plus this.
     "STOCK_AUTO_RECONCILE_UNITS": 2,
     "CARTON_TARE_KG": 0.3,
+    # Injected faults (backend/faults.py), all 0.0-1.0 and off by default like
+    # FALSE_SUCCESS_RISK: a drone count off by 1-3, a forklift placing a level
+    # off, an arm or picker missing a grasp, a conveyor segment jamming per
+    # item advance, an item lost at a hand-off, a carton sorted to the wrong
+    # dock, and an inbound pallet weighing 1.1-1.6x what it declares.
+    "SCAN_MISCOUNT_RISK": 0.0,
+    "WRONG_LEVEL_RISK": 0.0,
+    "GRASP_FAIL_RISK": 0.0,
+    "CONVEYOR_JAM_RISK": 0.0,
+    "HANDOFF_LOSS_RISK": 0.0,
+    "MIS_SORT_RISK": 0.0,
+    "MISDECLARED_WEIGHT_RISK": 0.0,
 }
 
 
