@@ -39,8 +39,13 @@ class Box:
         # what it really weighs. Equal unless a fault makes them differ.
         self.declared_weight_kg = float(weight)
         self.true_weight_kg = float(true_weight_kg) if true_weight_kg is not None else self.declared_weight_kg
-        # The rack or shelf slot (a Warehouse.slots id) it sits in, if any.
+        # The rack or shelf slot (a Warehouse.slots id) the stock ledger holds
+        # it in, if any — backend/goods.py keeps this in step with the ledger.
+        # A tote keeps its slot while it is away at a station. `true_slot` is
+        # set only when the box physically sits in a different slot than the
+        # record says (a wrong-level placement).
         self.slot = slot
+        self.true_slot: Optional[str] = None
         self.order_id = order_id
         self.source = source
         self.destination = destination
@@ -86,6 +91,7 @@ class Box:
             "declared_weight_kg": self.declared_weight_kg,
             "true_weight_kg": self.true_weight_kg,
             "slot": self.slot,
+            "true_slot": self.true_slot,
             "order_id": self.order_id,
             "position": cell_dict(self.position),
             "source": self.source,
@@ -116,6 +122,7 @@ class Box:
             slot=data.get("slot"),
             order_id=data.get("order_id"),
         )
+        box.true_slot = data.get("true_slot")
         box.assigned_robot = data.get("assigned_robot")
         box.assigned_task = data.get("assigned_task")
         box.pick_count = data.get("pick_count", 0)

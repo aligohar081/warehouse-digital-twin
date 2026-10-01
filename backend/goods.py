@@ -6,16 +6,24 @@ where each SKU is stocked. Every location keeps two numbers — what the
 record says (`recorded_qty`) and what is really there (`true_qty`). Only a
 fault or a mis-pick makes them differ, and only a count reconciliation
 corrects the record. Nothing here emits events: the jobs that pick, count
-and reconcile do (plan 1b).
+and reconcile do.
+
+The twin owns one ledger (DigitalTwin.stock), the single source of truth for
+stock. The helpers at the bottom move boxes in and out of it and keep each
+box's `slot` and `quantity` in step with it. Like the ledger itself they take
+no lock: callers hold twin.lock (the simulator tick does).
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .models import CONFIG, BoxKind
+from .models import CONFIG, BoxKind, Cell, manhattan
 
-__all__ = ["BoxKind", "StockLedger", "StockLocation", "carton_weight_kg"]
+__all__ = [
+    "BoxKind", "StockLedger", "StockLocation", "carton_weight_kg", "free_slots", "physical_qty",
+    "release", "store", "sync_box", "take_units", "unit_weight_kg",
+]
 
 
 def carton_weight_kg(item_weights_kg: Iterable[float]) -> float:
@@ -183,3 +191,119 @@ class StockLedger:
         if location is None:
             raise KeyError(f"Slot {slot_id} is empty")
         return location
+
+
+# --------------------------------------------------------------------------- #
+# Keeping boxes and the ledger in step
+# --------------------------------------------------------------------------- #
+def sync_box(twin: Any, box: Any) -> None:
+    """Mirror the ledger onto `box`: the slot the ledger holds it in, and its
+    recorded quantity there."""
+    slot_id = twin.stock.slot_of(box.id)
+    box.slot = slot_id
+    if slot_id is not None:
+        box.quantity = twin.stock.location(slot_id).recorded_qty
+    box.touch()
+
+
+def store(twin: Any, box: Any, slot_id: str, true_slot_id: Optional[str] = None) -> StockLocation:
+    """Put a pallet or tote away in `slot_id`, and record it there.
+
+    A tote going back to its own slot keeps its location (and any variance it
+    carries); a box moving to another slot takes its quantities with it; a box
+    new to storage is recorded with its SKU and quantity. `true_slot_id` is
+    where the box physically went when that differs (a wrong-level placement):
+    the record keeps the requested slot, whose true quantity drops to 0, and
+    the box remembers where it really is."""
+    stock = twin.stock
+    slot = twin.warehouse.slot(slot_id)
+    if slot is None:
+        raise ValueError(f"Unknown slot {slot_id!r}")
+    current = stock.slot_of(box.id)
+    if current == slot_id:
+        location = stock.location(slot_id)
+    elif current is not None:
+        previous = stock.take(current)
+        location = stock.put(slot_id, box.id, previous.sku, previous.recorded_qty, kind=box.kind.value)
+        location.true_qty = previous.true_qty
+    else:
+        location = stock.put(slot_id, box.id, box.sku, box.quantity, kind=box.kind.value)
+    box.position = slot.cell
+    box.true_slot = None
+    if true_slot_id and true_slot_id != slot_id:
+        actual = twin.warehouse.slot(true_slot_id)
+        if actual is None:
+            raise ValueError(f"Unknown slot {true_slot_id!r}")
+        stock.adjust_true(slot_id, -location.true_qty)
+        box.true_slot = true_slot_id
+        box.position = actual.cell
+    sync_box(twin, box)
+    return location
+
+
+def release(twin: Any, box: Any) -> StockLocation:
+    """A pallet leaves storage for good (retrieved to ship): its location goes."""
+    slot_id = twin.stock.slot_of(box.id)
+    if slot_id is None:
+        raise ValueError(f"{box.name} is not in the stock ledger")
+    location = twin.stock.take(slot_id)
+    box.slot = box.true_slot = None
+    box.touch()
+    return location
+
+
+def unit_weight_kg(tote_weight_kg: float, quantity: int) -> float:
+    """One unit's weight: the tote's contents (its weight less TOTE_TARE_KG)
+    shared across its units."""
+    if quantity <= 0:
+        return 0.0
+    return round(max(0.0, float(tote_weight_kg) - CONFIG["TOTE_TARE_KG"]) / quantity, 3)
+
+
+def take_units(twin: Any, tote: Any, count: int = 1) -> Tuple[float, float]:
+    """Pick `count` units out of a tote. Its recorded and true quantities drop
+    by `count` and its weights by the units' weight; returns one unit's
+    (declared, true) weight. A tote away at a station keeps its slot, so the
+    ledger goes on counting what it holds."""
+    if tote.kind is not BoxKind.TOTE:
+        raise ValueError(f"{tote.name} is a {tote.kind.value}, not a TOTE")
+    slot_id = twin.stock.slot_of(tote.id)
+    if slot_id is None:
+        raise ValueError(f"{tote.name} is not in the stock ledger")
+    location = twin.stock.location(slot_id)
+    if location.true_qty < count:
+        raise ValueError(f"{tote.name} physically holds only {location.true_qty} of {location.sku}")
+    declared_unit = unit_weight_kg(tote.declared_weight_kg, location.recorded_qty)
+    true_unit = unit_weight_kg(tote.true_weight_kg, location.true_qty)
+    twin.stock.consume(slot_id, count)
+    tare = CONFIG["TOTE_TARE_KG"]
+    tote.declared_weight_kg = round(max(tare, tote.declared_weight_kg - count * declared_unit), 3)
+    tote.true_weight_kg = round(max(tare, tote.true_weight_kg - count * true_unit), 3)
+    sync_box(twin, tote)
+    return declared_unit, true_unit
+
+
+def physical_qty(twin: Any, slot_id: str) -> int:
+    """What is really in `slot_id`: its location's true quantity, plus any
+    misplaced box that physically went there instead of its recorded slot."""
+    location = twin.stock.location(slot_id)
+    quantity = location.true_qty if location is not None else 0
+    return quantity + sum(box.quantity for box in twin.boxes.values() if box.true_slot == slot_id)
+
+
+def free_slots(twin: Any, kind: str, max_level: Optional[int] = None, near: Optional[Cell] = None,
+               exclude: Sequence[str] = ()) -> List[Any]:
+    """Empty `kind` slots (PALLET or TOTE) at or below `max_level`, nearest
+    first to `near` (by their first face cell), then by slot id. A slot is
+    empty when the ledger holds nothing there and no misplaced box sits in
+    it; `exclude` names slots already promised to other jobs."""
+    taken = set(exclude) | {box.true_slot for box in twin.boxes.values() if box.true_slot}
+    slots = [
+        slot for slot in twin.warehouse.slots.values()
+        if slot.kind == BoxKind(kind).value and slot.slot_id not in taken
+        and twin.stock.location(slot.slot_id) is None
+        and (max_level is None or slot.level <= max_level)
+    ]
+    if near is None:
+        return sorted(slots, key=lambda slot: slot.slot_id)
+    return sorted(slots, key=lambda slot: (manhattan(slot.faces[0], near), slot.slot_id))

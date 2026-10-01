@@ -105,9 +105,11 @@ CONFIG: Dict[str, Any] = {
     # People on the new floor (backend/people.py) walk between zones at this pace.
     "PERSON_WALK_SPEED_MPS": 1.2,
     # Goods (backend/goods.py): a cycle-count variance this small or smaller
-    # is reconciled automatically; a packed carton weighs its items plus this.
+    # is reconciled automatically; a packed carton weighs its items plus this,
+    # and an empty tote weighs this (a unit weighs its share of the rest).
     "STOCK_AUTO_RECONCILE_UNITS": 2,
     "CARTON_TARE_KG": 0.3,
+    "TOTE_TARE_KG": 1.5,
     # Injected faults (backend/faults.py), all 0.0-1.0 and off by default like
     # FALSE_SUCCESS_RISK: a drone count off by 1-3, a forklift placing a level
     # off, an arm or picker missing a grasp, a conveyor segment jamming per
@@ -393,6 +395,8 @@ class BoxStatus(str, enum.Enum):
     DELIVERING = "DELIVERING"
     DELIVERED = "DELIVERED"
     FAILED = "FAILED"
+    # Left the building on an outbound truck (multi-embodiment spec §8.2, §9.2).
+    SHIPPED = "SHIPPED"
 
 
 class TaskStatus(str, enum.Enum):

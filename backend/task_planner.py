@@ -14,6 +14,7 @@ from .models import (
     CONFIG,
     Action,
     ActionType,
+    BoxStatus,
     Cell,
     LogCategory,
     LogLevel,
@@ -78,7 +79,8 @@ class TaskPlanner:
         if zone is not None:
             prefer = None
             if prefer_free:
-                occupied = {b.position for b in self.twin.boxes.values()}
+                # A shipped box has left on a truck: its dock cell is free again.
+                occupied = {b.position for b in self.twin.boxes.values() if b.status is not BoxStatus.SHIPPED}
                 prefer = {c for c in zone.cells if c not in occupied}
             chosen = nav.best_cell_in_zone(zone.cells, origin, blocked=blocked, prefer=prefer,
                                            profile=profile, layer=layer)

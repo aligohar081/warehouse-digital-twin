@@ -18,6 +18,7 @@ from .event_system import EventSystem
 from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, LAYERS, MobilityProfile
 from .faults import FaultInjector
 from .fleet_bridge import FleetBridge
+from .goods import StockLedger
 from .inventory import NotFound as InventoryNotFound
 from .inventory import open_inventory
 from .inventory.catalog_data import CLASS_DEFAULT_MODELS
@@ -26,6 +27,7 @@ from .models import (
     ACTIVE_TASK_STATES,
     CONFIG,
     AgentStatus,
+    BoxKind,
     BoxStatus,
     Cell,
     CellType,
@@ -130,6 +132,10 @@ class DigitalTwin:
 
         self.robots: Dict[str, Robot] = {}
         self.boxes: Dict[str, Box] = {}
+        # Which pallet or tote sits in each rack and shelf slot, recorded versus
+        # true quantities (backend/goods.py) — the single source of truth for
+        # stock. Empty on the classic floor, which has no slots.
+        self.stock = StockLedger(self.warehouse)
         self.agents: Dict[str, Agent] = {}
         self.operators: Dict[str, Operator] = {}
 
@@ -293,7 +299,7 @@ class DigitalTwin:
 
     def box_at(self, cell: Cell) -> Optional[Box]:
         for box in self.boxes.values():
-            if box.position == cell and box.status != BoxStatus.CARRIED:
+            if box.position == cell and box.status not in (BoxStatus.CARRIED, BoxStatus.SHIPPED):
                 return box
         return None
 
@@ -447,20 +453,50 @@ class DigitalTwin:
         weight: float = 1.0,
         source: Optional[str] = None,
         destination: Optional[str] = None,
+        kind: Optional[str] = None,
+        sku: Optional[str] = None,
+        quantity: int = 0,
+        slot: Optional[str] = None,
+        true_weight_kg: Optional[float] = None,
+        order_id: Optional[str] = None,
     ) -> Box:
+        """Create a box (spec §7.1). `weight` is its declared weight, and
+        `true_weight_kg` what it really weighs (the same unless given).
+
+        A box given a `slot` (a PALLET or a TOTE) sits in that rack or shelf
+        slot, and the stock ledger records it there with its SKU and quantity.
+        An ITEM or CARTON sits exactly on `position` — a conveyor cell, a pack
+        station — and is never snapped. Any other box goes on `position`, or
+        classic's default shelf, snapped to the nearest drivable cell as
+        always; a floor with no default shelf needs a position or a slot."""
+        box_kind = BoxKind(str(kind).upper()) if kind else BoxKind.TOTE
+        if isinstance(quantity, bool) or int(quantity) < 0:
+            raise ValueError("quantity must be a non-negative whole number")
         with self.lock:
             box_id = self.ids.next("box")
             name = name or f"Box-{box_id.split('_')[-1]}"
             if self.find_box(name) is not None:
                 raise ValueError(f"A box called '{name}' already exists")
 
-            candidate = position or self.warehouse.resolve_zone("shelf_a").cells[0]
-            if not self.warehouse.is_inside(*candidate):
-                raise ValueError(f"Position {candidate} is outside the warehouse")
-            spot = candidate if self.warehouse.is_walkable(*candidate) \
-                else self.warehouse.nearest_walkable(candidate)
-            if spot is None:
-                raise ValueError("No reachable cell available for a new box")
+            if slot:
+                spot = self._slot_cell(slot, box_kind, position)
+            elif box_kind in (BoxKind.ITEM, BoxKind.CARTON):
+                if position is None:
+                    raise ValueError(f"An {box_kind.value} box needs a position")
+                spot = (int(position[0]), int(position[1]))
+                if not self.warehouse.is_inside(*spot):
+                    raise ValueError(f"Position {spot} is outside the warehouse")
+            else:
+                default = self.warehouse.resolve_zone("shelf_a")
+                if position is None and default is None:
+                    raise ValueError(f"A new box on the {self.layout_name} floor needs a position or a slot")
+                candidate = position or default.cells[0]
+                if not self.warehouse.is_inside(*candidate):
+                    raise ValueError(f"Position {candidate} is outside the warehouse")
+                spot = candidate if self.warehouse.is_walkable(*candidate) \
+                    else self.warehouse.nearest_walkable(candidate)
+                if spot is None:
+                    raise ValueError("No reachable cell available for a new box")
 
             zone = self.warehouse.zone_of_cell(spot)
             box = Box(
@@ -470,17 +506,41 @@ class DigitalTwin:
                 weight=weight,
                 source=source or (zone.key if zone else None),
                 destination=destination,
+                kind=box_kind,
+                sku=sku,
+                quantity=int(quantity),
+                true_weight_kg=true_weight_kg,
+                order_id=order_id,
             )
+            if slot:  # recorded first: a taken slot raises before the box exists
+                self.stock.put(slot, box.id, sku, int(quantity), kind=box_kind.value)
+                box.slot = slot
             self.boxes[box.id] = box
 
+        data = None
+        if self.layout_name != "classic":
+            data = {"kind": box.kind.value, "sku": box.sku, "quantity": box.quantity, "slot": box.slot,
+                    "declared_weight_kg": box.declared_weight_kg, "true_weight_kg": box.true_weight_kg}
         self.events.emit(
             EventType.BOX_CREATED,
             f"{box.name} created at ({spot[0]},{spot[1]}), {box.weight} kg",
             category=LogCategory.BOX,
             box_id=box.id,
             position=cell_dict(spot),
+            data=data,
         )
         return box
+
+    def _slot_cell(self, slot_id: str, kind: BoxKind, position: Optional[Cell]) -> Cell:
+        """The rack or shelf cell a new box given `slot_id` sits on."""
+        slot = self.warehouse.slot(slot_id)
+        if slot is None:
+            raise ValueError(f"Unknown slot {slot_id!r}")
+        if kind.value != slot.kind:
+            raise ValueError(f"A {kind.value} cannot go in {slot.kind} slot {slot_id}")
+        if position is not None and tuple(position) != slot.cell:
+            raise ValueError(f"Slot {slot_id} is at ({slot.cell[0]},{slot.cell[1]}), not {tuple(position)}")
+        return slot.cell
 
     def add_agent(self, name: Optional[str] = None, model_version: Optional[str] = None) -> Agent:
         with self.lock:
@@ -820,6 +880,7 @@ class DigitalTwin:
             self.history.clear()
             self.scheduler.clear()
             self.faults.clear()
+            self.stock = StockLedger(self.warehouse)
             for key in self.statistics:
                 self.statistics[key] = 0
             self.navigation = NavigationEngine(self.warehouse)
