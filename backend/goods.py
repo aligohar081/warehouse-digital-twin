@@ -63,14 +63,7 @@ class StockLedger:
     def put(self, slot_id: str, box_id: str, sku: Optional[str], quantity: int,
             kind: Optional[str] = None) -> StockLocation:
         """Record a pallet or tote arriving in a slot, with its contents."""
-        if self.warehouse is not None:
-            slot = self.warehouse.slot(slot_id)
-            if slot is None:
-                raise ValueError(f"Unknown slot {slot_id!r}")
-            if kind is not None and BoxKind(kind).value != slot.kind:
-                raise ValueError(f"A {BoxKind(kind).value} cannot go in {slot.kind} slot {slot_id}")
-        if slot_id in self._locations:
-            raise ValueError(f"Slot {slot_id} already holds {self._locations[slot_id].box_id}")
+        self.check_put(slot_id, kind)
         if box_id in self._slot_of_box:
             raise ValueError(f"{box_id} is already in slot {self._slot_of_box[box_id]}")
         if int(quantity) < 0:
@@ -79,6 +72,20 @@ class StockLedger:
         self._locations[slot_id] = location
         self._slot_of_box[box_id] = slot_id
         return location
+
+    def check_put(self, slot_id: str, kind: Optional[str] = None) -> None:
+        """Raise ValueError if a box of `kind` cannot be put in `slot_id` right
+        now: the slot is unknown, is for the other kind, or is already taken.
+        `put` runs this itself; a caller that must not change anything unless
+        the put will succeed (goods.store) runs it first."""
+        if self.warehouse is not None:
+            slot = self.warehouse.slot(slot_id)
+            if slot is None:
+                raise ValueError(f"Unknown slot {slot_id!r}")
+            if kind is not None and BoxKind(kind).value != slot.kind:
+                raise ValueError(f"A {BoxKind(kind).value} cannot go in {slot.kind} slot {slot_id}")
+        if slot_id in self._locations:
+            raise ValueError(f"Slot {slot_id} already holds {self._locations[slot_id].box_id}")
 
     def take(self, slot_id: str) -> StockLocation:
         """Record the box leaving its slot (retrieved, or taken to a station)."""
@@ -214,12 +221,21 @@ def store(twin: Any, box: Any, slot_id: str, true_slot_id: Optional[str] = None)
     new to storage is recorded with its SKU and quantity. `true_slot_id` is
     where the box physically went when that differs (a wrong-level placement):
     the record keeps the requested slot, whose true quantity drops to 0, and
-    the box remembers where it really is."""
+    the box remembers where it really is.
+
+    A store that cannot happen (an unknown, taken or wrong-kind slot, or an
+    unknown `true_slot_id`) raises ValueError before anything changes, so the
+    ledger and the box are left exactly as they were."""
     stock = twin.stock
-    slot = twin.warehouse.slot(slot_id)
-    if slot is None:
-        raise ValueError(f"Unknown slot {slot_id!r}")
     current = stock.slot_of(box.id)
+    if current != slot_id:  # a box already in `slot_id` is simply being put back
+        stock.check_put(slot_id, box.kind.value)
+    slot = twin.warehouse.slot(slot_id)
+    actual = None
+    if true_slot_id and true_slot_id != slot_id:
+        actual = twin.warehouse.slot(true_slot_id)
+        if actual is None:
+            raise ValueError(f"Unknown slot {true_slot_id!r}")
     if current == slot_id:
         location = stock.location(slot_id)
     elif current is not None:
@@ -230,10 +246,7 @@ def store(twin: Any, box: Any, slot_id: str, true_slot_id: Optional[str] = None)
         location = stock.put(slot_id, box.id, box.sku, box.quantity, kind=box.kind.value)
     box.position = slot.cell
     box.true_slot = None
-    if true_slot_id and true_slot_id != slot_id:
-        actual = twin.warehouse.slot(true_slot_id)
-        if actual is None:
-            raise ValueError(f"Unknown slot {true_slot_id!r}")
+    if actual is not None:
         stock.adjust_true(slot_id, -location.true_qty)
         box.true_slot = true_slot_id
         box.position = actual.cell

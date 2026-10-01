@@ -144,3 +144,71 @@ def test_a_shipped_box_no_longer_occupies_its_cell(twin):
     assert twin.box_at((28, 2)) is None
     cell, _ = twin.planner.resolve_target("dock_3", forklift.position, prefer_free=True, **route)
     assert cell == (28, 2)  # the nearest dock cell is free again
+
+
+def snapshot(twin, box):
+    """Everything a failed store must leave alone: the box and its ledger record."""
+    slot_id = twin.stock.slot_of(box.id)
+    location = twin.stock.location(slot_id) if slot_id else None
+    record = (location.box_id, location.sku, location.recorded_qty, location.true_qty) if location else None
+    return (slot_id, record, box.slot, box.true_slot, box.quantity, box.position, twin.stock.locations())
+
+
+def test_a_failed_store_into_an_occupied_slot_changes_nothing(twin):
+    pallet = twin.add_box(name="PAL-1", kind="PALLET", sku="SKU-01", quantity=40, slot="PR-08-02-0")
+    other = twin.add_box(name="PAL-2", kind="PALLET", sku="SKU-02", quantity=10, slot="PR-09-02-0")
+    twin.stock.adjust_true("PR-08-02-0", -3)                 # a variance that must survive the failed move
+    before, other_before = snapshot(twin, pallet), snapshot(twin, other)
+    with pytest.raises(ValueError, match="already holds"):
+        goods.store(twin, pallet, "PR-09-02-0")
+    assert snapshot(twin, pallet) == before and snapshot(twin, other) == other_before
+    assert twin.stock.location("PR-08-02-0").true_qty == 37
+    newcomer = twin.add_box(name="PAL-3", kind="PALLET", sku="SKU-03", quantity=5, position=(5, 4))
+    new_before = snapshot(twin, newcomer)                    # not in storage yet: a failed store must not record it
+    with pytest.raises(ValueError, match="already holds"):
+        goods.store(twin, newcomer, "PR-09-02-0")
+    assert snapshot(twin, newcomer) == new_before and twin.stock.slot_of(newcomer.id) is None
+
+
+def test_a_failed_store_into_a_slot_of_the_wrong_kind_changes_nothing(twin):
+    pallet = twin.add_box(name="PAL-1", kind="PALLET", sku="SKU-01", quantity=40, slot="PR-08-02-0")
+    tote = twin.add_box(name="TOTE-1", kind="TOTE", sku="SKU-02", quantity=12, weight=9.0, slot="TS-10-12-1")
+    before, tote_before = snapshot(twin, pallet), snapshot(twin, tote)
+    with pytest.raises(ValueError, match="cannot go in"):
+        goods.store(twin, pallet, "TS-11-12-2")              # a free shelf slot, but a pallet does not fit
+    with pytest.raises(ValueError, match="cannot go in"):
+        goods.store(twin, tote, "PR-09-02-0")                # a free rack slot, but a tote does not fit
+    assert snapshot(twin, pallet) == before and snapshot(twin, tote) == tote_before
+    loose = twin.add_box(name="PAL-3", kind="PALLET", sku="SKU-03", quantity=5, position=(5, 4))
+    loose_before = snapshot(twin, loose)
+    with pytest.raises(ValueError, match="cannot go in"):
+        goods.store(twin, loose, "TS-11-12-2")
+    assert snapshot(twin, loose) == loose_before and twin.stock.location("TS-11-12-2") is None
+
+
+def test_a_failed_store_with_an_unknown_true_slot_changes_nothing(twin):
+    pallet = twin.add_box(name="PAL-1", kind="PALLET", sku="SKU-01", quantity=40, slot="PR-08-02-0")
+    before = snapshot(twin, pallet)
+    with pytest.raises(ValueError, match="Unknown slot"):
+        goods.store(twin, pallet, "PR-09-02-0", true_slot_id="PR-99-02-0")
+    assert snapshot(twin, pallet) == before and twin.stock.location("PR-09-02-0") is None
+    newcomer = twin.add_box(name="PAL-2", kind="PALLET", sku="SKU-03", quantity=5, position=(5, 4))
+    new_before = snapshot(twin, newcomer)
+    with pytest.raises(ValueError, match="Unknown slot"):
+        goods.store(twin, newcomer, "PR-12-05-2", true_slot_id="PR-99-02-0")
+    assert snapshot(twin, newcomer) == new_before and twin.stock.location("PR-12-05-2") is None
+    with pytest.raises(ValueError, match="Unknown slot"):    # an unknown target slot changes nothing either
+        goods.store(twin, newcomer, "PR-99-02-0")
+    assert snapshot(twin, newcomer) == new_before
+
+
+def test_a_store_into_the_boxs_own_slot_still_succeeds(twin):
+    tote = twin.add_box(name="TOTE-1", kind="TOTE", sku="SKU-02", quantity=12, weight=9.0, slot="TS-10-12-1")
+    twin.stock.adjust_true("TS-10-12-1", -2)
+    location = goods.store(twin, tote, "TS-10-12-1")
+    assert twin.stock.slot_of(tote.id) == "TS-10-12-1" and tote.slot == "TS-10-12-1"
+    assert (location.recorded_qty, location.true_qty, tote.position) == (12, 10, (10, 12))
+    pallet = twin.add_box(name="PAL-1", kind="PALLET", sku="SKU-01", quantity=40, slot="PR-08-02-0")
+    goods.store(twin, pallet, "PR-08-02-0", true_slot_id="PR-08-02-1")   # its own slot, but really a level up
+    assert (pallet.slot, pallet.true_slot) == ("PR-08-02-0", "PR-08-02-1")
+    assert goods.physical_qty(twin, "PR-08-02-1") == 40
