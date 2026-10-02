@@ -125,6 +125,12 @@ def face_cell(planner: Any, slot: Any, origin: Cell, profile: Any, layer: str,
     return cell
 
 
+def no_profile_reason(task: Any) -> str:
+    """Why a robot with no floor profile can't do a job type of this module:
+    each is checked against a body, and a classic robot has none."""
+    return f"has no floor profile; {task.type.value} needs a robot on the multi-embodiment floor"
+
+
 def promised_slots(twin: Any, exclude: Optional[str] = None) -> Set[str]:
     """Slots that jobs not yet finished are going to fill."""
     return {task.params["slot"] for task in twin.tasks.tasks.values()
@@ -247,6 +253,8 @@ def choose_slot(planner: Any, task: Any, robot: Any, kind: BoxKind, near: Cell) 
     `kind` within the robot's reach — recorded on the task, so no other job
     is promised it meanwhile."""
     twin = planner.twin
+    if robot.mobility is None:  # the gate keeps these out; this is the backstop
+        raise PlanningError(f"{robot.name} {no_profile_reason(task)}")
     slot = task_slot(twin, task)
     if slot is None:
         free = goods.free_slots(twin, kind.value, max_level=robot.mobility.max_shelf_level, near=near,

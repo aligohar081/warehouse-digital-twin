@@ -36,7 +36,7 @@ from .eligibility import (
 from .embodiment import AIR, GROUND
 from .energy import charger_zone
 from .jobs import JOB_PARAM_KEYS, JOB_SPECS, job_levels
-from .jobs import BOX_HANDLING_TYPES
+from .jobs import BOX_HANDLING_TYPES, no_profile_reason
 from .llm import narrate
 from .task_planner import PlanningError
 
@@ -1038,8 +1038,9 @@ class TaskManager:
 
         # AUTO on a layered floor: the request names real things, so some
         # robot's body must be able to do it. Asked last, so a missing box or
-        # place is reported as that and not as a routing failure.
-        if robot is None and twin.layout_name != "classic":
+        # place is reported as that and not as a routing failure. A job type
+        # of JOB_SPECS is asked on the classic floor too: its robots have no body.
+        if robot is None and (twin.layout_name != "classic" or task.type in JOB_SPECS):
             reason = self._fleet_reason(task)
             if reason:
                 return False, reason
@@ -1064,10 +1065,12 @@ class TaskManager:
         of body the job needs, the kind and declared weight of the box it
         lifts, the slot level against its reach, and (the humanoid) that
         supervision can be had. The route is checked with the target. A
-        classic robot has no body to check."""
+        classic robot has no body to check, so it keeps its classic jobs and
+        can't take a job type of JOB_SPECS."""
         profile = robot.mobility
         if profile is None:
-            return None
+            spec = JOB_SPECS.get(task.type)
+            return no_profile_reason(task) if spec is not None and not spec.human else None
         spec = JOB_SPECS.get(task.type)
         if spec is not None:
             if spec.classes and profile.embodiment_class not in spec.classes:
@@ -1158,9 +1161,9 @@ class TaskManager:
         twin = self.twin
         reasons: List[str] = []
         for robot in twin.robots.values():
-            if robot.mobility is None:
-                return None
             reason = self.capability_reason(robot, task)
+            if robot.mobility is None and reason is None:
+                return None  # a classic robot with a classic job: today's rules
             if reason is None:
                 if task.type == TaskType.CHARGE_ROBOT and robot.mains_powered:
                     reason = "is mains-powered"
@@ -1286,6 +1289,8 @@ class TaskManager:
                 # name. Battery is excluded here too — see the matching
                 # comment in validate() above.
                 continue
+            if robot.mobility is None and self.capability_reason(robot, task) is not None:
+                continue  # a floor job is checked against a body, and this robot has none
             own_target: Dict[str, Any] = {}
             if robot.mobility is not None:
                 # A layered floor (spec §9.1): the body must be able to do the
