@@ -32,11 +32,11 @@ from .models import (
 )
 from . import human_jobs, people
 from .eligibility import (
-    agent_eligibility, box_kind_ok, cert_scope_ok, operator_eligibility, payload_ok, reach_ok,
-    robot_eligibility,
+    agent_eligibility, box_kind_ok, cert_scope_ok, drone_round_trip_ok, operator_eligibility, payload_ok,
+    reach_ok, robot_eligibility,
 )
 from .embodiment import AIR, GROUND
-from .energy import charger_zone
+from .energy import charger_zone, energy_wh
 from .jobs import JOB_PARAM_KEYS, JOB_SPECS, job_levels
 from .jobs import BOX_HANDLING_TYPES, no_profile_reason
 from .llm import narrate
@@ -1156,6 +1156,13 @@ class TaskManager:
         ok, reason = people.supervision_available(self.twin, robot)
         if not ok:
             return f"can't work unsupervised: {reason}"
+        if spec is not None and spec.mission_wh is not None and profile.battery is not None:
+            # A drone's hard energy gate (spec §10.1): it can't detour to a charger mid-flight.
+            needed = spec.mission_wh(self, task, robot)
+            if needed is not None:
+                ok, reason = drone_round_trip_ok(energy_wh(robot), needed, profile.battery.capacity_wh)
+                if not ok:
+                    return f"can't fly it: {reason}"
         return None
 
     def physical_recheck(self, robot: Any, task: Task) -> Optional[str]:

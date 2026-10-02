@@ -213,7 +213,7 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
     "SCOUT": {
         "label": "Scout (inspection only)",
         "speed": 3.0,
-        "allowed_task_types": ["MOVE_ROBOT", "MIXED_MAINTENANCE_MISSION", "CHARGE_ROBOT"],
+        "allowed_task_types": ["MOVE_ROBOT", "MIXED_MAINTENANCE_MISSION", "CHARGE_ROBOT", "PATROL"],
     },
     "HEAVY_HAULER": {
         "label": "Heavy Hauler (slow, high-capacity)",
@@ -226,7 +226,7 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
     "DRONE": {
         "label": "Drone (fast, aerial/overhead)",
         "speed": 4.0,
-        "allowed_task_types": ["MOVE_ROBOT", "MIXED_MAINTENANCE_MISSION", "CHARGE_ROBOT"],
+        "allowed_task_types": ["MOVE_ROBOT", "MIXED_MAINTENANCE_MISSION", "CHARGE_ROBOT", "CYCLE_COUNT"],
     },
     "PICKER": {
         "label": "Picker (fast, pick & deliver only)",
@@ -523,6 +523,10 @@ class TaskType(str, enum.Enum):
     PACK_ORDER = "PACK_ORDER"
     MANUAL_PICK = "MANUAL_PICK"
     CLEAR_JAM = "CLEAR_JAM"
+    # A drone counting a pallet rack face, level by level; a scout patrolling
+    # the security loop and reporting what it found.
+    CYCLE_COUNT = "CYCLE_COUNT"
+    PATROL = "PATROL"
 
 
 class Priority(str, enum.Enum):
@@ -673,6 +677,10 @@ class EventType(str, enum.Enum):
     LIFTED = "LIFTED"
     LOWERED = "LOWERED"
     PLACED = "PLACED"
+    # A drone read a slot (reported against true and recorded quantities), and
+    # a count disagreed with the record (spec §7.2).
+    SCANNED = "SCANNED"
+    STOCK_VARIANCE_DETECTED = "STOCK_VARIANCE_DETECTED"
 
 
 class ActionType(str, enum.Enum):
@@ -684,13 +692,14 @@ class ActionType(str, enum.Enum):
     COMPLETE = "COMPLETE"
     # Job steps with a physical duration (multi-embodiment spec §5.4), run by
     # Simulator._act_step: lift or lower forks/platform to a slot level, a
-    # drone's take-off and landing, grasping and placing a box
+    # drone's take-off, landing and shelf scan, grasping and placing a box
     # (in a slot, a carton or on the conveyor), and waiting until a condition
     # on the floor clears.
     LIFT_TO = "LIFT_TO"
     LOWER = "LOWER"
     TAKEOFF = "TAKEOFF"
     LAND = "LAND"
+    SCAN = "SCAN"
     GRASP = "GRASP"
     PLACE = "PLACE"
     PLACE_ON_CONVEYOR = "PLACE_ON_CONVEYOR"

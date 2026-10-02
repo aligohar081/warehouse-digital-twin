@@ -14,8 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from . import goods
-from .models import CERTIFICATION_REQUIREMENTS, Action, ActionType, BoxKind, BoxStatus, Cell, TaskType
+from . import energy, goods
+from .embodiment import AIR, HOVER_CLEARANCE_M, step_ticks
+from .models import CERTIFICATION_REQUIREMENTS, CONFIG, Action, ActionType, BoxKind, BoxStatus, Cell, TaskType
 from .task_planner import PlanningError
 
 #: (planner, task, robot, blocked) -> (actions, waypoints, handling_ops)
@@ -24,6 +25,8 @@ PlanFn = Callable[[Any, Any, Any, Set[Cell]], Tuple[List[Any], List[Cell], int]]
 TargetFn = Callable[[Any, Any, Cell, Any, str], Tuple[Cell, str]]
 #: (manager, task) -> a reason the request is invalid, or None
 CheckFn = Callable[[Any, Any], Optional[str]]
+#: (manager, task, robot) -> the Wh a flight takes, for the drone round-trip gate
+MissionFn = Callable[[Any, Any, Any], Optional[float]]
 
 #: Task payload keys the new job types read, kept on Task.params.
 JOB_PARAM_KEYS = ("slot", "quantity", "station", "face", "dock", "lane", "order_id", "pack_cell", "segment")
@@ -46,6 +49,7 @@ class JobSpec:
     carries_box: bool = False        # the robot lifts the task's box: payload and kind apply
     air: bool = False                # its targets are on the AIR layer
     human: bool = False              # a person does it (backend/human_jobs.py)
+    mission_wh: Optional[MissionFn] = None  # a flight's energy: drone_round_trip_ok applies
 
 
 JOB_SPECS: Dict[TaskType, JobSpec] = {}
@@ -594,3 +598,101 @@ JOB_SPECS[TaskType.MANUAL_PICK] = JobSpec(
 JOB_SPECS[TaskType.CLEAR_JAM] = JobSpec(
     label="Clear jam", guide="segment(x,y)[+operator_id](needs robot_cell_access inside a pack cell)",
     classes=frozenset(), check=_check_clear_jam, human=True)
+
+
+# --------------------------------------------------------------------------- #
+# Drones and scouts (spec §9.2): counting a rack face, patrolling the loop
+# --------------------------------------------------------------------------- #
+def face_slots(twin: Any, task: Any) -> List[Any]:
+    """The pallet slots of the rack cell a count covers, lowest level first."""
+    cell = parse_cell(task.params.get("face"))
+    return [slot for slot in twin.warehouse.slots_at(cell) if slot.kind == BoxKind.PALLET.value] if cell else []
+
+
+def _check_count(manager: Any, task: Any) -> Optional[str]:
+    cell = parse_cell(task.params.get("face"))
+    if cell is None:
+        return "CYCLE_COUNT needs a face (a pallet rack cell, as x,y)"
+    if not face_slots(manager.twin, task):
+        return f"({cell[0]},{cell[1]}) is not a pallet rack face"
+    task.params["face"] = f"{cell[0]},{cell[1]}"
+    return None
+
+
+def _count_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: str) -> Tuple[Cell, str]:
+    """Where the drone hovers to count: the aisle cell in front of the face."""
+    slot = face_slots(planner.twin, task)[0]
+    return slot.faces[0], f"rack face {task.params['face']}"
+
+
+def _plan_count(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """TAKEOFF → NAVIGATE (air) face → SCAN × levels → NAVIGATE pad → LAND."""
+    slots = face_slots(planner.twin, task)
+    hover, label = _count_target(planner, task, robot.position, robot.mobility, AIR)
+    pad = robot.position
+    actions: List[Any] = []
+    if robot.layer != AIR:
+        actions.append(Action(ActionType.TAKEOFF, "Take off", pad, "drone pad",
+                              params={"altitude_m": slots[0].height_m + HOVER_CLEARANCE_M}))
+    actions.append(Action(ActionType.NAVIGATE, f"Fly to {label}", hover, label))
+    actions += [Action(ActionType.SCAN, f"Scan {slot.slot_id}", hover, slot.slot_id, level=slot.level,
+                       slot_id=slot.slot_id) for slot in slots]
+    actions += [
+        Action(ActionType.NAVIGATE, "Fly back to the pad", pad, "drone pad"),
+        Action(ActionType.LAND, "Land", pad, "drone pad"),
+    ]
+    return actions, [], len(slots)
+
+
+def _count_wh(manager: Any, task: Any, robot: Any) -> Optional[float]:
+    """The energy a count flight takes: take-off, the flight out and back,
+    a scan per level and the landing, all at the flight rate."""
+    profile = robot.mobility
+    hover, _ = _count_target(manager.twin.planner, task, robot.position, profile, AIR)
+    cells = manager.twin.navigation.distance(robot.position, hover, allow_goal_adjacent=False,
+                                             profile=profile, layer=AIR)
+    if cells is None:
+        return None
+    flight = 2 * cells / (profile.speed_cells_s * CONFIG["TICK_DT"])
+    steps = step_ticks(profile, "TAKEOFF") + step_ticks(profile, "LAND") + \
+        step_ticks(profile, "SCAN") * len(face_slots(manager.twin, task))
+    return (flight + steps) * energy.flight_wh_per_tick(profile)
+
+
+PATROL_LOOP = "patrol_loop"
+
+
+def _loop_corners(twin: Any, origin: Cell) -> List[Cell]:
+    """The loop's corners in route order, starting from the one nearest
+    `origin`, and back to it."""
+    corners = [tuple(corner) for corner in twin.warehouse.zones[PATROL_LOOP].attributes["route"]]
+    start = min(range(len(corners)), key=lambda i: abs(corners[i][0] - origin[0]) + abs(corners[i][1] - origin[1]))
+    ordered = corners[start:] + corners[:start]
+    return ordered + [ordered[0]]
+
+
+def _check_patrol(manager: Any, task: Any) -> Optional[str]:
+    if PATROL_LOOP not in manager.twin.warehouse.zones:
+        return f"The {manager.twin.layout_name} floor has no patrol loop"
+    return None
+
+
+def _patrol_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: str) -> Tuple[Cell, str]:
+    return _loop_corners(planner.twin, origin)[0], "the patrol loop"
+
+
+def _plan_patrol(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE corner by corner round patrol_loop, then report anomalies."""
+    corners = _loop_corners(planner.twin, robot.position)
+    actions = [Action(ActionType.NAVIGATE, f"Patrol to ({x},{y})", (x, y), "patrol loop") for x, y in corners]
+    actions.append(Action(ActionType.WAIT, "Report anomalies", corners[-1], "patrol loop", params={"report": True}))
+    return actions, corners, 0
+
+
+JOB_SPECS[TaskType.CYCLE_COUNT] = JobSpec(
+    label="Cycle count", guide="face(a pallet rack cell, x,y)(a drone counts each level)",
+    classes=frozenset({"DRONE"}), check=_check_count, plan=_plan_count, target=_count_target, air=True,
+    mission_wh=_count_wh)
+JOB_SPECS[TaskType.PATROL] = JobSpec(
+    label="Patrol", guide="(a scout goes round patrol_loop and reports anomalies)",
+    classes=frozenset({"SCOUT"}), check=_check_patrol, plan=_plan_patrol, target=_patrol_target)

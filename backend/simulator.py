@@ -56,7 +56,7 @@ TIMED_BY_TICKS = frozenset({
 
 #: Job steps with a physical duration, run by Simulator._act_step.
 STEP_ACTIONS = frozenset({
-    ActionType.LIFT_TO, ActionType.LOWER, ActionType.TAKEOFF, ActionType.LAND,
+    ActionType.LIFT_TO, ActionType.LOWER, ActionType.TAKEOFF, ActionType.LAND, ActionType.SCAN,
     ActionType.GRASP, ActionType.PLACE, ActionType.PLACE_ON_CONVEYOR, ActionType.WAIT_CLEAR,
 })
 
@@ -262,6 +262,8 @@ class Simulator:
             action.done = True
             twin.tasks.complete_task(task)
         else:  # WAIT
+            if action.params.get("report"):
+                self._patrol_report(robot, task)
             action.done = True
             self._advance(task)
 
@@ -1012,6 +1014,7 @@ class Simulator:
             ActionType.GRASP: self._begin_grasp, ActionType.PLACE: self._begin_place,
             ActionType.PLACE_ON_CONVEYOR: self._begin_place_on_conveyor,
             ActionType.WAIT_CLEAR: self._begin_wait_clear,
+            ActionType.SCAN: self._begin_scan,
         }[action.type]
         ticks = begin(robot, task, action)
         if ticks is None:
@@ -1035,6 +1038,7 @@ class Simulator:
             ActionType.GRASP: self._finish_grasp, ActionType.PLACE: self._finish_place,
             ActionType.PLACE_ON_CONVEYOR: self._finish_place_on_conveyor,
             ActionType.WAIT_CLEAR: self._finish_wait_clear,
+            ActionType.SCAN: self._finish_scan,
         }[action.type]
         return finish(robot, task, action)
 
@@ -1364,6 +1368,92 @@ class Simulator:
             robot.set_status(RobotStatus.WAITING)
         return not waiting
 
+    # SCAN(slot): scan_s per level, hovering at the level's height plus
+    # HOVER_CLEARANCE_M in front of the rack face
+    def _begin_scan(self, robot: Any, task: Any, action: Any) -> int:
+        slot = self._slot_for(action)
+        if slot is None:
+            raise ValueError("it was given no slot to scan")
+        if robot.layer != AIR or robot.position not in slot.faces:
+            raise ValueError(f"it is not flying in front of slot {slot.slot_id}")
+        ok, reason = reach_ok(slot.level, robot.mobility.max_shelf_level)
+        if not ok:
+            raise ValueError(reason)
+        self.twin.set_robot_layer(robot.id, AIR, altitude_m=slot.height_m + HOVER_CLEARANCE_M)
+        return step_ticks(robot.mobility, "SCAN")
+
+    def _finish_scan(self, robot: Any, task: Any, action: Any) -> bool:
+        """Read the slot's tags. The drone reports what it counted — which a
+        SCAN_MISCOUNT fault puts 1-3 off the truth — and the count is written
+        against the record. A variance is flagged; one of STOCK_AUTO_RECONCILE_UNITS
+        or fewer is reconciled here, by the count job (spec §7.2)."""
+        twin = self.twin
+        slot = self._slot_for(action)
+        true_qty = goods.physical_qty(twin, slot.slot_id)
+        reported = true_qty
+        if twin.faults.roll("scan_miscount"):
+            reported = max(0, true_qty + random.choice((-1, 1)) * random.randint(1, 3))
+            if reported == true_qty:
+                reported = true_qty + random.randint(1, 3)
+        location = twin.stock.location(slot.slot_id)
+        recorded = location.recorded_qty if location is not None else 0
+        self._emit_effect(EventType.SCANNED, robot, task, f"{robot.name} counted {reported} in {slot.slot_id}",
+                          slot=slot.slot_id, level=slot.level, reported_qty=reported, true_qty=true_qty,
+                          recorded_qty=recorded, sku=location.sku if location else None)
+        if location is None:
+            if reported:
+                self._variance(robot, task, slot, None, reported, recorded, auto=False)
+            return True
+        count = twin.stock.record_count(slot.slot_id, reported, twin.tick_count)
+        if count["variance"]:
+            if count["auto_reconcile"]:
+                twin.stock.reconcile(slot.slot_id)
+                box = twin.find_box(location.box_id)
+                if box is not None:
+                    goods.sync_box(twin, box)
+            self._variance(robot, task, slot, location, reported, recorded, auto=count["auto_reconcile"])
+        return True
+
+    def _variance(self, robot: Any, task: Any, slot: Any, location: Optional[Any], counted: int,
+                  recorded: int, auto: bool) -> None:
+        """STOCK_VARIANCE_DETECTED: a count that disagrees with the record. A
+        variance too big to fix here is left for an exception (the orders
+        panel, plan 1c)."""
+        verb = "reconciled" if auto else "left for review"
+        self.twin.events.emit(
+            EventType.STOCK_VARIANCE_DETECTED,
+            f"{slot.slot_id}: counted {counted}, recorded {recorded} — {verb}",
+            category=LogCategory.OPERATIONS,
+            level=LogLevel.WARNING,
+            robot_id=robot.id,
+            task_id=task.id,
+            box_id=location.box_id if location else None,
+            position=cell_dict(slot.cell),
+            data={"slot": slot.slot_id, "sku": location.sku if location else None, "recorded_qty": recorded,
+                  "counted_qty": counted, "variance": counted - recorded, "auto_reconciled": auto},
+        )
+
+    def _patrol_report(self, robot: Any, task: Any) -> None:
+        """A patrol's last step: report the anomalies on the loop — a robot
+        halted on it, a box left FAILED on it (spec §9.2)."""
+        twin = self.twin
+        loop = next((zone for zone in twin.warehouse.zones.values() if "route" in zone.attributes), None)
+        cells = set(loop.cells) if loop is not None else set()
+        anomalies = [f"{other.name} is {other.status.value} at ({other.position[0]},{other.position[1]})"
+                     for other in twin.robots.values()
+                     if other.id != robot.id and other.position in cells and other.is_halted]
+        anomalies += [f"{box.name} is FAILED at ({box.position[0]},{box.position[1]})"
+                      for box in twin.boxes.values() if box.position in cells and box.status is BoxStatus.FAILED]
+        task.params["anomalies"] = anomalies
+        twin.logger.log(
+            LogLevel.WARNING if anomalies else LogLevel.INFO,
+            LogCategory.ROBOT,
+            f"{robot.name} patrol report: " + ("; ".join(anomalies) if anomalies else "nothing to report"),
+            robot_id=robot.id,
+            task_id=task.id,
+            data={"anomalies": anomalies},
+        )
+
     # ---- energy ------------------------------------------------------- #
     def _apply_energy(self, distance_before: Dict[str, int]) -> None:
         """The §5.5 model, once a tick, for every battery body on the new
@@ -1521,14 +1611,17 @@ class Simulator:
 
     def _auto_charge(self) -> None:
         """Idle robots with a low battery take themselves to the charger — a
-        drone to its pad. A mains-powered arm never needs to. On the new floor
+        drone to its pad. A mains-powered arm never needs to. A drone left idle
+        in the air (its job failed or was cancelled mid-flight) flies home
+        whatever its battery, so its next flight can take off. On the new floor
         a robot asks at most every SHIFT_CHECK_EVERY_TICKS, so a charger it
         can't reach right now doesn't get one failing request per tick."""
         twin = self.twin
         for robot in list(twin.robots.values()):
             if robot.is_halted or robot.current_task or robot.carrying_box or robot.mains_powered:
                 continue
-            if robot.status == RobotStatus.CHARGING or robot.battery > CONFIG["BATTERY_LOW"]:
+            adrift = robot.mobility is not None and robot.mobility.is_air and robot.layer == AIR
+            if robot.status == RobotStatus.CHARGING or (robot.battery > CONFIG["BATTERY_LOW"] and not adrift):
                 continue
             if self._on_charger(robot):
                 robot.charging_sessions += 1
@@ -1546,7 +1639,8 @@ class Simulator:
             charger = energy.charger_zone(robot.mobility).replace("_", " ")
             twin.logger.info(
                 LogCategory.BATTERY,
-                f"{robot.name} is idle at {robot.battery:.0f}% — heading to the {charger}",
+                f"{robot.name} is idle in the air — returning to its pad" if adrift
+                else f"{robot.name} is idle at {robot.battery:.0f}% — heading to the {charger}",
                 robot_id=robot.id,
             )
             if robot.mobility is not None:
