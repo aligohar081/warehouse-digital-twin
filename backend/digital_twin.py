@@ -51,6 +51,7 @@ from .models import (
     now_iso,
 )
 from .navigation import NavigationEngine
+from .operations import ShiftEngine
 from .operator import Operator
 from .robot import Robot
 from .task_manager import Task, TaskManager
@@ -162,6 +163,9 @@ class DigitalTwin:
         from .scheduler import Scheduler  # deferred: scheduler.py imports nothing from here at module level
 
         self.scheduler = Scheduler(self)
+        # The shift engine and its orders (backend/operations): paused until
+        # started, and only startable off the classic floor.
+        self.shift = ShiftEngine(self)
 
         self.statistics: Dict[str, Any] = {
             "completed_tasks": 0,
@@ -930,6 +934,7 @@ class DigitalTwin:
             self.faults.clear()
             self.stock = StockLedger(self.warehouse)
             self.equipment = Equipment.for_floor(self)
+            self.shift.reset()
             for key in self.statistics:
                 self.statistics[key] = 0
             self.navigation = NavigationEngine(self.warehouse)

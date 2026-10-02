@@ -121,6 +121,9 @@ CONFIG: Dict[str, Any] = {
     # picking one item from a tote onto the line at Pick 2.
     "CLEAR_JAM_S": 30.0,
     "MANUAL_PICK_S_PER_ITEM": 5.0,
+    # The new floor's shift clock (backend/operations/shift.py) reads this
+    # hour at simulation time 0.
+    "SHIFT_START_HOUR": 6,
     # Energy on the new floor (backend/energy.py): every Wh used and charged
     # is multiplied by this, so charging shows up within a demo; 1 is true to life.
     "ENERGY_TIME_SCALE": 10,
@@ -681,6 +684,13 @@ class EventType(str, enum.Enum):
     # a count disagreed with the record (spec §7.2).
     SCANNED = "SCANNED"
     STOCK_VARIANCE_DETECTED = "STOCK_VARIANCE_DETECTED"
+    # The shift engine and its orders (backend/operations).
+    ORDER_CREATED = "ORDER_CREATED"
+    ORDER_STAGE_ADVANCED = "ORDER_STAGE_ADVANCED"
+    ORDER_COMPLETED = "ORDER_COMPLETED"
+    ORDER_FAILED = "ORDER_FAILED"
+    SHIFT_STARTED = "SHIFT_STARTED"
+    SHIFT_PAUSED = "SHIFT_PAUSED"
 
 
 class ActionType(str, enum.Enum):

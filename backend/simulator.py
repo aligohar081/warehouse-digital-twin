@@ -159,6 +159,7 @@ class Simulator:
             twin.simulation_time = round(twin.simulation_time + self.dt, 3)
 
             twin.scheduler.tick()
+            twin.shift.tick()  # new work and order stages, dispatched below in the same tick
             people.update_transits(twin)  # walks end before robots decide who is on the walkway
             twin.tasks.dispatch()
 
