@@ -761,6 +761,8 @@ class DigitalTwin:
         robot = self.find_robot(robot_id)
         if robot is None:
             raise KeyError(f"Robot '{robot_id}' does not exist")
+        if robot.mains_powered:
+            raise ValueError(f"{robot.name} is mains-powered and never needs charging")
         existing = self.tasks.task_for_robot(robot.id)
         if existing is not None and existing.type == TaskType.CHARGE_ROBOT:
             return existing

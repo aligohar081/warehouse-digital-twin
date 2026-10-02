@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from datetime import datetime
 
-from . import goods, people
+from . import energy, goods, people
 from .eligibility import reach_ok, robot_eligibility
 from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, lift_ticks, seconds_to_ticks, step_ticks
 from .goods import carton_weight_kg
@@ -82,6 +82,9 @@ class Simulator:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self.dt = CONFIG["TICK_DT"]
+        # Robot id -> the tick before which a new-floor robot's auto-charge
+        # isn't requested again (see _auto_charge).
+        self._charge_retry: Dict[str, int] = {}
 
     # ------------------------------------------------------------------ #
     # Thread control
@@ -159,6 +162,7 @@ class Simulator:
             people.update_transits(twin)  # walks end before robots decide who is on the walkway
             twin.tasks.dispatch()
 
+            distance_before = {robot.id: robot.total_distance for robot in twin.robots.values()}
             for robot in self._execution_order():
                 try:
                     self._tick_robot(robot)
@@ -179,6 +183,7 @@ class Simulator:
             if twin.equipment is not None:
                 twin.equipment.tick()  # the conveyor and sorter move after robots place items
             self._detect_collisions()
+            self._apply_energy(distance_before)
             self._auto_charge()
             self._check_maintenance()
             self._tick_fleet()
@@ -736,7 +741,8 @@ class Simulator:
         box.pick_count += 1
         robot.carrying_box = box.id
         robot.set_status(RobotStatus.CARRYING)
-        robot.consume_battery(CONFIG["BATTERY_PICK_COST"])
+        if robot.mobility is None:  # the classic cost; the new floor pays per tick (spec §5.5)
+            robot.consume_battery(CONFIG["BATTERY_PICK_COST"])
         twin.events.emit(
             EventType.BOX_PICKED,
             f"{robot.name} picked {box.name} ({previous.value} → CARRIED)",
@@ -816,7 +822,8 @@ class Simulator:
         box.assigned_task = None
         robot.carrying_box = None
         robot.boxes_delivered += 1
-        robot.consume_battery(CONFIG["BATTERY_DELIVER_COST"])
+        if robot.mobility is None:  # the classic cost; the new floor pays per tick (spec §5.5)
+            robot.consume_battery(CONFIG["BATTERY_DELIVER_COST"])
         twin.statistics["boxes_delivered"] += 1
         twin.events.emit(
             EventType.BOX_DELIVERED,
@@ -1063,15 +1070,24 @@ class Simulator:
         if height > profile.max_lift_m + 1e-9:
             raise ValueError(f"{height:.1f} m is above its {profile.max_lift_m:.1f} m lift")
         action.params["height_m"] = height
+        action.params["from_m"] = robot.lift_height_m
         return lift_ticks(profile, robot.lift_height_m, height)
 
     def _finish_lift(self, robot: Any, task: Any, action: Any) -> bool:
         height = action.params["height_m"]
         robot.lift_height_m = height
+        box = self.twin.find_box(robot.carrying_box)
+        # Raising the load and carriage costs m × g × Δh (spec §5.5).
+        used = energy.lift_wh(robot.mobility, box.true_weight_kg if box else 0.0,
+                              height - float(action.params.get("from_m", 0.0)))
+        if used:
+            robot.use_energy(energy.wh_to_pct(robot.mobility, used))
         self._emit_effect(EventType.LIFTED, robot, task,
                           f"{robot.name} lifted to level {action.level} ({height:.1f} m)",
-                          self.twin.find_box(robot.carrying_box),
-                          level=action.level, height_m=height, slot=action.slot_id)
+                          box, level=action.level, height_m=height, slot=action.slot_id,
+                          energy_wh=round(used, 3))
+        if used:
+            self._check_battery_thresholds(robot, task)
         return True
 
     def _begin_lower(self, robot: Any, task: Any, action: Any) -> int:
@@ -1344,9 +1360,44 @@ class Simulator:
         return not waiting
 
     # ---- energy ------------------------------------------------------- #
+    def _apply_energy(self, distance_before: Dict[str, int]) -> None:
+        """The §5.5 model, once a tick, for every battery body on the new
+        floor: idle, moving or moving loaded on the ground; flight in the air.
+        A charging robot is charging instead, and one in ERROR is powered down.
+        Classic robots (no profile) keep paying per cell as they move."""
+        twin = self.twin
+        for robot in twin.robots.values():
+            profile = robot.mobility
+            if not energy.has_battery(profile) or robot.status in (RobotStatus.CHARGING, RobotStatus.ERROR):
+                continue
+            moved = robot.total_distance != distance_before.get(robot.id, robot.total_distance)
+            used = energy.tick_wh(profile, robot.layer, moved, loaded=bool(robot.carrying_box))
+            robot.use_energy(energy.wh_to_pct(profile, used))
+            task = twin.tasks.get(robot.current_task) if robot.current_task else None
+            self._check_battery_thresholds(robot, task)
+
+    def _on_charger(self, robot: Any) -> bool:
+        """Is the robot where it can charge: a landed drone on its pad, any
+        other robot on a CHARGING cell?"""
+        cell = self.twin.warehouse.cell_type(*robot.position)
+        if robot.mobility is not None and robot.mobility.is_air:
+            return robot.layer == GROUND and cell is CellType.DRONE_PAD
+        return cell is CellType.CHARGING
+
+    def _recharge(self, robot: Any) -> None:
+        """One tick on the charger: BATTERY_CHARGE_RATE on classic, the
+        body's charge rate on the new floor."""
+        if energy.has_battery(robot.mobility):
+            robot.gain_energy(energy.wh_to_pct(robot.mobility, energy.charge_wh_per_tick(robot.mobility)))
+        else:
+            robot.charge(CONFIG["BATTERY_CHARGE_RATE"])
+
     def _act_charge(self, robot: Any, task: Any, action: Any) -> None:
         twin = self.twin
         if not action.started:
+            if robot.mobility is not None and not self._on_charger(robot):
+                twin.tasks.fail_task(task, f"{robot.name} is not on a charger")
+                return
             action.started = True
             if robot.mobility is not None:
                 self._emit_step(robot, task, action)
@@ -1363,7 +1414,7 @@ class Simulator:
             )
             return
 
-        robot.charge(CONFIG["BATTERY_CHARGE_RATE"])
+        self._recharge(robot)
         if robot.battery >= 100.0:
             robot.low_battery_warned = False
             twin.events.emit(
@@ -1377,7 +1428,7 @@ class Simulator:
             self._advance(task)
 
     def _continue_idle_charge(self, robot: Any) -> None:
-        robot.charge(CONFIG["BATTERY_CHARGE_RATE"])
+        self._recharge(robot)
         if robot.battery >= 100.0:
             robot.low_battery_warned = False
             robot.set_status(RobotStatus.IDLE)
@@ -1389,6 +1440,8 @@ class Simulator:
             )
 
     def _apply_movement_battery(self, robot: Any, task: Any) -> None:
+        if robot.mobility is not None:
+            return  # the new floor pays per tick instead (_apply_energy)
         before = robot.drain_for_movement()
         if before is None:
             return
@@ -1438,14 +1491,17 @@ class Simulator:
             )
 
     def _auto_charge(self) -> None:
-        """Idle robots with a low battery take themselves to the charger."""
+        """Idle robots with a low battery take themselves to the charger — a
+        drone to its pad. A mains-powered arm never needs to. On the new floor
+        a robot asks at most every SHIFT_CHECK_EVERY_TICKS, so a charger it
+        can't reach right now doesn't get one failing request per tick."""
         twin = self.twin
         for robot in list(twin.robots.values()):
-            if robot.is_halted or robot.current_task or robot.carrying_box:
+            if robot.is_halted or robot.current_task or robot.carrying_box or robot.mains_powered:
                 continue
             if robot.status == RobotStatus.CHARGING or robot.battery > CONFIG["BATTERY_LOW"]:
                 continue
-            if twin.warehouse.cell_type(*robot.position).value == "CHARGING":
+            if self._on_charger(robot):
                 robot.charging_sessions += 1
                 robot.set_status(RobotStatus.CHARGING)
                 twin.events.emit(
@@ -1456,11 +1512,16 @@ class Simulator:
                     robot_id=robot.id,
                 )
                 continue
+            if self._charge_retry.get(robot.id, 0) > twin.tick_count:
+                continue
+            charger = energy.charger_zone(robot.mobility).replace("_", " ")
             twin.logger.info(
                 LogCategory.BATTERY,
-                f"{robot.name} is idle at {robot.battery:.0f}% — heading to the charging station",
+                f"{robot.name} is idle at {robot.battery:.0f}% — heading to the {charger}",
                 robot_id=robot.id,
             )
+            if robot.mobility is not None:
+                self._charge_retry[robot.id] = twin.tick_count + CONFIG["SHIFT_CHECK_EVERY_TICKS"]
             try:
                 twin.request_charge(robot.id, priority=Priority.HIGH, internal=True)
             except (KeyError, ValueError) as exc:

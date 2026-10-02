@@ -117,6 +117,9 @@ CONFIG: Dict[str, Any] = {
     # A physical safety wait (Simulator._safety_wait) longer than this many
     # seconds is escalated once (SAFETY_WAIT_ESCALATED).
     "SAFETY_WAIT_ESCALATE_S": 120,
+    # Energy on the new floor (backend/energy.py): every Wh used and charged
+    # is multiplied by this, so charging shows up within a demo; 1 is true to life.
+    "ENERGY_TIME_SCALE": 10,
     # Injected faults (backend/faults.py), all 0.0-1.0 and off by default like
     # FALSE_SUCCESS_RISK: a drone count off by 1-3, a forklift placing a level
     # off, an arm or picker missing a grasp, a conveyor segment jamming per

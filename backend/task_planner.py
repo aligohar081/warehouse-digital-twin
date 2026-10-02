@@ -9,7 +9,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .embodiment import GROUND, MobilityProfile
+from . import energy
+from .embodiment import AIR, GROUND, MobilityProfile
 from .models import (
     CONFIG,
     Action,
@@ -99,7 +100,9 @@ class TaskPlanner:
     # Battery estimation
     # ------------------------------------------------------------------ #
     def estimate_battery(self, robot: Any, waypoints: List[Cell], handling_ops: int = 0) -> float:
-        """Estimate battery percentage required to drive a route and handle boxes."""
+        """Estimate battery percentage required to drive a route and handle
+        boxes: 1% a cell plus a cost per box on classic; on the new floor, the
+        §5.5 energy of driving the route at the body's speed (backend/energy.py)."""
         nav = self.twin.navigation
         origin = robot.position
         total_cells = 0
@@ -109,6 +112,9 @@ class TaskPlanner:
                 distance = abs(origin[0] - waypoint[0]) + abs(origin[1] - waypoint[1])
             total_cells += distance
             origin = waypoint
+        if energy.has_battery(robot.mobility):
+            used = energy.route_wh(robot.mobility, total_cells)
+            return round(energy.wh_to_pct(robot.mobility, used), 2) + float(CONFIG["BATTERY_RESERVE"])
         movement_cost = math.ceil(total_cells / CONFIG["BATTERY_DRAIN_MOVES"])
         handling_cost = handling_ops * CONFIG["BATTERY_PICK_COST"]
         return float(movement_cost + handling_cost + CONFIG["BATTERY_RESERVE"])
@@ -242,23 +248,21 @@ class TaskPlanner:
                 handling_ops = 2
 
         elif task.type == TaskType.CHARGE_ROBOT:
-            cell, label = self.resolve_target("charging_station", robot.position, blocked, **route)
-            actions = [
-                Action(ActionType.NAVIGATE, f"Navigate to {label}", cell, label),
-                Action(ActionType.CHARGE, "Charge to 100%", cell, label),
-            ]
-            waypoints = [cell]
+            actions, waypoints = self._charge_plan(robot, blocked, route)
 
         else:
             raise PlanningError(f"{task.type.value} does not need a movement plan")
 
         # ---- battery-aware planning ---------------------------------- #
-        if task.type != TaskType.CHARGE_ROBOT and waypoints:
+        # A mains-powered arm has no battery to plan for, and a drone gets a
+        # hard energy gate instead of a detour (spec §5.5, §10.1).
+        flies = robot.mobility is not None and robot.mobility.is_air
+        if task.type != TaskType.CHARGE_ROBOT and waypoints and not robot.mains_powered and not flies:
             required = self.estimate_battery(robot, waypoints, handling_ops)
             task.battery_estimate = required
             if robot.battery < required:
                 charge_cell, charge_label = self.resolve_target(
-                    "charging_station", robot.position, blocked, **route
+                    energy.charger_zone(robot.mobility), robot.position, blocked, **route
                 )
                 logger.warning(
                     LogCategory.BATTERY,
@@ -291,6 +295,19 @@ class TaskPlanner:
             data={"actions": [a.description for a in actions]},
         )
         return actions
+
+    def _charge_plan(self, robot: Any, blocked: Set[Cell], route: Dict[str, Any]) -> Tuple[List[Action], List[Cell]]:
+        """CHARGE_ROBOT: to the robot's charger and charge. A drone charges on
+        its pad (spec §5.5): it lands on a pad cell no grounded robot holds."""
+        zone = energy.charger_zone(robot.mobility)
+        if robot.mobility is not None and robot.mobility.is_air:
+            blocked = (set(blocked) | set(self.twin.robot_cells(GROUND))) - {robot.position}
+        cell, label = self.resolve_target(zone, robot.position, blocked, **route)
+        actions = [Action(ActionType.NAVIGATE, f"Navigate to {label}", cell, label)]
+        if robot.layer == AIR:
+            actions.append(Action(ActionType.LAND, f"Land on {label}", cell, label))
+        actions.append(Action(ActionType.CHARGE, "Charge to 100%", cell, label))
+        return actions, [cell]
 
     def stats(self) -> Dict[str, int]:
         return {"plans_created": self.plans_created}

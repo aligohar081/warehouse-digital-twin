@@ -31,6 +31,7 @@ from .models import (
 )
 from .eligibility import agent_eligibility, operator_eligibility, robot_eligibility
 from .embodiment import GROUND
+from .energy import charger_zone
 from .llm import narrate
 from .task_planner import PlanningError
 
@@ -919,6 +920,8 @@ class TaskManager:
             )
             if reason:
                 return False, f"{robot.name} {reason}"
+            if task.type == TaskType.CHARGE_ROBOT and robot.mains_powered:
+                return False, f"{robot.name} is mains-powered and never needs charging"
         elif not twin.robots:
             return False, "No robots exist in the warehouse"
 
@@ -1026,7 +1029,7 @@ class TaskManager:
         if task.type in (TaskType.MOVE_ROBOT, TaskType.MIXED_MAINTENANCE_MISSION):
             return planner.resolve_target(task.destination, origin, **route)
         if task.type == TaskType.CHARGE_ROBOT:
-            return planner.resolve_target("charging_station", origin, **route)
+            return planner.resolve_target(charger_zone(profile), origin, **route)
         return None, ""
 
     # ------------------------------------------------------------------ #
@@ -1086,6 +1089,8 @@ class TaskManager:
         for robot in twin.robots.values():
             if not robot.is_available or robot.is_halted:
                 continue
+            if task.type == TaskType.CHARGE_ROBOT and robot.mains_powered:
+                continue  # an arm has no battery to charge
             if robot_eligibility(
                 robot.status.value, robot.firmware_version, battery=None,
                 task_type=task.type.value, allowed_task_types=robot.allowed_task_types,

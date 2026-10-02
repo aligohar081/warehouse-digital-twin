@@ -226,6 +226,28 @@ class Robot:
         self.touch()
         return before
 
+    def use_energy(self, pct: float) -> float:
+        """The §5.5 energy model (backend/energy.py) drains a few thousandths
+        of a percent per tick, so unlike consume_battery this doesn't round
+        (to_dict still shows one decimal). Returns the previous level."""
+        before = self.battery
+        self.battery = max(0.0, self.battery - pct)
+        self.battery_consumed += before - self.battery
+        self.touch()
+        return before
+
+    def gain_energy(self, pct: float) -> float:
+        """Charging under the §5.5 model, unrounded like use_energy."""
+        before = self.battery
+        self.battery = min(100.0, self.battery + pct)
+        self.touch()
+        return before
+
+    @property
+    def mains_powered(self) -> bool:
+        """A floor body with no battery (an arm): it never drains or charges."""
+        return self.mobility is not None and self.mobility.battery is None
+
     def drain_for_movement(self) -> Optional[float]:
         """Apply distance-based battery drain. Returns the previous level if drained."""
         if self.moves_since_drain >= CONFIG["BATTERY_DRAIN_MOVES"]:

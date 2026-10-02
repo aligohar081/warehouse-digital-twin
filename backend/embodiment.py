@@ -64,6 +64,7 @@ class MobilityProfile:
     scan_s: Optional[float]
     grasp_s: Optional[float]
     place_s: Optional[float]
+    mass_kg: Optional[float] = None  # the body's own mass (lift energy, spec §5.5)
 
     @classmethod
     def from_model(cls, spec: Mapping[str, Any], embodiment_class: str) -> "MobilityProfile":
@@ -98,6 +99,7 @@ class MobilityProfile:
             scan_s=_float(spec.get("scan_s")),
             grasp_s=_float(spec.get("grasp_s")),
             place_s=_float(spec.get("place_s")),
+            mass_kg=_float(spec.get("mass_kg")),
         )
 
     @property
