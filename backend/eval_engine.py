@@ -746,8 +746,11 @@ def check_state_transition(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]
                 # Check *membership* in each zone's box list, not a coarse
                 # occupied flag — a shelf can hold several boxes at once, so
                 # "still occupied" alone would never catch this specific box
-                # failing to actually move.
-                if box_id not in (dest_after.get("boxes_present") or []):
+                # failing to actually move. A SHIPPED box (LOAD_TRUCK) left
+                # with the truck, so its dock no longer lists it — it is
+                # exempt from this test only; the zone-key test above holds.
+                shipped = bool(box_after) and box_after.get("status") == "SHIPPED"
+                if not shipped and box_id not in (dest_after.get("boxes_present") or []):
                     problems.append(
                         f"box {box_id} isn't listed in destination zone "
                         f"{destination.get('key')!r} after delivery"
