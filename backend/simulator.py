@@ -19,7 +19,7 @@ from datetime import datetime
 
 from . import goods, people
 from .eligibility import reach_ok, robot_eligibility
-from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, lift_ticks, step_ticks
+from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, lift_ticks, seconds_to_ticks, step_ticks
 from .goods import carton_weight_kg
 from .maintenance import maintenance_reason
 from .models import (
@@ -66,6 +66,13 @@ WAIT_CLEAR_REASONS = ("CONVEYOR_OCCUPIED", "AWAITING_ITEM")
 #: Bodies whose grasp can miss (GRASP_FAIL_RISK), and how often they retry.
 GRASPING_CLASSES = frozenset({"ARM", "PICKER"})
 GRASP_RETRIES = 2
+
+#: Bodies that won't drive into a zone with a person in it (PERSON_IN_AISLE).
+AISLE_RULE_CLASSES = frozenset({"FORKLIFT", "HEAVY_HAULER"})
+
+#: The actions a supervised body (the humanoid) holds still for when it is
+#: unsupervised: everything that moves it or what it holds.
+SUPERVISED_ACTIONS = frozenset({ActionType.NAVIGATE, ActionType.PICK, ActionType.DELIVER}) | STEP_ACTIONS
 
 
 class Simulator:
@@ -230,6 +237,8 @@ class Simulator:
             twin.tasks.complete_task(task)
             return
         robot.activity = action.type.value
+        if action.type in SUPERVISED_ACTIONS and self._supervision_hold(robot, task):
+            return
 
         if action.type == ActionType.NAVIGATE:
             self._act_navigate(robot, task, action)
@@ -297,6 +306,8 @@ class Simulator:
 
         if self._crossing_wait(robot, task, next_cell):
             return
+        if self._aisle_wait(robot, task, next_cell):
+            return
 
         blocker = self._blocking_robot(robot, next_cell)
         if blocker is not None:
@@ -326,6 +337,7 @@ class Simulator:
 
         previous = robot.position
         robot.step_to(next_cell)
+        self._announce_zone_entry(robot, task, previous)
         twin.statistics["distance_travelled"] += 1
         if robot.carrying_box:
             box = twin.find_box(robot.carrying_box)
@@ -551,15 +563,78 @@ class Simulator:
             self._safety_resume(robot, task)
         return False
 
+    def _aisle_wait(self, robot: Any, task: Any, next_cell: Cell) -> bool:
+        """PERSON_IN_AISLE (spec §6): a forklift or heavy hauler won't drive
+        into a zone with a person standing in it. Only entering counts:
+        someone stepping into the zone it is already in doesn't stop it. Route
+        zones (patrol_loop) are paths, not places, so they never count."""
+        if robot.mobility is None or robot.mobility.embodiment_class not in AISLE_RULE_CLASSES:
+            return False
+        if any(people.people_in(self.twin, zone.key) for zone in self._entered_zones(robot.position, next_cell)):
+            self._safety_wait(robot, task, "PERSON_IN_AISLE", next_cell)
+            return True
+        if robot.wait_reason == "PERSON_IN_AISLE":
+            self._safety_resume(robot, task)
+        return False
+
+    def _entered_zones(self, origin: Cell, cell: Cell) -> List[Any]:
+        """The places (non-route zones) holding `cell` that `origin` isn't in."""
+        warehouse = self.twin.warehouse
+        here = {zone.key for zone in warehouse.zones_of_cell(origin)}
+        return [zone for zone in warehouse.zones_of_cell(cell)
+                if "route" not in zone.attributes and zone.key not in here]
+
+    def _announce_zone_entry(self, robot: Any, task: Any, previous: Cell) -> None:
+        """A forklift or hauler entering a zone is a step of its own
+        (ROBOT_STEP ENTER_ZONE), with who was in the zones it entered — what
+        the evaluation's human_zone_clear reads."""
+        if robot.mobility is None or robot.mobility.embodiment_class not in AISLE_RULE_CLASSES:
+            return
+        entered = self._entered_zones(previous, robot.position)
+        if not entered:
+            return
+        present = [person.id for zone in entered for person in people.people_in(self.twin, zone.key)]
+        self._step_event(robot, task, "ENTER_ZONE", f"entered {entered[0].label}",
+                         box=self.twin.find_box(robot.carrying_box), zone=entered[0].key, present=present)
+
+    def _supervision_hold(self, robot: Any, task: Any) -> bool:
+        """SUPERVISOR_ABSENT (spec §6): a supervised body (the humanoid) moves
+        only while a supervisor on shift, holding a valid credential in scope
+        for its model and site, is in its zone or one sharing an edge with it.
+        Otherwise it pauses where it is."""
+        if robot.mobility is None or not robot.mobility.supervision:
+            return False
+        ok, _ = people.supervision_status(self.twin, robot)
+        if not ok:
+            self._safety_wait(robot, task, "SUPERVISOR_ABSENT", robot.position)
+            return True
+        if robot.wait_reason == "SUPERVISOR_ABSENT":
+            self._safety_resume(robot, task)
+        return False
+
+    def _supervised(self, robot: Any) -> Optional[bool]:
+        """ROBOT_STEP's supervision_ok: None for a body that needs no supervisor."""
+        if robot.mobility is None or not robot.mobility.supervision:
+            return None
+        return people.supervision_status(self.twin, robot)[0]
+
     def _safety_wait(self, robot: Any, task: Any, reason: str, cell: Cell) -> None:
         """A physical wait — a decision, not a rejection: the robot holds
         WAITING with a reason code, announced once when the wait starts. It
-        is not a traffic block, so it never replans or sidesteps."""
+        is not a traffic block, so it never replans or sidesteps. A new reason
+        closes the previous wait first, so every wait pairs with a resume; a
+        wait that outlasts SAFETY_WAIT_ESCALATE_S is escalated once."""
         robot.set_status(RobotStatus.WAITING)
         if robot.wait_reason == reason:
+            self._escalate(robot, task)
             return
+        if robot.wait_reason is not None:
+            self.twin.end_safety_wait(robot, f"superseded by {reason}")
         robot.wait_reason = reason
         robot.wait_started_tick = self.twin.tick_count
+        robot.wait_task_id = task.id
+        robot.wait_cell = tuple(cell)
+        robot.wait_escalated = False
         self.twin.events.emit(
             EventType.ROBOT_SAFETY_WAIT,
             f"{robot.name} waiting before ({cell[0]},{cell[1]}): {reason}",
@@ -572,22 +647,31 @@ class Simulator:
         )
         self.twin.tasks.set_status(task, TaskStatus.BLOCKED, f"Safety wait: {reason}")
 
-    def _safety_resume(self, robot: Any, task: Any) -> None:
-        reason = robot.wait_reason
-        started = robot.wait_started_tick if robot.wait_started_tick is not None else self.twin.tick_count
-        waited = self.twin.tick_count - started
-        robot.wait_reason = None
-        robot.wait_started_tick = None
-        robot.set_status(RobotStatus.DELIVERING if robot.carrying_box else RobotStatus.MOVING)
+    def _escalate(self, robot: Any, task: Any) -> None:
+        """SAFETY_WAIT_ESCALATED, once, when a wait outlasts SAFETY_WAIT_ESCALATE_S
+        (the orders panel shows it — spec §10.3)."""
+        if robot.wait_escalated or robot.wait_started_tick is None:
+            return
+        waited = self.twin.tick_count - robot.wait_started_tick
+        if waited < seconds_to_ticks(CONFIG["SAFETY_WAIT_ESCALATE_S"]):
+            return
+        robot.wait_escalated = True
+        cell = robot.wait_cell or robot.position
         self.twin.events.emit(
-            EventType.ROBOT_SAFETY_RESUMED,
-            f"{robot.name} resumed after {waited} ticks ({reason} cleared)",
+            EventType.SAFETY_WAIT_ESCALATED,
+            f"{robot.name} has waited {waited * self.dt:.0f} s ({robot.wait_reason}) — escalated",
             category=LogCategory.SAFETY,
+            level=LogLevel.ERROR,
             robot_id=robot.id,
             task_id=task.id,
-            position=cell_dict(robot.position),
-            data={"reason": reason, "waited_ticks": waited},
+            position=cell_dict(cell),
+            data={"reason": robot.wait_reason, "waited_s": round(waited * self.dt, 1), "cell": cell_dict(cell)},
         )
+
+    def _safety_resume(self, robot: Any, task: Any) -> None:
+        reason = robot.wait_reason
+        self.twin.end_safety_wait(robot, "cleared")
+        robot.set_status(RobotStatus.DELIVERING if robot.carrying_box else RobotStatus.MOVING)
         self.twin.tasks.set_status(
             task, TaskStatus.TRANSPORTING if robot.carrying_box else TaskStatus.IN_PROGRESS,
             f"{reason} cleared",
@@ -848,7 +932,7 @@ class Simulator:
                 "step": step,
                 "zone": zone,
                 "people_present": list(present),
-                "supervision_ok": None,
+                "supervision_ok": self._supervised(robot),
                 "level": level,
                 "true_weight_kg": box.true_weight_kg if box else None,
                 "declared_weight_kg": box.declared_weight_kg if box else None,
@@ -867,8 +951,16 @@ class Simulator:
         return people.people_at(self.twin, robot.position)
 
     def _step_hold(self, robot: Any, task: Any, action: Any) -> bool:
-        """A physical wait before or during a step (spec §10.3): an arm pauses
+        """A physical wait before or during a step (spec §6, §10.3): an arm
+        pauses while a person is in its fenced pack cell (PERSON_IN_CELL), and
         while the conveyor is jammed at or upstream of its working cell."""
+        station = self.twin.warehouse.fixed_stations.get(robot.position)
+        if station is not None and robot.mobility is not None and robot.mobility.is_fixed:
+            if people.people_in(self.twin, station):
+                self._safety_wait(robot, task, "PERSON_IN_CELL", robot.position)
+                return True
+            if robot.wait_reason == "PERSON_IN_CELL":
+                self._safety_resume(robot, task)
         work_cell = self._arm_work_cell(robot)
         if work_cell is not None:
             jam = self.twin.equipment.conveyor.jam_upstream_of(work_cell)

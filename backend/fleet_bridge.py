@@ -137,6 +137,7 @@ class FleetBridge:
             )
             record = service.get_robot(change["aggregate_id"])
         robot.asset_id = record["asset_id"]
+        robot.model_code = record["model_code"]
         robot.mobility = self.floor_profile(record["model_code"])
         reported = record["reported"] or {}
         if adopt:
@@ -259,7 +260,8 @@ class FleetBridge:
         if change["aggregate_type"] == "ROBOT_ASSET":
             if robot is not None:
                 # The body follows the asset's catalog model on every asset change.
-                robot.mobility = self.floor_profile(change["after"]["model_code"])
+                robot.model_code = change["after"]["model_code"]
+                robot.mobility = self.floor_profile(robot.model_code)
                 # UPDATING is derived from the jobs, never hand-set per job.
                 installing = any(j["state"] == "INSTALLING" for j in change["after"]["active_ota_jobs"])
                 if installing != robot.ota_installing:

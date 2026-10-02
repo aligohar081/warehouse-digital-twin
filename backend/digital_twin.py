@@ -721,6 +721,7 @@ class DigitalTwin:
                     raise ValueError(f"{robot.name} can only {verb} on the drone pad, not at ({x},{y})")
                 if robot.position in self.robot_cells(layer):
                     raise ValueError(f"({x},{y}) is already occupied on the {layer} layer")
+                self.end_safety_wait(robot, "ended by a layer change")
                 robot.clear_path()  # a route planned for the other layer no longer applies
             robot.layer, robot.altitude_m = layer, altitude
             robot.touch()
@@ -730,6 +731,30 @@ class DigitalTwin:
             robot_id=robot.id, position=cell_dict(robot.position),
         )
         return robot
+
+    def end_safety_wait(self, robot: Robot, cause: str) -> Optional[int]:
+        """Close `robot`'s safety wait, if it is in one, with a
+        ROBOT_SAFETY_RESUMED that pairs its ROBOT_SAFETY_WAIT (spec §10.3) —
+        whether the condition cleared or the wait ended some other way (its
+        task ended, the robot was reset or took off). Returns the ticks waited."""
+        reason = robot.wait_reason
+        if reason is None:
+            return None
+        started = robot.wait_started_tick if robot.wait_started_tick is not None else self.tick_count
+        waited = self.tick_count - started
+        task_id = robot.wait_task_id
+        robot.wait_reason = robot.wait_started_tick = robot.wait_task_id = robot.wait_cell = None
+        robot.wait_escalated = False
+        self.events.emit(
+            EventType.ROBOT_SAFETY_RESUMED,
+            f"{robot.name} resumed after {waited} ticks ({reason} {cause})",
+            category=LogCategory.SAFETY,
+            robot_id=robot.id,
+            task_id=task_id,
+            position=cell_dict(robot.position),
+            data={"reason": reason, "waited_ticks": waited, "cause": cause},
+        )
+        return waited
 
     def request_charge(self, robot_id: str, priority: Priority = Priority.HIGH,
                       internal: bool = False) -> Task:
@@ -770,6 +795,7 @@ class DigitalTwin:
         robot.layer, robot.altitude_m = GROUND, 0.0  # a reset robot is back on the ground
         robot.lift_height_m, robot.activity = 0.0, None
         robot.battery = 100.0
+        self.end_safety_wait(robot, "ended by a reset")
         robot.clear_path()
         robot.current_task = None
         robot.moves_since_drain = 0
@@ -830,6 +856,7 @@ class DigitalTwin:
         for robot, other in ((robot_a, robot_b), (robot_b, robot_a)):
             robot.last_error = f"Collided with {other.name}"
             robot.set_status(RobotStatus.ERROR)
+            self.end_safety_wait(robot, "ended by a collision")
             robot.clear_path()
             self.events.emit(
                 EventType.ROBOT_ERROR,

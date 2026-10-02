@@ -75,6 +75,9 @@ class Robot:
         # The asset lifecycle status that made the fleet bridge stop this
         # robot (e.g. MAINTENANCE), so it only ever resumes robots it stopped.
         self.fleet_hold: Optional[str] = None
+        # The catalog model of its bound asset (set by the fleet bridge): the
+        # equipment a supervisor's or operator's credential must cover.
+        self.model_code: Optional[str] = None
         # What this robot's body lets it do (backend/embodiment.py), from its
         # bound asset's catalog model. Set by the fleet bridge on a layered
         # floor; None on classic, where every robot drives as it always has.
@@ -106,10 +109,15 @@ class Robot:
         self.low_battery_warned = False
         self.blocked_by: Optional[str] = None
         self.last_error: Optional[str] = None
-        # A physical safety wait (e.g. "PERSON_ON_CROSSING") and the tick it
-        # began — see Simulator._safety_wait. None when not waiting for safety.
+        # A physical safety wait (e.g. "PERSON_ON_CROSSING"), the tick it began,
+        # the task and cell it holds, and whether it was escalated — see
+        # Simulator._safety_wait and DigitalTwin.end_safety_wait. None when not
+        # waiting for safety.
         self.wait_reason: Optional[str] = None
         self.wait_started_tick: Optional[int] = None
+        self.wait_task_id: Optional[str] = None
+        self.wait_cell: Optional[Cell] = None
+        self.wait_escalated: bool = False
 
         # Predictive maintenance (see backend/maintenance.py): the
         # odometer/charge-cycle reading at the last maintenance sign-off
@@ -157,8 +165,12 @@ class Robot:
         self.target_position = None
         self.target_name = None
         # No route, nothing to wait on: the next route re-checks from scratch.
+        # (DigitalTwin.end_safety_wait announces a wait's end first.)
         self.wait_reason = None
         self.wait_started_tick = None
+        self.wait_task_id = None
+        self.wait_cell = None
+        self.wait_escalated = False
 
     def set_path(self, path: List[Cell], target_name: Optional[str] = None) -> None:
         self.current_path = list(path)
@@ -261,6 +273,7 @@ class Robot:
             "allowed_task_types": list(self.allowed_task_types) if self.allowed_task_types else None,
             "robot_class": self.robot_class,
             "asset_id": self.asset_id,
+            "model_code": self.model_code,
             "ai_policy_version": self.ai_policy_version,
             "component_firmware": dict(self.component_firmware),
             "ota_installing": self.ota_installing,
@@ -314,6 +327,7 @@ class Robot:
         robot.last_maintenance_at = data.get("last_maintenance_at")
         robot.maintenance_alerted = data.get("maintenance_alerted", False)
         robot.asset_id = data.get("asset_id")
+        robot.model_code = data.get("model_code")
         robot.ai_policy_version = data.get("ai_policy_version")
         robot.component_firmware = dict(data.get("component_firmware") or {})
         robot.fleet_hold = data.get("fleet_hold")

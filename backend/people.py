@@ -5,15 +5,20 @@ off the floor (zone None), or walking between two zones for as long as the
 walk takes. Only a walk that crosses the pedestrian walkway strip (or starts
 or ends on it) is "on the walkway" and holds the robot crossings; a walk that
 stays on one side of it does not. Robots never collide with people; they obey
-physical waits instead (see Simulator._crossing_wait). These helpers answer
-every "who is where" question the robots' rules ask.
+physical waits instead (see Simulator._crossing_wait, _aisle_wait and
+_supervision_hold). These helpers answer every "who is where" question the
+robots' rules ask, including whether a supervised body is supervised.
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set, Tuple
 
+from .eligibility import cert_scope_ok, supervision_ok
 from .embodiment import seconds_to_ticks
 from .models import CONFIG, Cell, CellType, EventType, LogCategory, OperatorStatus, manhattan
+
+#: The site every new-floor credential scope is checked against (spec §4.1).
+FLOOR_SITE = "WH-01"
 
 
 def _zone_key(warehouse: Any, zone: str) -> str:
@@ -31,14 +36,21 @@ def transit_ticks(warehouse: Any, from_zone: str, to_zone: str) -> int:
     return max(1, seconds_to_ticks(seconds))
 
 
+def _sides(zone: Any, axis: int, line: int) -> Set[int]:
+    """Which sides of the line at `line` (on `axis`) the zone's cells lie on."""
+    return {(cell[axis] > line) - (cell[axis] < line) for cell in zone.cells} - {0}
+
+
 def crosses_walkway(warehouse: Any, from_zone: str, to_zone: str) -> bool:
     """Does a walk from `from_zone` to `to_zone` cross the pedestrian walkway?
 
-    True when either end is a WALKWAY zone, or when the two zone centres lie on
-    opposite sides of one. A WALKWAY zone whose cells share one x is a vertical
-    strip at that x (one sharing a y, a horizontal strip at that y); the centres
-    are on opposite sides when they fall either side of that line. A floor with
-    no WALKWAY zone (classic) has no walkway walks.
+    True when either end is a WALKWAY zone, or when the two zones' cells are
+    not all on one side of one. A WALKWAY zone whose cells share one x is a
+    vertical strip at that x (one sharing a y, a horizontal strip at that y).
+    Sides go by the zones' cells, not their centres: a zone with cells on both
+    sides of the strip (cross_aisle, top_aisle) may be walked across, so every
+    walk to or from it counts. A floor with no WALKWAY zone (classic) has no
+    walkway walks.
     """
     a = warehouse.zones[_zone_key(warehouse, from_zone)]
     b = warehouse.zones[_zone_key(warehouse, to_zone)]
@@ -54,8 +66,8 @@ def crosses_walkway(warehouse: Any, from_zone: str, to_zone: str) -> bool:
         else:
             continue  # not a straight strip: only a walk to or from it counts
         line = walkway.cells[0][axis]
-        if (a.center[axis] - line) * (b.center[axis] - line) < 0:
-            return True
+        if len(_sides(a, axis, line) | _sides(b, axis, line)) > 1:
+            return True  # opposite sides, or a zone straddling the strip
     return False
 
 
@@ -158,3 +170,40 @@ def supervisor_nearby(twin: Any, robot_cell: Cell, supervisor: Any) -> bool:
         return False
     return any(zones_touch(twin.warehouse, zone.key, supervisor.zone)
                for zone in twin.warehouse.zones_of_cell(robot_cell))
+
+
+# --------------------------------------------------------------------------- #
+# Supervision (spec §6): the humanoid works only under a supervisor
+# --------------------------------------------------------------------------- #
+def supervisors(twin: Any, robot: Any) -> List[Any]:
+    """Everyone on shift whose valid credential of the kind `robot`'s body
+    requires covers its model and the floor's site."""
+    required = robot.mobility.supervision if robot.mobility is not None else None
+    if not required:
+        return []
+    return [o for o in twin.operators.values()
+            if o.status != OperatorStatus.OFF_DUTY
+            and cert_scope_ok(o.certification_scopes, required, robot.model_code, FLOOR_SITE)[0]]
+
+
+def supervision_available(twin: Any, robot: Any) -> Tuple[bool, Optional[str]]:
+    """Can `robot`'s supervision be satisfied at all? Someone on shift holds
+    a valid, in-scope credential of the kind its body requires. This is the
+    gate's half (spec §9.1, §10.1); being near it is the runtime half."""
+    required = robot.mobility.supervision if robot.mobility is not None else None
+    if not required:
+        return True, None
+    holders = [o for o in twin.operators.values() if required in o.certification_scopes]
+    on_shift = [o for o in holders if o.status != OperatorStatus.OFF_DUTY]
+    return supervision_ok(required, bool(on_shift), bool(holders), bool(supervisors(twin, robot)))
+
+
+def supervision_status(twin: Any, robot: Any) -> Tuple[bool, Optional[str]]:
+    """Is `robot` supervised right now: is a qualified supervisor on shift in
+    its zone or a zone sharing an edge with it?"""
+    ok, reason = supervision_available(twin, robot)
+    if not ok:
+        return ok, reason
+    if any(supervisor_nearby(twin, robot.position, person) for person in supervisors(twin, robot)):
+        return True, None
+    return False, "no supervisor is in or next to its zone"

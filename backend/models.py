@@ -114,6 +114,9 @@ CONFIG: Dict[str, Any] = {
     # long the sorter takes to pull a carton in and to drop it on its dock.
     "CONVEYOR_SPEED_MPS": 0.5,
     "SORTER_TRANSFER_S": 2.0,
+    # A physical safety wait (Simulator._safety_wait) longer than this many
+    # seconds is escalated once (SAFETY_WAIT_ESCALATED).
+    "SAFETY_WAIT_ESCALATE_S": 120,
     # Injected faults (backend/faults.py), all 0.0-1.0 and off by default like
     # FALSE_SUCCESS_RISK: a drone count off by 1-3, a forklift placing a level
     # off, an arm or picker missing a grasp, a conveyor segment jamming per
@@ -622,6 +625,8 @@ class EventType(str, enum.Enum):
     # wait_reason, e.g. PERSON_ON_CROSSING) — see Simulator._safety_wait.
     ROBOT_SAFETY_WAIT = "ROBOT_SAFETY_WAIT"
     ROBOT_SAFETY_RESUMED = "ROBOT_SAFETY_RESUMED"
+    # A safety wait outlasted SAFETY_WAIT_ESCALATE_S (once per wait).
+    SAFETY_WAIT_ESCALATED = "SAFETY_WAIT_ESCALATED"
     # A person finished walking from one zone to another (backend/people.py).
     PERSON_MOVED = "PERSON_MOVED"
     # Floor equipment (backend/equipment.py): a box changed hands (robot,

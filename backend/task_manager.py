@@ -1268,6 +1268,7 @@ class TaskManager:
             robot.completed_tasks += 1
             if robot.current_task == task.id:
                 robot.current_task = None
+                twin.end_safety_wait(robot, f"ended: {task.id} completed")
                 robot.clear_path()
                 if not robot.is_halted and robot.status != twin.RobotStatus.CHARGING:
                     robot.set_status(twin.RobotStatus.IDLE)
@@ -1342,6 +1343,7 @@ class TaskManager:
             robot.failed_tasks += 1
             if robot.current_task == task.id:
                 robot.current_task = None
+                twin.end_safety_wait(robot, f"ended: {task.id} failed")
                 robot.clear_path()
                 if not robot.is_halted:
                     robot.set_status(twin.RobotStatus.IDLE)
@@ -1373,6 +1375,7 @@ class TaskManager:
         robot = twin.find_robot(task.robot_id) if task.robot_id else None
         if robot is not None and robot.current_task == task.id:
             robot.current_task = None
+            twin.end_safety_wait(robot, f"ended: {task.id} cancelled")
             robot.clear_path()
             if not robot.is_halted:
                 robot.set_status(twin.RobotStatus.IDLE)
