@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from .decision_graph import flatten_record, query_decisions
 from .eval_engine import evaluate_events
+from .jobs import JOB_SPECS
 from .models import LogCategory, TaskType, Priority
 
 MAX_QUERY_RESULTS = 15
@@ -36,7 +37,7 @@ TASK_TYPE_GUIDE = (
     "AGENT_AUDIT:agent_id(reviews recent logs/CI) | "
     "OPERATOR_APPROVAL:operator_id[+robot_id](needs safety_inspection) | "
     "OPERATOR_MAINTENANCE_SIGNOFF:operator_id[+robot_id](needs electrical_safety, resets wear)"
-)
+) + "".join(f" | {kind.value}:{spec.guide}" for kind, spec in JOB_SPECS.items())  # the new-floor jobs
 
 
 # --------------------------------------------------------------------------- #

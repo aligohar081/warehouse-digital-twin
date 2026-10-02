@@ -56,6 +56,8 @@ class FleetBridge:
         self.service = service
         self._ota_ticks: Dict[str, int] = {}
         self._battery_base: Dict[str, Dict[str, float]] = {}
+        # Catalog models don't change at runtime, so each body is read once.
+        self._profiles: Dict[str, MobilityProfile] = {}
         service.subscribe(self._on_change)
 
     # ---- mutations ------------------------------------------------------ #
@@ -69,12 +71,19 @@ class FleetBridge:
             reseed(self.service, demo=demo)
             self._ota_ticks.clear()
             self._battery_base.clear()
+            self._profiles.clear()
 
     # ---- embodiment ------------------------------------------------------ #
     def model_profile(self, model_code: str) -> MobilityProfile:
-        """The body a robot of catalog model `model_code` has (spec §5.1)."""
-        model = self.service.get_model(model_code)
-        return MobilityProfile.from_model(model["spec"], model["embodiment_class"])
+        """The body a robot of catalog model `model_code` has (spec §5.1),
+        read from the catalog once per model: asset changes rebuild a robot's
+        profile on every heartbeat-driven update, and the catalog is fixed."""
+        profile = self._profiles.get(model_code)
+        if profile is None:
+            model = self.service.get_model(model_code)
+            profile = MobilityProfile.from_model(model["spec"], model["embodiment_class"])
+            self._profiles[model_code] = profile
+        return profile
 
     def floor_profile(self, model_code: str) -> Optional[MobilityProfile]:
         """The profile a robot of `model_code` moves by on this twin's floor:

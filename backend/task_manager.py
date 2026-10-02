@@ -29,11 +29,26 @@ from .models import (
     now_hms,
     now_iso,
 )
-from .eligibility import agent_eligibility, operator_eligibility, robot_eligibility
-from .embodiment import GROUND
+from . import people
+from .eligibility import (
+    agent_eligibility, box_kind_ok, operator_eligibility, payload_ok, reach_ok, robot_eligibility,
+)
+from .embodiment import AIR, GROUND
 from .energy import charger_zone
+from .jobs import JOB_PARAM_KEYS, JOB_SPECS, job_levels
 from .llm import narrate
 from .task_planner import PlanningError
+
+#: The older job types whose robot lifts the task's box(es).
+BOX_HANDLING_TYPES = frozenset({
+    TaskType.PICK_AND_DELIVER, TaskType.PICK_BOX, TaskType.DELIVER_BOX, TaskType.MOVE_BOX,
+    TaskType.BATCH_DELIVER,
+})
+
+
+def _article(word: str) -> str:
+    """'an AMR', 'a FORKLIFT'."""
+    return f"{'an' if word[:1] in 'AEIOU' else 'a'} {word}"
 
 
 class Task:
@@ -54,6 +69,7 @@ class Task:
         required_certification: Optional[str] = None,
         second_operator_id: Optional[str] = None,
         dual_signoff: bool = False,
+        params: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.id = task_id
         self.type = task_type
@@ -65,6 +81,9 @@ class Task:
         self.box_ids: List[str] = list(box_ids or [])
         self.source = source
         self.destination = destination
+        # What a new-floor job type needs beyond box and destination (its
+        # slot, station, quantity, order, ...: jobs.JOB_PARAM_KEYS).
+        self.params: Dict[str, Any] = dict(params or {})
         self.priority = priority
         self.internal = internal
         self.sequence = sequence
@@ -130,6 +149,11 @@ class Task:
         self.history.append({"time": now_hms(), "timestamp": now_iso(), "status": status.value, "message": message})
 
     def summary(self) -> str:
+        spec = JOB_SPECS.get(self.type)
+        if spec is not None:
+            subject = (self.box_id or self.params.get("face") or self.params.get("segment")
+                       or self.params.get("order_id"))
+            return f"{spec.label.lower()} {subject}" if subject else spec.label.lower()
         if self.type in (TaskType.PICK_AND_DELIVER, TaskType.MOVE_BOX, TaskType.DELIVER_BOX):
             return f"{self.box_id or 'box'} → {self.destination or 'destination'}"
         if self.type == TaskType.PICK_BOX:
@@ -169,6 +193,7 @@ class Task:
             "box_ids": list(self.box_ids),
             "source": self.source,
             "destination": self.destination,
+            "params": dict(self.params),
             "priority": self.priority.value,
             "priority_rank": PRIORITY_RANK[self.priority],
             "status": self.status.value,
@@ -207,6 +232,7 @@ class Task:
             required_certification=data.get("required_certification"),
             second_operator_id=data.get("requested_second_operator"),
             dual_signoff=data.get("dual_signoff", False),
+            params=data.get("params"),
         )
         task.robot_id = data.get("robot_id")
         task.agent_id = data.get("agent_id")
@@ -470,10 +496,31 @@ class TaskManager:
                 required_certification=payload.get("required_certification"),
                 second_operator_id=second_operator_spec,
                 dual_signoff=bool(payload.get("dual_signoff")),
+                params={key: payload[key] for key in JOB_PARAM_KEYS if payload.get(key) is not None},
             )
             self.tasks[task.id] = task
 
         task.record(TaskStatus.CREATED, f"Task created ({task.type.value}, {priority.value} priority)")
+        # The full task definition, not just priority/requested_robot —
+        # this is "the task" input an eval reads (see
+        # evals/generate_tests_groq.py::_extract_task) so it doesn't
+        # have to regex the free-text message to know what was asked
+        # for.
+        definition = {
+            "priority": priority.value,
+            "requested_robot": task.requested_robot,
+            "requested_agent": task.requested_agent,
+            "requested_operator": task.requested_operator,
+            "required_certification": task.required_certification,
+            "task_type": task.type.value,
+            "box_id": task.box_id,
+            "box_ids": list(task.box_ids),
+            "source": task.source,
+            "destination": task.destination,
+            "summary": task.summary(),
+        }
+        if task.params:  # only the new job types carry parameters
+            definition["params"] = dict(task.params)
         events.emit(
             EventType.TASK_CREATED,
             f"{task.id} created: {task.type.value} — {task.summary()}",
@@ -481,24 +528,7 @@ class TaskManager:
             task_id=task.id,
             robot_id=task.robot_id,
             box_id=task.box_id,
-            # The full task definition, not just priority/requested_robot —
-            # this is "the task" input an eval reads (see
-            # evals/generate_tests_groq.py::_extract_task) so it doesn't
-            # have to regex the free-text message to know what was asked
-            # for.
-            data={
-                "priority": priority.value,
-                "requested_robot": task.requested_robot,
-                "requested_agent": task.requested_agent,
-                "requested_operator": task.requested_operator,
-                "required_certification": task.required_certification,
-                "task_type": task.type.value,
-                "box_id": task.box_id,
-                "box_ids": list(task.box_ids),
-                "source": task.source,
-                "destination": task.destination,
-                "summary": task.summary(),
-            },
+            data=definition,
         )
 
         # Immediate control tasks bypass the queue.
@@ -794,6 +824,14 @@ class TaskManager:
         twin = self.twin
         planner = twin.planner
 
+        # A new-floor job type checks its own request first (its box, slot,
+        # station) — before any actor is chosen for it.
+        spec = JOB_SPECS.get(task.type)
+        if spec is not None and spec.check is not None:
+            reason = spec.check(self, task)
+            if reason:
+                return False, reason
+
         # AI agent — existence/availability, AND eligibility (approved
         # model_version) are both gated here. An ineligible agent used to
         # only get flagged after the fact by eval_engine.check_entities_
@@ -922,8 +960,16 @@ class TaskManager:
                 return False, f"{robot.name} {reason}"
             if task.type == TaskType.CHARGE_ROBOT and robot.mains_powered:
                 return False, f"{robot.name} is mains-powered and never needs charging"
+            reason = self.capability_reason(robot, task)
+            if reason:
+                return False, f"{robot.name} {reason}"
         elif not twin.robots:
             return False, "No robots exist in the warehouse"
+        elif twin.layout_name != "classic":
+            # AUTO on a layered floor: some robot's body must be able to do it.
+            reason = self._fleet_reason(task)
+            if reason:
+                return False, reason
 
         # Box
         needs_box = task.type in (
@@ -973,18 +1019,21 @@ class TaskManager:
             TaskType.BATCH_DELIVER,
         )
         # A named robot's targets are resolved for its own body and layer.
-        route: Dict[str, Any] = {"profile": robot.mobility, "layer": robot.layer} if robot else {}
+        route: Dict[str, Any] = self._route(task, robot) if robot else {}
+        # An AUTO task on a layered floor was resolved robot by robot above.
+        resolve = robot is not None or twin.layout_name == "classic"
         if needs_destination:
             if not task.destination:
                 return False, "This task type needs a destination"
             origin = robot.position if robot else self._auto_origin()
             try:
-                planner.resolve_target(task.destination, origin, **route)
+                if resolve:
+                    planner.resolve_target(task.destination, origin, **route)
             except PlanningError as exc:
                 return False, str(exc)
 
         # Source (optional, but if given it must exist)
-        if task.source:
+        if task.source and resolve:
             try:
                 origin = robot.position if robot else self._auto_origin()
                 planner.resolve_target(task.source, origin, **route)
@@ -997,10 +1046,139 @@ class TaskManager:
                 target_cell, _ = self._primary_target(task, robot.position, **route)
             except PlanningError as exc:
                 return False, str(exc)
-            if target_cell is not None and not twin.navigation.path_exists(robot.position, target_cell, **route):
+            if target_cell is not None and not self._can_reach(robot, target_cell, route):
                 return False, f"No path from {robot.name} to ({target_cell[0]},{target_cell[1]})"
 
         return True, None
+
+    # ------------------------------------------------------------------ #
+    # The physical rules (spec §9.1, §10.1, §10.2)
+    # ------------------------------------------------------------------ #
+    def capability_reason(self, robot: Any, task: Task) -> Optional[str]:
+        """Why `robot`'s body can't do `task`, or None — the capability filter
+        of spec §9.1, shared by the gate and robot selection. Covers the kind
+        of body the job needs, the kind and declared weight of the box it
+        lifts, the slot level against its reach, and (the humanoid) that
+        supervision can be had. The route is checked with the target. A
+        classic robot has no body to check."""
+        profile = robot.mobility
+        if profile is None:
+            return None
+        spec = JOB_SPECS.get(task.type)
+        if spec is not None:
+            if spec.classes and profile.embodiment_class not in spec.classes:
+                needs = " or ".join(_article(kind) for kind in sorted(spec.classes))
+                return f"is {_article(profile.embodiment_class)}; {task.type.value} needs {needs}"
+        elif profile.is_fixed and task.type != TaskType.CHARGE_ROBOT:
+            return f"is fixed equipment and can't do {task.type.value}"
+        for box in self._lifted_boxes(task):
+            for ok, reason in (box_kind_ok(box.kind.value, profile.box_kinds),
+                               payload_ok(box.declared_weight_kg, profile.max_payload_kg)):
+                if not ok:
+                    return f"can't take {box.name}: {reason}"
+        for level in job_levels(self.twin, task):
+            ok, reason = reach_ok(level, profile.max_shelf_level)
+            if not ok:
+                return f"can't work there: {reason}"
+        ok, reason = people.supervision_available(self.twin, robot)
+        if not ok:
+            return f"can't work unsupervised: {reason}"
+        return None
+
+    def physical_recheck(self, robot: Any, task: Task) -> Optional[str]:
+        """The rules re-checked while a job runs (spec §10.2): what the robot
+        carries against its payload, the job's levels against its reach, and
+        (the humanoid) whether supervision can still be had. It only flags."""
+        profile = robot.mobility
+        if profile is None:
+            return None
+        box = self.twin.find_box(robot.carrying_box) if robot.carrying_box else None
+        if box is not None:
+            ok, reason = payload_ok(box.declared_weight_kg, profile.max_payload_kg)
+            if not ok:
+                return f"is carrying {box.name}: {reason}"
+        for level in job_levels(self.twin, task):
+            ok, reason = reach_ok(level, profile.max_shelf_level)
+            if not ok:
+                return f"can't work there: {reason}"
+        ok, reason = people.supervision_available(self.twin, robot)
+        if not ok:
+            return f"can't work unsupervised: {reason}"
+        return None
+
+    def _lifted_boxes(self, task: Task) -> List[Any]:
+        """The boxes the robot itself lifts for `task` (payload and kind apply)."""
+        spec = JOB_SPECS.get(task.type)
+        if task.type in BOX_HANDLING_TYPES or (spec is not None and spec.carries_box):
+            ids = task.box_ids if task.type == TaskType.BATCH_DELIVER else [task.box_id]
+            return [box for box in (self.twin.find_box(box_id) for box_id in ids if box_id) if box is not None]
+        return []
+
+    def _route(self, task: Task, robot: Any) -> Dict[str, Any]:
+        """The body and layer a robot's targets for `task` resolve on: a
+        drone's jobs are flown, so their targets are on AIR."""
+        spec = JOB_SPECS.get(task.type)
+        layer = AIR if spec is not None and spec.air else robot.layer
+        return {"profile": robot.mobility, "layer": layer}
+
+    def _can_reach(self, robot: Any, cell: Cell, route: Dict[str, Any]) -> bool:
+        """Can `robot` get to `cell` itself? On a layered floor the goal is
+        never snapped to a neighbour (spec §9.1), and an arm reaches only the
+        cell it stands on. Classic keeps today's check."""
+        if robot.mobility is None:
+            return self.twin.navigation.path_exists(robot.position, cell, **route)
+        if robot.mobility.is_fixed:
+            return cell == robot.position
+        return self.twin.navigation.path_exists(robot.position, cell, allow_goal_adjacent=False, **route)
+
+    def _reach(self, task: Task, robot: Any) -> Optional[Tuple[Optional[Cell], str, int]]:
+        """(target cell, label, distance) for `robot` doing `task`: the target
+        resolved for its own body from where it stands, the distance a route
+        it can drive with no goal snapping. None if it can't get there."""
+        route = self._route(task, robot)
+        try:
+            cell, label = self._primary_target(task, robot.position, **route)
+        except PlanningError:
+            return None
+        if cell is None:
+            return None, label, 0
+        if robot.mobility.is_fixed:
+            return (cell, label, 0) if cell == robot.position else None
+        distance = self.twin.navigation.distance(robot.position, cell, allow_goal_adjacent=False, **route)
+        return None if distance is None else (cell, label, distance)
+
+    def _fleet_reason(self, task: Task) -> Optional[str]:
+        """Why no robot on the floor could ever do this AUTO task — busy or
+        not — or None if one can. A request no body can do is rejected at
+        the gate (its order records why) instead of waiting forever."""
+        twin = self.twin
+        reasons: List[str] = []
+        for robot in twin.robots.values():
+            if robot.mobility is None:
+                return None
+            reason = self.capability_reason(robot, task)
+            if reason is None:
+                if task.type == TaskType.CHARGE_ROBOT and robot.mains_powered:
+                    reason = "is mains-powered"
+                elif self._reach(task, robot) is None:
+                    reason = "has no route to the job"
+                elif (task.destination and task.type not in JOB_SPECS
+                      and not self._resolves(task.destination, robot, task)):
+                    reason = f"can't reach {task.destination}"  # a job type's spec checks its own
+            if reason is None:
+                return None
+            reasons.append(f"{robot.name} {reason}")
+        if not reasons:
+            return None
+        shown = "; ".join(reasons[:3]) + (f" (and {len(reasons) - 3} more)" if len(reasons) > 3 else "")
+        return f"No robot can do this {task.type.value}: {shown}"
+
+    def _resolves(self, spec: str, robot: Any, task: Task) -> bool:
+        try:
+            self.twin.planner.resolve_target(spec, robot.position, **self._route(task, robot))
+        except PlanningError:
+            return False
+        return True
 
     def _auto_origin(self) -> Optional[Cell]:
         """Where an AUTO task's targets are resolved from when no robot is
@@ -1017,6 +1195,9 @@ class TaskManager:
                         layer: str = GROUND) -> Tuple[Optional[Cell], str]:
         planner = self.twin.planner
         route = {"profile": profile, "layer": layer}
+        spec = JOB_SPECS.get(task.type)
+        if spec is not None:
+            return spec.target(planner, task, origin, profile, layer) if spec.target else (None, "")
         if task.type in (TaskType.PICK_AND_DELIVER, TaskType.PICK_BOX, TaskType.MOVE_BOX):
             return planner.resolve_target(task.box_id, origin, **route)
         if task.type == TaskType.BATCH_DELIVER:
@@ -1101,13 +1282,25 @@ class TaskManager:
                 # name. Battery is excluded here too — see the matching
                 # comment in validate() above.
                 continue
-            distance = None
-            if target_cell is not None:
-                distance = twin.navigation.distance(robot.position, target_cell,
-                                                    profile=robot.mobility, layer=robot.layer)
-                if distance is None:
+            if robot.mobility is not None:
+                # A layered floor (spec §9.1): the body must be able to do the
+                # job, and the distance is to the target resolved for this body
+                # from where it stands, along a route it can drive — never to
+                # a neighbour the goal was snapped to.
+                if self.capability_reason(robot, task) is not None:
                     continue
-            distance = distance if distance is not None else 0
+                reach = self._reach(task, robot)
+                if reach is None:
+                    continue
+                _, target_label, distance = reach
+            else:
+                distance = None
+                if target_cell is not None:
+                    distance = twin.navigation.distance(robot.position, target_cell,
+                                                        profile=robot.mobility, layer=robot.layer)
+                    if distance is None:
+                        continue
+                distance = distance if distance is not None else 0
             battery_penalty = max(0.0, (100.0 - robot.battery) * 0.25)
             workload_penalty = self.queued_count_for_robot(robot.id) * 10
             status_penalty = 0 if robot.status.value == "IDLE" else 15

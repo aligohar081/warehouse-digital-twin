@@ -23,6 +23,7 @@ from .goods import StockLedger
 from .inventory import NotFound as InventoryNotFound
 from .inventory import open_inventory
 from .inventory.catalog_data import CLASS_DEFAULT_MODELS
+from .jobs import JOB_SPECS
 from .logger import WarehouseLogger
 from .models import (
     ACTIVE_TASK_STATES,
@@ -1096,7 +1097,7 @@ class DigitalTwin:
                 {"id": TaskType.OPERATOR_APPROVAL.value, "label": "Operator approval"},
                 {"id": TaskType.OPERATOR_MAINTENANCE_SIGNOFF.value, "label": "Operator maintenance sign-off"},
                 {"id": TaskType.BATCH_DELIVER.value, "label": "Batch deliver (multiple boxes)"},
-            ],
+            ] + [{"id": kind.value, "label": spec.label} for kind, spec in JOB_SPECS.items()],
             # The task types it actually makes sense to restrict a robot
             # to (i.e. the ones a robot is really dispatched for) — what
             # the dashboard's per-robot capability editor offers as
@@ -1113,7 +1114,7 @@ class DigitalTwin:
                 {"id": TaskType.CHARGE_ROBOT.value, "label": "Charge robot"},
                 {"id": TaskType.MIXED_MAINTENANCE_MISSION.value, "label": "Mixed maintenance mission"},
                 {"id": TaskType.BATCH_DELIVER.value, "label": "Batch deliver (multiple boxes)"},
-            ],
+            ] + [{"id": kind.value, "label": spec.label} for kind, spec in JOB_SPECS.items() if not spec.human],
             "robot_classes": [
                 {"id": key, "label": preset.get("label", key)}
                 for key, preset in ROBOT_CLASS_PRESETS.items()

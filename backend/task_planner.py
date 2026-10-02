@@ -251,7 +251,12 @@ class TaskPlanner:
             actions, waypoints = self._charge_plan(robot, blocked, route)
 
         else:
-            raise PlanningError(f"{task.type.value} does not need a movement plan")
+            from .jobs import JOB_SPECS  # deferred: jobs.py imports this module
+
+            spec = JOB_SPECS.get(task.type)
+            if spec is None or spec.plan is None:
+                raise PlanningError(f"{task.type.value} does not need a movement plan")
+            actions, waypoints, handling_ops = spec.plan(self, task, robot, blocked)
 
         # ---- battery-aware planning ---------------------------------- #
         # A mains-powered arm has no battery to plan for, and a drone gets a

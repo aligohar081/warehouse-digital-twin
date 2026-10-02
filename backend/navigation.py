@@ -42,8 +42,11 @@ class NavigationEngine:
         ``start``, using only cells ``profile`` may occupy on ``layer``.
         ``None`` means no route exists. The route may cross walkway cells, but
         the goal must be a cell the robot may stop on (Warehouse.may_stop): a
-        walkway goal is treated like an impassable one.
+        walkway goal is treated like an impassable one. Fixed equipment (an
+        arm) is never routed: that is no routing failure, so none is counted.
         """
+        if profile is not None and profile.is_fixed:
+            return None
         blocked_set: Set[Cell] = set(blocked or ())
         blocked_set.discard(start)
 
@@ -106,14 +109,21 @@ class NavigationEngine:
     # Helpers
     # ------------------------------------------------------------------ #
     def path_exists(self, start: Cell, goal: Cell, blocked: Optional[Iterable[Cell]] = None,
-                    profile: Optional[MobilityProfile] = None, layer: str = GROUND) -> bool:
-        return self.find_path(start, goal, blocked=blocked, profile=profile, layer=layer) is not None
+                    profile: Optional[MobilityProfile] = None, layer: str = GROUND,
+                    allow_goal_adjacent: bool = True) -> bool:
+        """Is there a route? By default a goal the robot can't stop on snaps to
+        its nearest neighbour, as always; allow_goal_adjacent=False asks
+        whether the robot can reach `goal` itself (spec §9.1's route check)."""
+        return self.find_path(start, goal, blocked=blocked, allow_goal_adjacent=allow_goal_adjacent,
+                              profile=profile, layer=layer) is not None
 
     def distance(
         self, start: Cell, goal: Cell, blocked: Optional[Iterable[Cell]] = None,
         profile: Optional[MobilityProfile] = None, layer: str = GROUND,
+        allow_goal_adjacent: bool = True,
     ) -> Optional[int]:
-        path = self.find_path(start, goal, blocked=blocked, profile=profile, layer=layer)
+        path = self.find_path(start, goal, blocked=blocked, allow_goal_adjacent=allow_goal_adjacent,
+                              profile=profile, layer=layer)
         return None if path is None else len(path)
 
     def best_cell_in_zone(

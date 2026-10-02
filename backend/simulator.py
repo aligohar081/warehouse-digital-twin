@@ -1593,7 +1593,7 @@ class Simulator:
             reason = robot_eligibility(
                 robot.status.value, robot.firmware_version, battery=None,
                 task_type=task.type.value, allowed_task_types=robot.allowed_task_types,
-            )
+            ) or twin.tasks.physical_recheck(robot, task)  # payload, reach, supervision (spec §10.2)
             if reason:
                 task.authorization_flagged = reason
                 twin.events.emit(

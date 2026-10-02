@@ -234,10 +234,25 @@ class Warehouse:
             "walkable_types": sorted(t.value for t in self.walkable_types),
         }
 
+    #: Zone types that are never a task's source or destination: places robots
+    #: can't stop in, or equipment and storage that are served, not visited.
+    _NOT_ENDPOINTS = {
+        CellType.RESTRICTED, CellType.WALKWAY, CellType.CONVEYOR, CellType.SORTER,
+        CellType.DRONE_PAD, CellType.PALLET_RACK, CellType.TOTE_SHELF,
+    }
+
     # Locations a user can pick as a task source or destination.
     def location_options(self) -> List[Dict[str, str]]:
+        if self.layout_name == "classic":
+            return [
+                {"key": zone.key, "label": zone.label}
+                for zone in self.zones.values()
+                if zone.cell_type is not CellType.RESTRICTED
+            ]
+        # On a layered floor, routes (patrol_loop), the walkway, the conveyor,
+        # the sorter, the drone pad and the racks are not endpoints.
         return [
             {"key": zone.key, "label": zone.label}
             for zone in self.zones.values()
-            if zone.cell_type is not CellType.RESTRICTED
+            if zone.cell_type not in self._NOT_ENDPOINTS and "route" not in zone.attributes
         ]
