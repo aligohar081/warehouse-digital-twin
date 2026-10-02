@@ -14,7 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from .models import Cell, TaskType
+from . import goods
+from .models import Action, ActionType, BoxKind, BoxStatus, Cell, TaskType
 from .task_planner import PlanningError
 
 #: (planner, task, robot, blocked) -> (actions, waypoints, handling_ops)
@@ -122,3 +123,202 @@ def face_cell(planner: Any, slot: Any, origin: Cell, profile: Any, layer: str,
     if cell is None:
         raise PlanningError(f"No face of slot {slot.slot_id} is reachable")
     return cell
+
+
+def promised_slots(twin: Any, exclude: Optional[str] = None) -> Set[str]:
+    """Slots that jobs not yet finished are going to fill."""
+    return {task.params["slot"] for task in twin.tasks.tasks.values()
+            if task.id != exclude and not task.is_terminal and task.params.get("slot")
+            and task.type in FILLS_SLOT}
+
+
+def check_box(manager: Any, task: Any, kind: BoxKind, in_slot: Optional[bool] = None) -> Optional[str]:
+    """The job's box exists, is a `kind`, is in a slot or not as the job
+    needs, and no other job holds it."""
+    if not task.box_id:
+        return f"{task.type.value} needs a box_id"
+    box = manager.twin.find_box(task.box_id)
+    if box is None:
+        return f"Box '{task.box_id}' does not exist"
+    task.box_id = box.id
+    if box.kind is not kind:
+        return f"{box.name} is a {box.kind.value}, not a {kind.value}"
+    if box.status in (BoxStatus.SHIPPED, BoxStatus.FAILED, BoxStatus.CARRIED):
+        return f"{box.name} is {box.status.value}"
+    if in_slot is True and not box.slot:
+        return f"{box.name} is not in a slot"
+    if in_slot is False and box.slot and box.kind is BoxKind.PALLET:
+        return f"{box.name} is already in slot {box.slot}"
+    conflict = manager.active_task_for_box(box.id, exclude=task.id)
+    if conflict is not None:
+        return f"{box.name} is already reserved by {conflict.id}"
+    return None
+
+
+def check_slot(manager: Any, task: Any, kind: BoxKind) -> Optional[str]:
+    """An explicit `slot` exists, takes a `kind` and is free and unpromised."""
+    slot_id = task.params.get("slot")
+    if not slot_id:
+        return None
+    twin = manager.twin
+    slot = twin.warehouse.slot(slot_id)
+    if slot is None:
+        return f"Unknown slot {slot_id!r}"
+    if slot.kind != kind.value:
+        return f"Slot {slot_id} holds {slot.kind}s, not {kind.value}s"
+    holder = twin.stock.box_in(slot_id)
+    if holder is not None and holder != task.box_id:
+        return f"Slot {slot_id} already holds {holder}"
+    if slot_id in promised_slots(twin, exclude=task.id):
+        return f"Slot {slot_id} is promised to another job"
+    return None
+
+
+def check_zone(manager: Any, zone: Optional[str]) -> Optional[str]:
+    if manager.twin.warehouse.resolve_zone(zone) is None:
+        return f"Unknown zone {zone!r}"
+    return None
+
+
+def floor_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: str) -> Tuple[Cell, str]:
+    """A job that starts by picking its box off the floor: the box's cell."""
+    box = task_box(planner.twin, task)
+    return box.position, box.name
+
+
+def slot_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: str) -> Tuple[Cell, str]:
+    """A job that starts at its box's slot: the face cell it serves it from."""
+    box = task_box(planner.twin, task)
+    slot = task_slot(planner.twin, task, box)
+    if slot is None:
+        raise PlanningError(f"{box.name} is not in a slot")
+    return face_cell(planner, slot, origin, profile, layer), f"slot {slot.slot_id}"
+
+
+def drop_cell(planner: Any, zone: str, origin: Cell, blocked: Set[Cell], route: Dict[str, Any]) -> Tuple[Cell, str]:
+    """A free cell of `zone` to put a box down on."""
+    return planner.resolve_target(zone, origin, blocked, prefer_free=True, **route)
+
+
+def lift_steps(slot: Any, face: Cell, verb: ActionType, box: Any) -> List[Any]:
+    """Lift to `slot`'s level at `face`, grasp or place the box, lower."""
+    level = slot.level
+    act = "Grasp" if verb is ActionType.GRASP else "Place"
+    return [
+        Action(ActionType.LIFT_TO, f"Lift to level {level} of {slot.slot_id}", face, slot.slot_id, box.id,
+               level=level, slot_id=slot.slot_id),
+        Action(verb, f"{act} {box.name} at {slot.slot_id}", face, slot.slot_id, box.id,
+               level=level, slot_id=slot.slot_id),
+        Action(ActionType.LOWER, "Lower", face, slot.slot_id, box.id),
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Pallets (spec §9.2): unload, put away, retrieve, load
+# --------------------------------------------------------------------------- #
+def _check_unload(manager: Any, task: Any) -> Optional[str]:
+    task.destination = task.destination or "intake_staging"
+    return check_box(manager, task, BoxKind.PALLET, in_slot=False) or check_zone(manager, task.destination)
+
+
+def _plan_floor_to_zone(planner: Any, task: Any, robot: Any, blocked: Set[Cell],
+                        ship: bool = False) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE to the box → PICK → NAVIGATE to a free cell of the destination → DELIVER."""
+    route = {"profile": robot.mobility, "layer": robot.layer}
+    box = task_box(planner.twin, task)
+    pick = box.position
+    drop, label = drop_cell(planner, task.destination, pick, blocked, route)
+    actions = [
+        Action(ActionType.NAVIGATE, f"Navigate to {box.name}", pick, box.name, box.id),
+        Action(ActionType.PICK, f"Pick {box.name}", pick, box.name, box.id),
+        Action(ActionType.NAVIGATE, f"Carry {box.name} to {label}", drop, label, box.id),
+        Action(ActionType.DELIVER, f"Deliver {box.name} at {label}", drop, label, box.id,
+               params={"ship": True} if ship else {}),
+    ]
+    return actions, [pick, drop], 2
+
+
+def _check_putaway(manager: Any, task: Any) -> Optional[str]:
+    return check_box(manager, task, BoxKind.PALLET, in_slot=False) or check_slot(manager, task, BoxKind.PALLET)
+
+
+def choose_slot(planner: Any, task: Any, robot: Any, kind: BoxKind, near: Cell) -> Any:
+    """The job's slot: its `slot` parameter, else the nearest free slot of
+    `kind` within the robot's reach — recorded on the task, so no other job
+    is promised it meanwhile."""
+    twin = planner.twin
+    slot = task_slot(twin, task)
+    if slot is None:
+        free = goods.free_slots(twin, kind.value, max_level=robot.mobility.max_shelf_level, near=near,
+                                exclude=promised_slots(twin, exclude=task.id))
+        if not free:
+            raise PlanningError(f"No free {kind.value} slot within {robot.name}'s reach")
+        slot = free[0]
+        task.params["slot"] = slot.slot_id
+    return slot
+
+
+def _plan_putaway(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE staging → PICK → NAVIGATE face → LIFT_TO(level) → PLACE → LOWER."""
+    route = {"profile": robot.mobility, "layer": robot.layer}
+    box = task_box(planner.twin, task)
+    slot = choose_slot(planner, task, robot, BoxKind.PALLET, box.position)
+    face = face_cell(planner, slot, box.position, blocked=blocked, **route)
+    actions = [
+        Action(ActionType.NAVIGATE, f"Navigate to {box.name}", box.position, box.name, box.id),
+        Action(ActionType.PICK, f"Pick {box.name}", box.position, box.name, box.id),
+        Action(ActionType.NAVIGATE, f"Carry {box.name} to slot {slot.slot_id}", face, slot.slot_id, box.id),
+    ] + lift_steps(slot, face, ActionType.PLACE, box)
+    return actions, [box.position, face], 2
+
+
+def _check_retrieve(manager: Any, task: Any) -> Optional[str]:
+    task.destination = task.destination or "outbound_staging"
+    return check_box(manager, task, BoxKind.PALLET, in_slot=True) or check_zone(manager, task.destination)
+
+
+def _plan_retrieve(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE face → LIFT_TO → GRASP → LOWER → NAVIGATE outbound_staging → DELIVER."""
+    route = {"profile": robot.mobility, "layer": robot.layer}
+    box = task_box(planner.twin, task)
+    slot = task_slot(planner.twin, task, box)
+    face = face_cell(planner, slot, robot.position, blocked=blocked, **route)
+    drop, label = drop_cell(planner, task.destination, face, blocked, route)
+    actions = [Action(ActionType.NAVIGATE, f"Navigate to slot {slot.slot_id}", face, slot.slot_id, box.id)]
+    actions += lift_steps(slot, face, ActionType.GRASP, box)
+    actions += [
+        Action(ActionType.NAVIGATE, f"Carry {box.name} to {label}", drop, label, box.id),
+        Action(ActionType.DELIVER, f"Deliver {box.name} at {label}", drop, label, box.id),
+    ]
+    return actions, [face, drop], 2
+
+
+def _check_load(manager: Any, task: Any) -> Optional[str]:
+    task.destination = task.params.get("dock") or task.destination or "dock_3"
+    return check_box(manager, task, BoxKind.PALLET, in_slot=False) or check_zone(manager, task.destination)
+
+
+def _plan_load(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE outbound_staging → PICK → NAVIGATE dock_3 → DELIVER (the pallet ships)."""
+    return _plan_floor_to_zone(planner, task, robot, blocked, ship=True)
+
+
+#: Job types whose plan fills a slot (promised_slots reads these).
+FILLS_SLOT = {TaskType.PUTAWAY_PALLET}
+
+JOB_SPECS[TaskType.UNLOAD_TRUCK] = JobSpec(
+    label="Unload truck", guide="box_id(a pallet on an inbound dock)[+destination, default intake_staging]",
+    classes=frozenset({"FORKLIFT", "HEAVY_HAULER"}), check=_check_unload,
+    plan=_plan_floor_to_zone, target=floor_target, carries_box=True)
+JOB_SPECS[TaskType.PUTAWAY_PALLET] = JobSpec(
+    label="Put away pallet", guide="box_id(a staged pallet)[+slot, default the nearest free one in reach]",
+    classes=frozenset({"FORKLIFT"}), check=_check_putaway, plan=_plan_putaway, target=floor_target,
+    carries_box=True)
+JOB_SPECS[TaskType.RETRIEVE_PALLET] = JobSpec(
+    label="Retrieve pallet", guide="box_id(a pallet in a rack slot)[+destination, default outbound_staging]",
+    classes=frozenset({"FORKLIFT"}), check=_check_retrieve, plan=_plan_retrieve, target=slot_target,
+    carries_box=True)
+JOB_SPECS[TaskType.LOAD_TRUCK] = JobSpec(
+    label="Load truck", guide="box_id(a pallet at outbound staging)[+dock, default dock_3](it ships)",
+    classes=frozenset({"FORKLIFT"}), check=_check_load, plan=_plan_load, target=floor_target,
+    carries_box=True)

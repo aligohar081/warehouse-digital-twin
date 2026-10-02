@@ -817,6 +817,8 @@ class Simulator:
         else:
             box.position = robot.position
         box.destination = action.target_name or box.destination
+        if action.params.get("ship"):
+            box.set_status(BoxStatus.SHIPPED)  # loaded onto the outbound truck (LOAD_TRUCK)
         box.delivery_count += 1
         box.assigned_robot = None
         box.assigned_task = None

@@ -200,6 +200,7 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
         "allowed_task_types": [
             "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX",
             "MOVE_ROBOT", "CHARGE_ROBOT",
+            "UNLOAD_TRUCK", "PUTAWAY_PALLET", "RETRIEVE_PALLET", "LOAD_TRUCK",
         ],
     },
     "SCOUT": {
@@ -212,7 +213,7 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
         "speed": 0.8,
         "allowed_task_types": [
             "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX",
-            "MOVE_ROBOT", "CHARGE_ROBOT", "BATCH_DELIVER",
+            "MOVE_ROBOT", "CHARGE_ROBOT", "BATCH_DELIVER", "UNLOAD_TRUCK",
         ],
     },
     "DRONE": {
@@ -494,6 +495,14 @@ class TaskType(str, enum.Enum):
     # NAVIGATE/PICK/NAVIGATE/DELIVER repeated per box under one task id
     # instead of one task per box. See `box_ids` on Task.
     BATCH_DELIVER = "BATCH_DELIVER"
+    # The distribution-centre floor's jobs (multi-embodiment spec §9.2), planned
+    # by their JobSpec in backend/jobs.py. Pallets: off an inbound truck to
+    # intake staging, into a rack slot, out of one to outbound staging, and
+    # onto the outbound truck at dock_3.
+    UNLOAD_TRUCK = "UNLOAD_TRUCK"
+    PUTAWAY_PALLET = "PUTAWAY_PALLET"
+    RETRIEVE_PALLET = "RETRIEVE_PALLET"
+    LOAD_TRUCK = "LOAD_TRUCK"
 
 
 class Priority(str, enum.Enum):
