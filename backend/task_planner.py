@@ -320,15 +320,24 @@ class TaskPlanner:
         )
         return actions
 
-    def _charge_plan(self, robot: Any, blocked: Set[Cell], route: Dict[str, Any]) -> Tuple[List[Action], List[Cell]]:
-        """CHARGE_ROBOT: to the robot's charger and charge. A drone charges on
-        its pad (spec §5.5): it lands on a pad cell no grounded robot holds."""
+    def charger_cell(self, robot: Any, blocked: Set[Cell],
+                    route: Optional[Dict[str, Any]] = None) -> Tuple[Cell, str]:
+        """The charger cell `robot` goes to. A drone lands on a pad cell no
+        grounded robot holds (spec §5.5), the nearest such one; a hover above a
+        taken cell doesn't count as free, and with none free this raises
+        PlanningError."""
         zone = energy.charger_zone(robot.mobility)
         if robot.mobility is not None and robot.mobility.is_air:
             blocked = set(blocked) | set(self.twin.robot_cells(GROUND))
             if robot.layer == GROUND:
                 blocked -= {robot.position}  # its own cell is free; a hover above someone else's isn't
-        cell, label = self.resolve_target(zone, robot.position, blocked, **route)
+        route = route or {"profile": robot.mobility, "layer": robot.layer}
+        return self.resolve_target(zone, robot.position, blocked, **route)
+
+    def _charge_plan(self, robot: Any, blocked: Set[Cell], route: Dict[str, Any]) -> Tuple[List[Action], List[Cell]]:
+        """CHARGE_ROBOT: to the robot's charger and charge. A drone charges on
+        its pad (spec §5.5): it lands on a pad cell no grounded robot holds."""
+        cell, label = self.charger_cell(robot, blocked, route)
         actions = [Action(ActionType.NAVIGATE, f"Navigate to {label}", cell, label)]
         if robot.layer == AIR:
             actions.append(Action(ActionType.LAND, f"Land on {label}", cell, label))

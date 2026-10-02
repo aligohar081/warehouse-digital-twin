@@ -625,11 +625,24 @@ def _count_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: st
     return slot.faces[0], f"rack face {task.params['face']}"
 
 
+def _count_pad(planner: Any, robot: Any) -> Tuple[Cell, str]:
+    """Where a count ends. A grounded drone returns to the pad it took off from.
+    One already airborne has no pad under it, so it lands on the nearest pad
+    cell no grounded robot holds, and with none free the count is not planned
+    — before the drone spends any of its battery on the flight."""
+    if robot.layer != AIR:
+        return robot.position, "drone pad"
+    try:
+        return planner.charger_cell(robot, planner.twin.other_robot_cells(robot.id))
+    except PlanningError as exc:
+        raise PlanningError(f"No free pad to land on after the count: {exc}") from exc
+
+
 def _plan_count(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
     """TAKEOFF → NAVIGATE (air) face → SCAN × levels → NAVIGATE pad → LAND."""
     slots = face_slots(planner.twin, task)
     hover, label = _count_target(planner, task, robot.position, robot.mobility, AIR)
-    pad = robot.position
+    pad, pad_label = _count_pad(planner, robot)
     actions: List[Any] = []
     if robot.layer != AIR:
         actions.append(Action(ActionType.TAKEOFF, "Take off", pad, "drone pad",
@@ -638,22 +651,28 @@ def _plan_count(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tupl
     actions += [Action(ActionType.SCAN, f"Scan {slot.slot_id}", hover, slot.slot_id, level=slot.level,
                        slot_id=slot.slot_id) for slot in slots]
     actions += [
-        Action(ActionType.NAVIGATE, "Fly back to the pad", pad, "drone pad"),
-        Action(ActionType.LAND, "Land", pad, "drone pad"),
+        Action(ActionType.NAVIGATE, "Fly back to the pad", pad, pad_label),
+        Action(ActionType.LAND, "Land", pad, pad_label),
     ]
     return actions, [], len(slots)
 
 
 def _count_wh(manager: Any, task: Any, robot: Any) -> Optional[float]:
-    """The energy a count flight takes: take-off, the flight out and back,
-    a scan per level and the landing, all at the flight rate."""
+    """The energy a count flight takes: take-off, the flight out and back to
+    the pad it will land on, a scan per level and the landing, all at the
+    flight rate. No pad to land on is for the planner to refuse."""
     profile = robot.mobility
-    hover, _ = _count_target(manager.twin.planner, task, robot.position, profile, AIR)
-    cells = manager.twin.navigation.distance(robot.position, hover, allow_goal_adjacent=False,
-                                             profile=profile, layer=AIR)
-    if cells is None:
+    planner, navigation = manager.twin.planner, manager.twin.navigation
+    hover, _ = _count_target(planner, task, robot.position, profile, AIR)
+    try:
+        pad, _ = _count_pad(planner, robot)
+    except PlanningError:
         return None
-    flight = 2 * cells / (profile.speed_cells_s * CONFIG["TICK_DT"])
+    out = navigation.distance(robot.position, hover, allow_goal_adjacent=False, profile=profile, layer=AIR)
+    back = navigation.distance(hover, pad, allow_goal_adjacent=False, profile=profile, layer=AIR)
+    if out is None or back is None:
+        return None
+    flight = (out + back) / (profile.speed_cells_s * CONFIG["TICK_DT"])
     steps = step_ticks(profile, "TAKEOFF") + step_ticks(profile, "LAND") + \
         step_ticks(profile, "SCAN") * len(face_slots(manager.twin, task))
     return (flight + steps) * energy.flight_wh_per_tick(profile)
