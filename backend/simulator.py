@@ -1370,11 +1370,35 @@ class Simulator:
             profile = robot.mobility
             if not energy.has_battery(profile) or robot.status in (RobotStatus.CHARGING, RobotStatus.ERROR):
                 continue
-            moved = robot.total_distance != distance_before.get(robot.id, robot.total_distance)
+            # A cell change is only the tick a cell is crossed: a body slower than a cell a tick
+            # (ready_to_step) spends most of a drive between cell changes, so a tick of its
+            # NAVIGATE that isn't held counts as moving too.
+            moved = (robot.total_distance != distance_before.get(robot.id, robot.total_distance)
+                     or self._is_driving(robot))
             used = energy.tick_wh(profile, robot.layer, moved, loaded=bool(robot.carrying_box))
             robot.use_energy(energy.wh_to_pct(profile, used))
             task = twin.tasks.get(robot.current_task) if robot.current_task else None
             self._check_battery_thresholds(robot, task)
+
+    def _is_driving(self, robot: Any) -> bool:
+        """Is `robot` driving a NAVIGATE this tick: not held, not stopped, and
+        not working some other step? A hold looks like this after the tick:
+        a safety wait has wait_reason set and the status WAITING; a traffic
+        block has blocked_by set on every blocked tick, but is WAITING only on
+        the first (the status goes back to MOVING at the top of each tick), so
+        blocked_by is the mark to read; a route the planner can't find a way
+        through right now is WAITING; a halted or paused robot is STOPPED.
+        Status alone isn't enough the other way: TAKEOFF, LAND and PLACE are
+        MOVING or DELIVERING too, so the current action has to be a NAVIGATE."""
+        task = self.twin.tasks.get(robot.current_task) if robot.current_task else None
+        if task is None or task.is_terminal:
+            return False
+        action = task.current_action
+        if action is None or action.type is not ActionType.NAVIGATE:
+            return False
+        if robot.status not in (RobotStatus.MOVING, RobotStatus.DELIVERING):
+            return False
+        return robot.wait_reason is None and robot.blocked_by is None
 
     def _on_charger(self, robot: Any) -> bool:
         """Is the robot where it can charge: a landed drone on its pad, any

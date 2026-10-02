@@ -301,7 +301,9 @@ class TaskPlanner:
         its pad (spec §5.5): it lands on a pad cell no grounded robot holds."""
         zone = energy.charger_zone(robot.mobility)
         if robot.mobility is not None and robot.mobility.is_air:
-            blocked = (set(blocked) | set(self.twin.robot_cells(GROUND))) - {robot.position}
+            blocked = set(blocked) | set(self.twin.robot_cells(GROUND))
+            if robot.layer == GROUND:
+                blocked -= {robot.position}  # its own cell is free; a hover above someone else's isn't
         cell, label = self.resolve_target(zone, robot.position, blocked, **route)
         actions = [Action(ActionType.NAVIGATE, f"Navigate to {label}", cell, label)]
         if robot.layer == AIR:
