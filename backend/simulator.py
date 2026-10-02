@@ -159,7 +159,10 @@ class Simulator:
             twin.simulation_time = round(twin.simulation_time + self.dt, 3)
 
             twin.scheduler.tick()
-            twin.shift.tick()  # new work and order stages, dispatched below in the same tick
+            try:
+                twin.shift.tick()  # new work and order stages, dispatched below in the same tick
+            except Exception as exc:  # a bad generator or order must not stop the floor
+                twin.logger.error(LogCategory.OPERATIONS, f"The shift engine hit an error and skipped its turn: {exc}")
             people.update_transits(twin)  # walks end before robots decide who is on the walkway
             twin.tasks.dispatch()
 

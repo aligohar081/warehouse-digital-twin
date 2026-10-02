@@ -7,11 +7,15 @@ per-hour rates × `pace`, each turning into an order chain (orders.py) or a
 job created through the gate (twin.tasks.create_task, internal=True). The
 engine has its own random.Random(seed), so the same seed and ticks give the
 same orders and jobs. It starts PAUSED; start() begins generating and pause()
-stops it, while orders already in flight carry on. The shift clock runs from
-SHIFT_START_HOUR with the simulation time. Its HTTP controls are plan 1c's.
+stops it, while orders already in flight carry on. Resuming after a pause
+carries on from where it stopped: every stream's next due time moves on by the
+time spent paused, so nothing that fell due meanwhile fires in a burst. The
+shift clock runs from SHIFT_START_HOUR with the simulation time. Its HTTP
+controls are plan 1c's.
 """
 from __future__ import annotations
 
+import math
 import random
 from typing import Any, Dict, List, Optional
 
@@ -69,6 +73,7 @@ class ShiftEngine:
         self.rng = random.Random(self.seed)
         self.orders = OrderBook(self.twin)
         self._next_due: Dict[str, float] = {}
+        self._paused_at: Optional[float] = None  # simulation time pause() was called
         self._truck_count = 0
         self._face_index = 0
         self.counters: Dict[str, int] = {stream: 0 for stream in DEFAULT_RATES}
@@ -84,6 +89,10 @@ class ShiftEngine:
         if self.status == self.RUNNING:
             return
         now = self.twin.simulation_time
+        if self._paused_at is not None:  # resuming: the time paused doesn't count towards what is due
+            for stream in self._next_due:
+                self._next_due[stream] += now - self._paused_at
+            self._paused_at = None
         for stream in DEFAULT_RATES:
             self._next_due.setdefault(stream, now + FIRST_AT_S[stream])
         self.status = self.RUNNING
@@ -95,6 +104,7 @@ class ShiftEngine:
         if self.status == self.PAUSED:
             return
         self.status = self.PAUSED
+        self._paused_at = self.twin.simulation_time
         self.twin.events.emit(EventType.SHIFT_PAUSED, f"Shift paused at {self.clock()}",
                               category=LogCategory.OPERATIONS, data={"clock": self.clock()})
 
@@ -102,14 +112,14 @@ class ShiftEngine:
                   rates: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """Change the pace, the seed (which resets the RNG) or any rate."""
         if pace is not None:
-            if isinstance(pace, bool) or float(pace) <= 0:
-                raise ValueError("pace must be greater than zero")
+            if isinstance(pace, bool) or not math.isfinite(float(pace)) or float(pace) <= 0:
+                raise ValueError("pace must be a finite number greater than zero")
             self.pace = float(pace)
         for stream, rate in (rates or {}).items():
             if stream not in DEFAULT_RATES:
                 raise ValueError(f"Unknown rate {stream!r} (known: {sorted(DEFAULT_RATES)})")
-            if isinstance(rate, bool) or float(rate) < 0:
-                raise ValueError(f"{stream} must be zero or more per hour")
+            if isinstance(rate, bool) or not math.isfinite(float(rate)) or float(rate) < 0:
+                raise ValueError(f"{stream} must be a finite number, zero or more per hour")
             self.rates[stream] = float(rate)
         if seed is not None:
             if isinstance(seed, bool) or not isinstance(seed, int):
@@ -140,7 +150,10 @@ class ShiftEngine:
             now = self.twin.simulation_time
             for stream in DEFAULT_RATES:
                 rate = self.rates[stream] * self.pace
-                if rate <= 0 or now < self._next_due[stream]:
+                if rate <= 0:  # stopped: it falls due from now when restored, not from when it stopped
+                    self._next_due[stream] = max(self._next_due[stream], now)
+                    continue
+                if now < self._next_due[stream]:
                     continue
                 self._next_due[stream] += 3600.0 / rate
                 self.counters[stream] += 1

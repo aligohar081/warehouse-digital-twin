@@ -15,7 +15,10 @@ done when that task completes. The conveyor stages advance on hand-off
 events instead: SORT is done when the sorter hands the order's carton to a
 dock, and an order item lost at a hand-off fails the order. A failed or
 rejected stage is retried once, ORDER_RETRY_DELAY_S later; after that the
-order FAILS with the task's failure or rejection reason.
+order FAILS with the task's failure or rejection reason. A retry only asks
+for what is left: a PICK for the units its failed attempt did not put on the
+line, a PACK_ORDER for the items not yet in the carton (the same carton, in
+the same cell). A PACK_ORDER that can't be resumed that way fails the order.
 
 A customer order needs a pick station and a pack cell to itself: it waits,
 OPEN, until both are free, so items for one arm never queue behind another
@@ -30,7 +33,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..jobs import tote_is_home
-from ..models import BoxKind, EventType, LogCategory, LogLevel, OperatorStatus, TaskStatus
+from ..models import (ActionType, BoxKind, BoxStatus, EventType, LogCategory, LogLevel, OperatorStatus, TaskStatus,
+                      TaskType)
 
 ORDER_KINDS = ("CUSTOMER", "INBOUND", "PALLET", "COUNT", "RETURN")
 OPEN, IN_PROGRESS, DONE, FAILED = "OPEN", "IN_PROGRESS", "DONE", "FAILED"
@@ -109,7 +113,8 @@ class OrderBook:
             EventType.ORDER_CREATED,
             f"{order.order_id} created: {kind.lower()} order, {len(stages)} stage(s)",
             category=LogCategory.OPERATIONS,
-            data={"order_id": order.order_id, "kind": kind, "lines": order.lines, "lane": order.lane,
+            data={"order_id": order.order_id, "kind": kind, "lines": [dict(line) for line in order.lines],
+                  "lane": order.lane,
                   "stages": [stage.name for stage in stages]},
         )
         return order
@@ -216,6 +221,9 @@ class OrderBook:
         if stage.task_type is None:
             stage.status = ACTIVE
             return
+        if self._pick_finished(order, stage):  # a failed attempt had already put every unit on the line
+            self._done(order, index, stage)
+            return
         try:
             payload = self._payload(order, stage)
         except OrderError as exc:
@@ -223,7 +231,10 @@ class OrderBook:
             self._stage_failed(order, stage, str(exc))
             return
         if payload is None:
-            return  # what it needs is busy (a tote at another station): try again next tick
+            if stage.attempts:  # its one retry has nothing to run on: fail it, don't leave it waiting
+                stage.attempts += 1
+                self._stage_failed(order, stage, f"{stage.error} (and no tote was free to try it again with)")
+            return  # a first try waits: what it needs is busy (a tote at another station), try next tick
         stage.attempts += 1
         task = self.twin.tasks.create_task(payload, internal=True)
         stage.task_id = task.id
@@ -254,6 +265,12 @@ class OrderBook:
 
     def _stage_failed(self, order: Order, stage: Stage, reason: str) -> None:
         stage.error = reason
+        self._bank_placed_units(order, stage)
+        unresumable = self._cannot_resume_pack(order, stage)
+        if unresumable:
+            stage.status = FAILED
+            self._fail(order, f"{reason}; {unresumable}")
+            return
         if stage.attempts < 2:
             stage.status, stage.task_id = WAITING, None
             stage.retry_at = self.twin.simulation_time + ORDER_RETRY_DELAY_S
@@ -285,11 +302,13 @@ class OrderBook:
         if order.kind != "CUSTOMER":
             return {"type": stage.task_type, **stage.payload}
         if stage.task_type == "PACK_ORDER":
-            units = sum(int(line["units"]) for line in order.lines)
-            return {"type": "PACK_ORDER", "order_id": order.order_id, "quantity": units,
+            carton = self._carton_of(order)  # a retry resumes the carton a failed attempt began
+            packed = carton.quantity if carton is not None else 0
+            return {"type": "PACK_ORDER", "order_id": order.order_id, "quantity": self._order_units(order) - packed,
                     "pack_cell": order.pack_cell, "lane": order.lane}
         line = order.lines[stage.line]
         if stage.task_type == "TOTE_TO_STATION":
+            line.pop("tote_id", None)  # a retry may take the tote it chose before: its own promise doesn't block it
             tote = self._choose_tote(line["sku"], int(line["units"]))
             if tote is None:
                 return None
@@ -297,9 +316,61 @@ class OrderBook:
             return {"type": "TOTE_TO_STATION", "box_id": tote.id, "station": order.pick_station}
         if stage.task_type == "PICK":
             kind = "PICK_ITEMS" if order.pick_station == PICK_STATIONS[0] else "MANUAL_PICK"
-            return {"type": kind, "box_id": line["tote_id"], "quantity": int(line["units"]),
+            left = int(line["units"]) - int(line.get("placed", 0))  # a retry picks only what the failed try didn't
+            return {"type": kind, "box_id": line["tote_id"], "quantity": left,
                     "order_id": order.order_id, "pack_cell": order.pack_cell, "station": order.pick_station}
         return {"type": "RETURN_TOTE", "box_id": line["tote_id"]}
+
+    # ---- retrying after partial progress --------------------------------- #
+    @staticmethod
+    def _order_units(order: Order) -> int:
+        return sum(int(line["units"]) for line in order.lines)
+
+    @staticmethod
+    def _units_placed(task: Any) -> int:
+        """The units a pick put on the line: a person's job counts them as it
+        goes; a robot's are its PLACE_ON_CONVEYOR actions that finished (an
+        item grasped but not placed is not on the line yet)."""
+        if task.type is TaskType.MANUAL_PICK:
+            return int(task.params.get("picked", 0))
+        return sum(1 for action in task.actions if action.type is ActionType.PLACE_ON_CONVEYOR and action.done)
+
+    def _bank_placed_units(self, order: Order, stage: Stage) -> None:
+        """Before a failed PICK is forgotten, record on its line how many
+        units it did put on the line, so the retry asks for the remainder."""
+        task = self.twin.tasks.get(stage.task_id) if stage.task_id else None
+        if order.kind == "CUSTOMER" and stage.task_type == "PICK" and task is not None:
+            line = order.lines[stage.line]
+            line["placed"] = int(line.get("placed", 0)) + self._units_placed(task)
+
+    @staticmethod
+    def _pick_finished(order: Order, stage: Stage) -> bool:
+        if order.kind != "CUSTOMER" or stage.task_type != "PICK":
+            return False
+        line = order.lines[stage.line]
+        return int(line.get("placed", 0)) >= int(line["units"])
+
+    def _carton_of(self, order: Order) -> Optional[Any]:
+        return next((box for box in self.twin.boxes.values()
+                     if box.kind is BoxKind.CARTON and box.order_id == order.order_id), None)
+
+    def _cannot_resume_pack(self, order: Order, stage: Stage) -> Optional[str]:
+        """Why a failed PACK_ORDER can't be taken up again (None if it can: no
+        carton yet, or one in its cell with items still to pack). A carton that
+        already holds every item, or has left the cell, can't be packed on
+        again without double-packing, so the order fails with this reason."""
+        if order.kind != "CUSTOMER" or stage.task_type != "PACK_ORDER":
+            return None
+        carton = self._carton_of(order)
+        if carton is None:
+            return None
+        arm_cell = tuple(self.twin.warehouse.zones[order.pack_cell].attributes["arm_cell"])  # where it packs
+        if carton.status is not BoxStatus.STORED or carton.position != arm_cell:
+            return f"{carton.name} has left the pack cell, so packing can't be resumed"
+        if carton.quantity >= self._order_units(order):
+            return (f"all {carton.quantity} item(s) are already packed in {carton.name}, "
+                    f"so packing can't be repeated")
+        return None
 
     def _choose_tote(self, sku: str, units: int) -> Optional[Any]:
         """A tote of `sku` holding `units`, home in its slot and wanted by no
