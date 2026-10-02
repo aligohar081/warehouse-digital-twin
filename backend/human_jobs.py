@@ -6,8 +6,12 @@ qualified person on the floor for AUTO) and starts it; each Simulator tick
 then moves it through its phases, kept on Task.params: WALK to the job's zone
 (people.start_transit), WORK there, and for a jam RETURN to where the person
 came from — a person left standing in a fenced pack cell would hold its arm
-(PERSON_IN_CELL) forever. A conveyor jam gets its CLEAR_JAM job from
-ensure_jam_jobs, retried while no one qualified is on the floor (spec §11.3).
+(PERSON_IN_CELL) forever. For the same reason a job that ends early
+(cancelled, failed) walks the person back out (walk_out): they stay on the
+job, unavailable, until they arrive, and tick() then frees them. Where they
+come back to is never a pack cell (exit_zone). A conveyor jam gets its
+CLEAR_JAM job from ensure_jam_jobs, retried while no one qualified is on the
+floor (spec §11.3).
 """
 from __future__ import annotations
 
@@ -53,6 +57,24 @@ def equipment_model(twin: Any, task: Any) -> Optional[str]:
     return None
 
 
+def exit_zone(twin: Any, zone: Optional[str]) -> Optional[str]:
+    """Where a person standing in `zone` goes back to when a job ends: the zone
+    itself, unless it is a fenced pack cell — leaving someone in there holds
+    its arm — and then the nearest zone that shares an edge with the cell and
+    isn't a pack cell itself (centre to centre, ties by key): the pick station
+    beside it. A floor whose pack cell touches nothing else takes the nearest
+    zone that isn't a pack cell."""
+    pack_cells = set(twin.equipment.arm_cells) if twin.equipment is not None else set()
+    if zone not in pack_cells:
+        return zone
+    warehouse = twin.warehouse
+    where = warehouse.zones[zone].center
+    outside = [key for key in warehouse.zones if key not in pack_cells]
+    beside = [key for key in outside if people.zones_touch(warehouse, zone, key)]
+    return min(beside or outside, key=lambda key: (
+        abs(warehouse.zones[key].center[0] - where[0]) + abs(warehouse.zones[key].center[1] - where[1]), key))
+
+
 def target_zone(twin: Any, task: Any) -> str:
     if task.type is TaskType.CLEAR_JAM:
         return jam_zone(twin, jam_cell(task))
@@ -60,23 +82,37 @@ def target_zone(twin: Any, task: Any) -> str:
 
 
 def start(twin: Any, task: Any, operator: Any) -> None:
-    """Put `operator` on the job and send them walking to it."""
+    """Put `operator` on the job and send them walking to it. The walk starts
+    first: if it can't (the caller then fails the task) the person and the
+    task are exactly as they were."""
     zone = target_zone(twin, task)
     label = twin.warehouse.zones[zone].label
+    origin = exit_zone(twin, operator.zone)
+    people.start_transit(twin, operator, zone)
     if task.type is TaskType.CLEAR_JAM:
         cell = jam_cell(task)
         work = f"Clear the jam at ({cell[0]},{cell[1]})"
-        back = [Action(ActionType.WAIT, f"Walk back to {operator.zone}")]
+        back = [Action(ActionType.WAIT, f"Walk back to {origin}")]
     else:
         work = f"Pick {task.params['quantity']} item(s) onto the conveyor"
         back = []
     task.actions = [Action(ActionType.WAIT, f"Walk to {label}"), Action(ActionType.WAIT, work)] + back + [
         Action(ActionType.COMPLETE, "Complete task")]
     task.action_index = 0
-    task.params.update(phase="WALK", origin_zone=operator.zone, picked=0)
+    task.params.update(phase="WALK", origin_zone=origin, picked=0)
     operator.current_task = task.id
     operator.set_status(OperatorStatus.ON_TASK)
-    people.start_transit(twin, operator, zone)
+
+
+def walk_out(twin: Any, task: Any, operator: Any) -> bool:
+    """A job ended without finishing: send the person back to where they
+    started (never a pack cell, see exit_zone), turning a walk already under
+    way. True while they still have a walk to make; someone off the floor has
+    none."""
+    origin = task.params.get("origin_zone")
+    if origin and operator.zone is not None:
+        people.redirect_transit(twin, operator, origin)
+    return operator.in_transit
 
 
 def _work_ticks(task: Any) -> int:
@@ -90,18 +126,47 @@ def _next(task: Any, phase: str) -> None:
 
 
 def tick(twin: Any) -> None:
-    """Move every running human job on by one tick (Simulator.tick)."""
+    """Move every running human job on by one tick (Simulator.tick), then free
+    the people who have finished walking out of a job that ended early. A job
+    that raises fails on its own: it must not stop the tick for everyone else."""
     for task in list(twin.tasks.tasks.values()):
         if task.type not in HUMAN_JOBS or task.status is not TaskStatus.IN_PROGRESS:
             continue
-        operator = twin.find_operator(task.operator_id)
-        if operator is None or operator.status is OperatorStatus.OFF_DUTY or operator.zone is None:
-            twin.tasks.fail_task(task, f"{operator.name if operator else task.operator_id} left the floor")
-            continue
         try:
-            _advance(twin, task, operator)
-        except ValueError as exc:
-            twin.tasks.fail_task(task, f"{operator.name} could not finish: {exc}")
+            _step(twin, task)
+        except Exception as exc:
+            if not task.is_terminal:
+                _fail(twin, task, exc)
+    _free_arrived(twin)
+
+
+def _step(twin: Any, task: Any) -> None:
+    operator = twin.find_operator(task.operator_id)
+    if operator is None or operator.status is OperatorStatus.OFF_DUTY or operator.zone is None:
+        twin.tasks.fail_task(task, f"{operator.name if operator else task.operator_id} left the floor")
+        return
+    _advance(twin, task, operator)
+
+
+def _fail(twin: Any, task: Any, exc: Exception) -> None:
+    operator = twin.find_operator(task.operator_id)
+    if isinstance(exc, ValueError):
+        reason = f"{operator.name if operator else task.operator_id} could not finish: {exc}"
+    else:
+        reason = f"Controller error: {exc}"  # as for a robot's job
+    twin.tasks.fail_task(task, reason)
+
+
+def _free_arrived(twin: Any) -> None:
+    """A person kept on a job that has ended (they were walking out) is free
+    once they stand still: they are still ON_TASK, current_task naming it."""
+    for operator in twin.operators.values():
+        task = twin.tasks.get(operator.current_task) if operator.current_task else None
+        if task is None or task.type not in HUMAN_JOBS or not task.is_terminal or operator.in_transit:
+            continue
+        operator.current_task = None
+        if operator.status is OperatorStatus.ON_TASK:
+            operator.set_status(OperatorStatus.AVAILABLE)
 
 
 def _advance(twin: Any, task: Any, operator: Any) -> None:
@@ -161,7 +226,12 @@ def ensure_jam_jobs(twin: Any) -> List[Any]:
         segment = f"{cell[0]},{cell[1]}"
         if segment in covered:
             continue
-        task = twin.tasks.create_task({"type": "CLEAR_JAM", "segment": segment, "priority": "HIGH"}, internal=True)
+        try:
+            task = twin.tasks.create_task({"type": "CLEAR_JAM", "segment": segment, "priority": "HIGH"}, internal=True)
+        except Exception as exc:  # the jam is asked for again next time; the tick goes on
+            twin.logger.warning(LogCategory.OPERATIONS, f"Could not ask for the jam at {segment} to be cleared: {exc}",
+                                position=cell_dict(cell))
+            continue
         if task.status is TaskStatus.FAILED:
             twin.logger.warning(LogCategory.OPERATIONS, f"No one can clear the jam at {segment} yet: {task.error}",
                                 position=cell_dict(cell))

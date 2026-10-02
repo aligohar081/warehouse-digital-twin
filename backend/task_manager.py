@@ -572,7 +572,11 @@ class TaskManager:
         """MANUAL_PICK / CLEAR_JAM: the chosen person walks off to do it; the
         simulator moves it on each tick (backend/human_jobs.py)."""
         operator = self.twin.find_operator(task.operator_id)
-        human_jobs.start(self.twin, task, operator)
+        try:
+            human_jobs.start(self.twin, task, operator)
+        except Exception as exc:  # the walk couldn't begin: the job ends, the person is untouched
+            self.fail_task(task, f"{operator.name} could not start: {exc}")
+            return
         self.start_task(task)
 
     def _run_immediate(self, task: Task) -> None:
@@ -1068,6 +1072,8 @@ class TaskManager:
         if task.type in human_jobs.HUMAN_JOBS:
             if operator.zone is None:
                 return "is not on the floor"
+            if operator.in_transit and operator.current_task != task.id:
+                return f"is walking to {operator.transit_to}"  # including walking out of a job that ended
             if operator.current_task and operator.current_task != task.id:
                 return f"is busy with {operator.current_task}"
         if self.twin.layout_name == "classic" or not task.required_certification:
@@ -1098,15 +1104,21 @@ class TaskManager:
                    + abs(warehouse.zones[o.zone].center[1] - where[1]))
 
     def _release_operator(self, task: Task, completed: bool) -> None:
-        """A person's job ended: they are free again."""
+        """A person's job ended: they are free again — at once, or once they have
+        walked back out if it ended early."""
         operator = self.twin.find_operator(task.operator_id) if task.operator_id else None
         if operator is None or operator.current_task != task.id:
             return
-        operator.current_task = None
         if completed:
             operator.completed_tasks += 1
         else:
             operator.failed_tasks += 1
+            # A job that ended early leaves the person wherever it caught them,
+            # perhaps inside a fenced pack cell. They walk back out first and
+            # stay on the job until they arrive (human_jobs.tick frees them).
+            if task.type in human_jobs.HUMAN_JOBS and human_jobs.walk_out(self.twin, task, operator):
+                return
+        operator.current_task = None
         if operator.status == OperatorStatus.ON_TASK:
             operator.set_status(OperatorStatus.AVAILABLE)
 

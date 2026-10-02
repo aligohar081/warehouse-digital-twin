@@ -99,6 +99,22 @@ def start_transit(twin: Any, operator: Any, zone: str) -> int:
     return operator.transit_until_tick
 
 
+def redirect_transit(twin: Any, operator: Any, zone: str) -> int:
+    """Turn a walk already under way towards `zone` (start_transit refuses a
+    walker); returns the arrival tick. A person is in a zone or between two,
+    with no place in between, so a walk turned back to the zone they left is
+    simply over — they never got out of it — and any other target is a fresh
+    walk from the zone they left. Someone not walking just starts one."""
+    if not operator.in_transit:
+        return start_transit(twin, operator, zone)
+    target = _zone_key(twin.warehouse, zone)
+    if target == operator.transit_to:
+        return operator.transit_until_tick
+    operator.transit_to = operator.transit_until_tick = None
+    operator.touch()
+    return start_transit(twin, operator, target)
+
+
 def update_transits(twin: Any) -> List[Any]:
     """Finish every walk that is over (Simulator.tick calls this each tick,
     before robots move). Returns the operators who arrived."""
