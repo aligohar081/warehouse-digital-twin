@@ -117,6 +117,10 @@ CONFIG: Dict[str, Any] = {
     # A physical safety wait (Simulator._safety_wait) longer than this many
     # seconds is escalated once (SAFETY_WAIT_ESCALATED).
     "SAFETY_WAIT_ESCALATE_S": 120,
+    # Jobs people do (backend/human_jobs.py): clearing a conveyor jam, and
+    # picking one item from a tote onto the line at Pick 2.
+    "CLEAR_JAM_S": 30.0,
+    "MANUAL_PICK_S_PER_ITEM": 5.0,
     # Energy on the new floor (backend/energy.py): every Wh used and charged
     # is multiplied by this, so charging shows up within a demo; 1 is true to life.
     "ENERGY_TIME_SCALE": 10,
@@ -171,6 +175,9 @@ CERTIFICATION_REQUIREMENTS: Dict[str, str] = {
     "MIXED_MAINTENANCE_MISSION": "electrical_safety",
     "OPERATOR_APPROVAL": "safety_inspection",
     "OPERATOR_MAINTENANCE_SIGNOFF": "electrical_safety",
+    # Inside a fenced pack cell only; a jam elsewhere on the line needs none
+    # (backend/human_jobs.py). Scoped to the arm's model on the new floor.
+    "CLEAR_JAM": "robot_cell_access",
 }
 
 #: Built-in robot "classes" — a preset bundle of speed and (optionally) an
@@ -225,16 +232,17 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
         "label": "Picker (fast, pick & deliver only)",
         "speed": 2.5,
         "allowed_task_types": [
-            "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX", "CHARGE_ROBOT",
+            "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX", "CHARGE_ROBOT", "PICK_ITEMS",
         ],
     },
-    # Fixed pack-cell arm: it never drives, and being mains-powered it never
-    # actually needs CHARGE_ROBOT — but the rule above still applies. Only a
-    # floor with fixed stations (distribution_center) can hold one.
+    # Fixed pack-cell arm: it never drives, it packs orders, and being
+    # mains-powered it never actually needs CHARGE_ROBOT — but the rule above
+    # still applies. Only a floor with fixed stations (distribution_center)
+    # can hold one.
     "ARM": {
         "label": "Arm (fixed pack cell)",
         "speed": 0.7,
-        "allowed_task_types": ["CHARGE_ROBOT"],
+        "allowed_task_types": ["CHARGE_ROBOT", "PACK_ORDER"],
     },
     "HUMANOID": {
         "label": "Humanoid (supervised, general purpose)",
@@ -508,6 +516,13 @@ class TaskType(str, enum.Enum):
     TOTE_TO_STATION = "TOTE_TO_STATION"
     RETURN_TOTE = "RETURN_TOTE"
     RETURNS_PUTAWAY = "RETURNS_PUTAWAY"
+    # Stations: the picker moves units from a tote onto the conveyor at Pick 1,
+    # an arm packs an order's items into a carton; and two jobs people do —
+    # picking at Pick 2 and clearing a conveyor jam (backend/human_jobs.py).
+    PICK_ITEMS = "PICK_ITEMS"
+    PACK_ORDER = "PACK_ORDER"
+    MANUAL_PICK = "MANUAL_PICK"
+    CLEAR_JAM = "CLEAR_JAM"
 
 
 class Priority(str, enum.Enum):

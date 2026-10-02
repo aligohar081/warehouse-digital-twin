@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from . import goods
-from .models import Action, ActionType, BoxKind, BoxStatus, Cell, TaskType
+from .models import CERTIFICATION_REQUIREMENTS, Action, ActionType, BoxKind, BoxStatus, Cell, TaskType
 from .task_planner import PlanningError
 
 #: (planner, task, robot, blocked) -> (actions, waypoints, handling_ops)
@@ -442,3 +442,155 @@ JOB_SPECS[TaskType.RETURNS_PUTAWAY] = JobSpec(
     label="Returns put-away", guide="box_id(a returned tote in returns_qc)[+slot, default the nearest free one]",
     classes=frozenset({"HUMANOID"}), check=_check_returns_putaway, plan=_plan_returns_putaway,
     target=floor_target, carries_box=True)
+
+
+# --------------------------------------------------------------------------- #
+# Stations (spec §9.2): units onto the line, an order packed; and the two jobs
+# people do there (backend/human_jobs.py runs those)
+# --------------------------------------------------------------------------- #
+def _quantity(task: Any) -> Optional[str]:
+    try:
+        quantity = int(task.params.get("quantity"))
+    except (TypeError, ValueError):
+        return f"{task.type.value} needs a quantity"
+    if isinstance(task.params.get("quantity"), bool) or quantity < 1:
+        return "quantity must be a whole number of at least 1"
+    task.params["quantity"] = quantity
+    return None
+
+
+def _check_units(manager: Any, task: Any, picker: str, default: str) -> Optional[str]:
+    """A pick of `quantity` units out of a tote standing on the station's
+    tote drop, at a station where `picker` (ROBOT or HUMAN) picks."""
+    twin = manager.twin
+    station = twin.warehouse.resolve_zone(task.params.get("station") or default)
+    if station is None or "work_cell" not in station.attributes:
+        return f"{task.params.get('station')} is not a pick station"
+    if station.attributes.get("picker") != picker:
+        other = "MANUAL_PICK" if picker == "ROBOT" else "PICK_ITEMS"
+        return f"{station.label} is not a {picker.lower()} pick station: use {other}"
+    task.params["station"] = task.destination = station.key
+    reason = check_box(manager, task, BoxKind.TOTE) or _quantity(task)
+    if reason:
+        return reason
+    box = twin.find_box(task.box_id)
+    drop = tuple(station.attributes["tote_drop"])
+    if box.position != drop:
+        return f"{box.name} is not on {station.label}'s tote drop ({drop[0]},{drop[1]})"
+    if task.params["quantity"] > box.quantity:
+        return f"{box.name} holds only {box.quantity} of {box.sku}"
+    pack = task.params.get("pack_cell")
+    if pack and (twin.equipment is None or pack not in twin.equipment.arm_cells):
+        return f"Unknown pack cell {pack!r}"
+    return None
+
+
+def _check_pick_items(manager: Any, task: Any) -> Optional[str]:
+    return _check_units(manager, task, "ROBOT", "pick_station_1")
+
+
+def _work_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: str) -> Tuple[Cell, str]:
+    station = planner.twin.warehouse.zones[task.params["station"]]
+    return tuple(station.attributes["work_cell"]), station.label
+
+
+def _plan_pick_items(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE the work cell, then GRASP × n → PLACE_ON_CONVEYOR × n, waiting
+    for the infeed to clear before each placement."""
+    twin = planner.twin
+    station = twin.warehouse.zones[task.params["station"]]
+    work, infeed = tuple(station.attributes["work_cell"]), tuple(station.attributes["conveyor_infeed"])
+    box = task_box(twin, task)
+    order = task.params.get("order_id")
+    stop = twin.equipment.arm_cells.get(task.params.get("pack_cell")) if twin.equipment else None
+    actions = [Action(ActionType.NAVIGATE, f"Navigate to {station.label}", work, station.label)]
+    for number in range(1, task.params["quantity"] + 1):
+        actions += [
+            Action(ActionType.GRASP, f"Pick unit {number} from {box.name}", work, station.label,
+                   params={"unit_from": box.id, "order_id": order}),
+            Action(ActionType.WAIT_CLEAR, "Wait for the infeed", infeed, "conveyor",
+                   params={"reason": "CONVEYOR_OCCUPIED", "cell": list(infeed)}),
+            Action(ActionType.PLACE_ON_CONVEYOR, f"Unit {number} onto the conveyor", infeed, "conveyor",
+                   params={"stop_at": list(stop) if stop else None}),
+        ]
+    return actions, [work], task.params["quantity"]
+
+
+def _check_pack_order(manager: Any, task: Any) -> Optional[str]:
+    twin = manager.twin
+    if not task.params.get("order_id"):
+        return "PACK_ORDER needs an order_id"
+    reason = _quantity(task)
+    if reason:
+        return reason
+    task.params["pack_cell"] = task.params.get("pack_cell") or "pack_cell_1"
+    if twin.equipment is None or task.params["pack_cell"] not in twin.equipment.arm_cells:
+        return f"Unknown pack cell {task.params['pack_cell']!r}"
+    task.params["lane"] = task.params.get("lane") or twin.equipment.sorter.lanes[0]
+    if task.params["lane"] not in twin.equipment.sorter.lanes:
+        return f"{task.params['lane']} is not a sorter lane (lanes: {', '.join(twin.equipment.sorter.lanes)})"
+    task.destination = task.params["lane"]
+    return None
+
+
+def _pack_target(planner: Any, task: Any, origin: Cell, profile: Any, layer: str) -> Tuple[Cell, str]:
+    """The pack cell's arm: only the arm standing there can pack in it."""
+    zone = planner.twin.warehouse.zones[task.params["pack_cell"]]
+    return tuple(zone.attributes["arm_cell"]), zone.label
+
+
+def _plan_pack_order(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """GRASP each order item from the working conveyor cell → PLACE it into
+    the carton; then PLACE_ON_CONVEYOR the carton once the cell is empty."""
+    twin = planner.twin
+    work = twin.equipment.arm_cells[task.params["pack_cell"]]
+    order, lane = task.params["order_id"], task.params["lane"]
+    actions: List[Any] = []
+    for number in range(1, task.params["quantity"] + 1):
+        actions += [
+            Action(ActionType.WAIT_CLEAR, f"Wait for item {number} of {order}", work, "conveyor",
+                   params={"reason": "AWAITING_ITEM", "cell": list(work), "order_id": order}),
+            Action(ActionType.GRASP, f"Grasp item {number} of {order}", work, "conveyor",
+                   params={"from_conveyor": list(work), "order_id": order}),
+            Action(ActionType.PLACE, f"Pack item {number} into the carton", robot.position, "carton",
+                   params={"into_carton": order, "lane": lane}),
+        ]
+    actions += [
+        Action(ActionType.WAIT_CLEAR, "Wait for a free conveyor cell", work, "conveyor",
+               params={"reason": "CONVEYOR_OCCUPIED", "cell": list(work)}),
+        Action(ActionType.PLACE_ON_CONVEYOR, f"Carton for {order} onto the conveyor", work, "conveyor",
+               params={"carton_for": order}),
+    ]
+    return actions, [], 0
+
+
+def _check_manual_pick(manager: Any, task: Any) -> Optional[str]:
+    return _check_units(manager, task, "HUMAN", "pick_station_2")
+
+
+def _check_clear_jam(manager: Any, task: Any) -> Optional[str]:
+    twin = manager.twin
+    cell = parse_cell(task.params.get("segment"))
+    if cell is None:
+        return "CLEAR_JAM needs a segment (a conveyor cell, as x,y)"
+    if twin.equipment is None or cell not in twin.equipment.conveyor.jams:
+        return f"Conveyor cell ({cell[0]},{cell[1]}) is not jammed"
+    task.params["segment"] = f"{cell[0]},{cell[1]}"
+    if cell not in twin.equipment.arm_cells.values() and \
+            task.required_certification == CERTIFICATION_REQUIREMENTS.get(TaskType.CLEAR_JAM.value):
+        task.required_certification = None  # outside the fenced cells anyone on shift may clear it
+    return None
+
+
+JOB_SPECS[TaskType.PICK_ITEMS] = JobSpec(
+    label="Pick items", guide="box_id(a tote on Pick 1's tote drop)+quantity[+order_id+pack_cell]",
+    classes=frozenset({"PICKER"}), check=_check_pick_items, plan=_plan_pick_items, target=_work_target)
+JOB_SPECS[TaskType.PACK_ORDER] = JobSpec(
+    label="Pack order", guide="order_id+quantity[+pack_cell, default pack_cell_1+lane, default dock_4]",
+    classes=frozenset({"ARM"}), check=_check_pack_order, plan=_plan_pack_order, target=_pack_target)
+JOB_SPECS[TaskType.MANUAL_PICK] = JobSpec(
+    label="Manual pick", guide="box_id(a tote on Pick 2's tote drop)+quantity[+order_id+pack_cell+operator_id]",
+    classes=frozenset(), check=_check_manual_pick, human=True)
+JOB_SPECS[TaskType.CLEAR_JAM] = JobSpec(
+    label="Clear jam", guide="segment(x,y)[+operator_id](needs robot_cell_access inside a pack cell)",
+    classes=frozenset(), check=_check_clear_jam, human=True)

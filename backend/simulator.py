@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from datetime import datetime
 
-from . import energy, goods, people
+from . import energy, goods, human_jobs, people
 from .eligibility import reach_ok, robot_eligibility
 from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, lift_ticks, seconds_to_ticks, step_ticks
 from .goods import carton_weight_kg
@@ -180,8 +180,11 @@ class Simulator:
                     if task is not None and not task.is_terminal:
                         twin.tasks.fail_task(task, f"Controller error: {exc}")
 
+            human_jobs.tick(twin)  # people's jobs, beside the robots
             if twin.equipment is not None:
                 twin.equipment.tick()  # the conveyor and sorter move after robots place items
+                if twin.tick_count % CONFIG["SHIFT_CHECK_EVERY_TICKS"] == 0:
+                    human_jobs.ensure_jam_jobs(twin)  # a jam gets someone to clear it
             self._detect_collisions()
             self._apply_energy(distance_before)
             self._auto_charge()

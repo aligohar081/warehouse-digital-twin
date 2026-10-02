@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .models import (
     ACTIVE_TASK_STATES,
+    OperatorStatus,
     Action,
     ActionType,
     APPROVED_FIRMWARE_VERSIONS,
@@ -29,9 +30,10 @@ from .models import (
     now_hms,
     now_iso,
 )
-from . import people
+from . import human_jobs, people
 from .eligibility import (
-    agent_eligibility, box_kind_ok, operator_eligibility, payload_ok, reach_ok, robot_eligibility,
+    agent_eligibility, box_kind_ok, cert_scope_ok, operator_eligibility, payload_ok, reach_ok,
+    robot_eligibility,
 )
 from .embodiment import AIR, GROUND
 from .energy import charger_zone
@@ -558,9 +560,20 @@ class TaskManager:
         if task_type in self.INSTANT:
             self._run_instant(task)
             return task
+        # A person's job starts at once: there is no robot queue to wait in.
+        if task_type in human_jobs.HUMAN_JOBS:
+            self._run_human(task)
+            return task
 
         task.record(TaskStatus.PLANNING, "Validated — waiting for a robot")
         return task
+
+    def _run_human(self, task: Task) -> None:
+        """MANUAL_PICK / CLEAR_JAM: the chosen person walks off to do it; the
+        simulator moves it on each tick (backend/human_jobs.py)."""
+        operator = self.twin.find_operator(task.operator_id)
+        human_jobs.start(self.twin, task, operator)
+        self.start_task(task)
 
     def _run_immediate(self, task: Task) -> None:
         twin = self.twin
@@ -867,28 +880,17 @@ class TaskManager:
             TaskType.OPERATOR_APPROVAL,
             TaskType.OPERATOR_MAINTENANCE_SIGNOFF,
             TaskType.MIXED_MAINTENANCE_MISSION,
-        )
+        ) or task.type in human_jobs.HUMAN_JOBS
         if needs_operator:
             if task.requested_operator != "AUTO":
                 operator = twin.find_operator(task.operator_id or task.requested_operator)
                 if operator is None:
                     return False, f"Operator '{task.requested_operator}' does not exist"
-                reason = operator_eligibility(
-                    operator.status.value, operator.certifications, task.required_certification
-                )
+                reason = self._operator_reason(operator, task)
                 if reason:
                     return False, f"{operator.name} {reason}"
             else:
-                operator = next(
-                    (
-                        o for o in twin.operators.values()
-                        if o.is_available
-                        and operator_eligibility(
-                            o.status.value, o.certifications, task.required_certification
-                        ) is None
-                    ),
-                    None,
-                )
+                operator = self._choose_operator(task)
                 if operator is None:
                     return False, "No eligible operator available to handle this task"
             task.operator_id = operator.id
@@ -904,9 +906,7 @@ class TaskManager:
                         return False, f"Second operator '{task.requested_second_operator}' does not exist"
                     if second.id == operator.id:
                         return False, "The second sign-off must be a different operator from the first"
-                    reason = operator_eligibility(
-                        second.status.value, second.certifications, task.required_certification
-                    )
+                    reason = self._operator_reason(second, task)
                     if reason:
                         return False, f"{second.name} {reason}"
                 else:
@@ -914,9 +914,7 @@ class TaskManager:
                         (
                             o for o in twin.operators.values()
                             if o.id != operator.id and o.is_available
-                            and operator_eligibility(
-                                o.status.value, o.certifications, task.required_certification
-                            ) is None
+                            and self._operator_reason(o, task) is None
                         ),
                         None,
                     )
@@ -925,8 +923,8 @@ class TaskManager:
                 task.second_operator_id = second.id
 
         # AGENT_INSPECTION / HUMAN_INSPECTION need nothing else — no
-        # robot, no box, no destination.
-        if task.type in self.INSTANT:
+        # robot, no box, no destination. Nor does a person's own job.
+        if task.type in self.INSTANT or task.type in human_jobs.HUMAN_JOBS:
             return True, None
 
         # Robot — existence/availability AND eligibility (unapproved
@@ -1055,6 +1053,62 @@ class TaskManager:
                 return False, f"No path from {robot.name} to ({target_cell[0]},{target_cell[1]})"
 
         return True, None
+
+    # ------------------------------------------------------------------ #
+    # Operators (spec §9.2, §11.3)
+    # ------------------------------------------------------------------ #
+    def _operator_reason(self, operator: Any, task: Task) -> Optional[str]:
+        """Why `operator` can't take `task`, or None. On a layered floor a
+        certification must also be in scope for the equipment model the job
+        involves and the floor's site (spec §9.2); a person's own job also
+        needs them on the floor and free. Classic keeps operator_eligibility."""
+        reason = operator_eligibility(operator.status.value, operator.certifications, task.required_certification)
+        if reason:
+            return reason
+        if task.type in human_jobs.HUMAN_JOBS:
+            if operator.zone is None:
+                return "is not on the floor"
+            if operator.current_task and operator.current_task != task.id:
+                return f"is busy with {operator.current_task}"
+        if self.twin.layout_name == "classic" or not task.required_certification:
+            return None
+        ok, reason = cert_scope_ok(operator.certification_scopes, task.required_certification,
+                                   self._scope_model(task), people.FLOOR_SITE)
+        return None if ok else reason
+
+    def _scope_model(self, task: Task) -> Optional[str]:
+        """The equipment model a job's credential must cover: the arm beside
+        a jam, else the robot the job names, else none."""
+        model = human_jobs.equipment_model(self.twin, task)
+        if model:
+            return model
+        robot = self.twin.find_robot(task.robot_id or task.requested_robot)
+        return robot.model_code if robot is not None else None
+
+    def _choose_operator(self, task: Task) -> Optional[Any]:
+        """AUTO: the first eligible, available operator — and for a person's
+        own job the nearest one on the floor to where the job is."""
+        eligible = [o for o in self.twin.operators.values()
+                    if o.is_available and self._operator_reason(o, task) is None]
+        if task.type not in human_jobs.HUMAN_JOBS or not eligible:
+            return eligible[0] if eligible else None
+        warehouse = self.twin.warehouse
+        where = warehouse.zones[human_jobs.target_zone(self.twin, task)].center
+        return min(eligible, key=lambda o: abs(warehouse.zones[o.zone].center[0] - where[0])
+                   + abs(warehouse.zones[o.zone].center[1] - where[1]))
+
+    def _release_operator(self, task: Task, completed: bool) -> None:
+        """A person's job ended: they are free again."""
+        operator = self.twin.find_operator(task.operator_id) if task.operator_id else None
+        if operator is None or operator.current_task != task.id:
+            return
+        operator.current_task = None
+        if completed:
+            operator.completed_tasks += 1
+        else:
+            operator.failed_tasks += 1
+        if operator.status == OperatorStatus.ON_TASK:
+            operator.set_status(OperatorStatus.AVAILABLE)
 
     # ------------------------------------------------------------------ #
     # The physical rules (spec §9.1, §10.1, §10.2)
@@ -1372,6 +1426,9 @@ class TaskManager:
         robot.wait_ticks = 0
 
         reserve_ids = task.box_ids if task.type == TaskType.BATCH_DELIVER else ([task.box_id] if task.box_id else [])
+        spec = JOB_SPECS.get(task.type)
+        if spec is not None and not spec.carries_box:
+            reserve_ids = []  # a picker takes units out of the tote; the tote itself stays put
         for box_id in reserve_ids:
             box = twin.find_box(box_id)
             if box is not None and box.status.value in ("STORED", "DELIVERED"):
@@ -1485,6 +1542,7 @@ class TaskManager:
                 robot.clear_path()
                 if not robot.is_halted and robot.status != twin.RobotStatus.CHARGING:
                     robot.set_status(twin.RobotStatus.IDLE)
+        self._release_operator(task, completed=True)
 
         # The operator's sign-off — logged, not gating: the robot's
         # physical inspection already succeeded by the time this runs,
@@ -1561,6 +1619,7 @@ class TaskManager:
                 if not robot.is_halted:
                     robot.set_status(twin.RobotStatus.IDLE)
         self._release_boxes(task, allow_status=(twin.BoxStatus.RESERVED,))
+        self._release_operator(task, completed=False)
         twin.statistics["failed_tasks"] += 1
         twin.events.emit(
             EventType.TASK_FAILED,
@@ -1593,6 +1652,7 @@ class TaskManager:
             if not robot.is_halted:
                 robot.set_status(twin.RobotStatus.IDLE)
         self._release_boxes(task, allow_status=(twin.BoxStatus.RESERVED, twin.BoxStatus.PICKING))
+        self._release_operator(task, completed=False)
         twin.events.emit(
             EventType.TASK_CANCELLED,
             f"{task.id} cancelled by user",
