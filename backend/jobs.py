@@ -27,6 +27,12 @@ CheckFn = Callable[[Any, Any], Optional[str]]
 #: Task payload keys the new job types read, kept on Task.params.
 JOB_PARAM_KEYS = ("slot", "quantity", "station", "face", "dock", "lane", "order_id", "pack_cell", "segment")
 
+#: The older job types whose robot lifts the task's box(es).
+BOX_HANDLING_TYPES = frozenset({
+    TaskType.PICK_AND_DELIVER, TaskType.PICK_BOX, TaskType.DELIVER_BOX, TaskType.MOVE_BOX,
+    TaskType.BATCH_DELIVER,
+})
+
 
 @dataclass(frozen=True)
 class JobSpec:
@@ -68,10 +74,16 @@ def task_slot(twin: Any, task: Any, box: Optional[Any] = None) -> Optional[Any]:
 
 def job_levels(twin: Any, task: Any) -> List[int]:
     """The shelf levels a job works at, for the reach rule: its slot's level,
-    or every level of the rack face it counts."""
+    or every level of the rack face it counts. An older box-handling job names
+    no slot: it works at the level of the slot each box it lifts sits in."""
     spec = JOB_SPECS.get(task.type)
     if spec is None:
-        return []
+        if task.type not in BOX_HANDLING_TYPES:
+            return []
+        ids = task.box_ids if task.type == TaskType.BATCH_DELIVER else [task.box_id]
+        boxes = [twin.find_box(box_id) for box_id in ids if box_id]
+        slots = [twin.warehouse.slot(box.slot) for box in boxes if box is not None and box.slot]
+        return [slot.level for slot in slots if slot is not None]
     slot_id = task.params.get("slot")
     if not slot_id and spec.carries_box and task.box_id:
         box = twin.find_box(task.box_id)

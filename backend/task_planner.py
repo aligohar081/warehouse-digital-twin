@@ -35,6 +35,36 @@ class TaskPlanner:
     # ------------------------------------------------------------------ #
     # Target resolution
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _coordinates(spec: Any) -> Optional[Cell]:
+        """The cell an explicit coordinate spec names — {"x": .., "y": ..},
+        [x, y] or "12,4" — or None if `spec` isn't one."""
+        if isinstance(spec, dict) and "x" in spec and "y" in spec:
+            return (int(spec["x"]), int(spec["y"]))
+        if isinstance(spec, (list, tuple)) and len(spec) == 2:
+            return (int(spec[0]), int(spec[1]))
+        if isinstance(spec, str) and "," in spec:
+            try:
+                parts = [int(p.strip()) for p in spec.split(",")]
+                return (parts[0], parts[1])
+            except (ValueError, IndexError):
+                return None
+        return None
+
+    def check_location(self, spec: Any) -> None:
+        """Raise PlanningError unless `spec` names a place that exists — a cell
+        on the floor, a zone or a box — whichever body would go there.
+        resolve_target adds the body-dependent part: a cell it can reach."""
+        if spec is None:
+            raise PlanningError("No destination given")
+        warehouse = self.twin.warehouse
+        cell = self._coordinates(spec)
+        if cell is not None:
+            if not warehouse.is_inside(*cell):
+                raise PlanningError(f"Coordinates {cell} are outside the warehouse")
+        elif warehouse.resolve_zone(str(spec)) is None and self.twin.find_box(str(spec)) is None:
+            raise PlanningError(f"Unknown location '{spec}'")
+
     def resolve_target(
         self,
         spec: Any,
@@ -54,18 +84,7 @@ class TaskPlanner:
             raise PlanningError("No destination given")
 
         # Explicit coordinates: {"x": .., "y": ..} or "12,4"
-        cell: Optional[Cell] = None
-        if isinstance(spec, dict) and "x" in spec and "y" in spec:
-            cell = (int(spec["x"]), int(spec["y"]))
-        elif isinstance(spec, (list, tuple)) and len(spec) == 2:
-            cell = (int(spec[0]), int(spec[1]))
-        elif isinstance(spec, str) and "," in spec:
-            try:
-                parts = [int(p.strip()) for p in spec.split(",")]
-                cell = (parts[0], parts[1])
-            except (ValueError, IndexError):
-                cell = None
-
+        cell = self._coordinates(spec)
         if cell is not None:
             if not warehouse.is_inside(*cell):
                 raise PlanningError(f"Coordinates {cell} are outside the warehouse")

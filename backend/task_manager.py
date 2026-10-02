@@ -36,14 +36,9 @@ from .eligibility import (
 from .embodiment import AIR, GROUND
 from .energy import charger_zone
 from .jobs import JOB_PARAM_KEYS, JOB_SPECS, job_levels
+from .jobs import BOX_HANDLING_TYPES
 from .llm import narrate
 from .task_planner import PlanningError
-
-#: The older job types whose robot lifts the task's box(es).
-BOX_HANDLING_TYPES = frozenset({
-    TaskType.PICK_AND_DELIVER, TaskType.PICK_BOX, TaskType.DELIVER_BOX, TaskType.MOVE_BOX,
-    TaskType.BATCH_DELIVER,
-})
 
 
 def _article(word: str) -> str:
@@ -965,11 +960,6 @@ class TaskManager:
                 return False, f"{robot.name} {reason}"
         elif not twin.robots:
             return False, "No robots exist in the warehouse"
-        elif twin.layout_name != "classic":
-            # AUTO on a layered floor: some robot's body must be able to do it.
-            reason = self._fleet_reason(task)
-            if reason:
-                return False, reason
 
         # Box
         needs_box = task.type in (
@@ -1020,7 +1010,8 @@ class TaskManager:
         )
         # A named robot's targets are resolved for its own body and layer.
         route: Dict[str, Any] = self._route(task, robot) if robot else {}
-        # An AUTO task on a layered floor was resolved robot by robot above.
+        # An AUTO task on a layered floor is resolved robot by robot (the
+        # fleet check below), so here its places need only exist.
         resolve = robot is not None or twin.layout_name == "classic"
         if needs_destination:
             if not task.destination:
@@ -1029,16 +1020,29 @@ class TaskManager:
             try:
                 if resolve:
                     planner.resolve_target(task.destination, origin, **route)
+                else:
+                    planner.check_location(task.destination)
             except PlanningError as exc:
                 return False, str(exc)
 
         # Source (optional, but if given it must exist)
-        if task.source and resolve:
+        if task.source:
             try:
                 origin = robot.position if robot else self._auto_origin()
-                planner.resolve_target(task.source, origin, **route)
+                if resolve:
+                    planner.resolve_target(task.source, origin, **route)
+                else:
+                    planner.check_location(task.source)
             except PlanningError as exc:
                 return False, f"Invalid source: {exc}"
+
+        # AUTO on a layered floor: the request names real things, so some
+        # robot's body must be able to do it. Asked last, so a missing box or
+        # place is reported as that and not as a routing failure.
+        if robot is None and twin.layout_name != "classic":
+            reason = self._fleet_reason(task)
+            if reason:
+                return False, reason
 
         # Reachability
         if task.type != TaskType.CHARGE_ROBOT and robot is not None:
@@ -1282,6 +1286,7 @@ class TaskManager:
                 # name. Battery is excluded here too — see the matching
                 # comment in validate() above.
                 continue
+            own_target: Dict[str, Any] = {}
             if robot.mobility is not None:
                 # A layered floor (spec §9.1): the body must be able to do the
                 # job, and the distance is to the target resolved for this body
@@ -1292,7 +1297,9 @@ class TaskManager:
                 reach = self._reach(task, robot)
                 if reach is None:
                     continue
-                _, target_label, distance = reach
+                cell, label, distance = reach
+                # Each body's own target, so the log can name the winner's.
+                own_target = {"target": label, "target_cell": cell_dict(cell) if cell is not None else None}
             else:
                 distance = None
                 if target_cell is not None:
@@ -1315,10 +1322,13 @@ class TaskManager:
                         "battery": robot.battery,
                         "workload": workload_penalty / 10,
                         "score": round(score, 2),
+                        **own_target,
                     },
                 )
             )
         scored.sort(key=lambda item: item[0])
+        if scored and "target" in scored[0][2]:
+            target_label = scored[0][2]["target"]  # the winner's own, not the last robot scanned
         return scored, target_label
 
     def select_robot(self, task: Task) -> Optional[Any]:
