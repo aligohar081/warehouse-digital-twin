@@ -241,7 +241,7 @@ ROBOT_CLASS_PRESETS: Dict[str, Dict[str, Any]] = {
         "speed": 0.8,
         "allowed_task_types": [
             "PICK_AND_DELIVER", "PICK_BOX", "DELIVER_BOX", "MOVE_BOX",
-            "MOVE_ROBOT", "CHARGE_ROBOT",
+            "MOVE_ROBOT", "CHARGE_ROBOT", "TOTE_TO_STATION", "RETURN_TOTE", "RETURNS_PUTAWAY",
         ],
     },
 }
@@ -503,6 +503,11 @@ class TaskType(str, enum.Enum):
     PUTAWAY_PALLET = "PUTAWAY_PALLET"
     RETRIEVE_PALLET = "RETRIEVE_PALLET"
     LOAD_TRUCK = "LOAD_TRUCK"
+    # Totes: from their shelf slot to a pick station's tote drop and back,
+    # and a returned tote from returns_qc into a free shelf slot.
+    TOTE_TO_STATION = "TOTE_TO_STATION"
+    RETURN_TOTE = "RETURN_TOTE"
+    RETURNS_PUTAWAY = "RETURNS_PUTAWAY"
 
 
 class Priority(str, enum.Enum):

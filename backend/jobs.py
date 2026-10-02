@@ -312,7 +312,7 @@ def _plan_load(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple
 
 
 #: Job types whose plan fills a slot (promised_slots reads these).
-FILLS_SLOT = {TaskType.PUTAWAY_PALLET}
+FILLS_SLOT = {TaskType.PUTAWAY_PALLET, TaskType.RETURN_TOTE, TaskType.RETURNS_PUTAWAY}
 
 JOB_SPECS[TaskType.UNLOAD_TRUCK] = JobSpec(
     label="Unload truck", guide="box_id(a pallet on an inbound dock)[+destination, default intake_staging]",
@@ -330,3 +330,115 @@ JOB_SPECS[TaskType.LOAD_TRUCK] = JobSpec(
     label="Load truck", guide="box_id(a pallet at outbound staging)[+dock, default dock_3](it ships)",
     classes=frozenset({"FORKLIFT"}), check=_check_load, plan=_plan_load, target=floor_target,
     carries_box=True)
+
+
+# --------------------------------------------------------------------------- #
+# Totes (spec §9.2): to a pick station and back; returns into storage
+# --------------------------------------------------------------------------- #
+def tote_home(twin: Any, box: Any) -> Optional[Any]:
+    """The slot a tote belongs in (it keeps it while away at a station)."""
+    return twin.warehouse.slot(box.slot) if box.slot else None
+
+
+def tote_is_home(twin: Any, box: Any) -> bool:
+    home = tote_home(twin, box)
+    return home is not None and box.position == home.cell and box.status in (BoxStatus.STORED, BoxStatus.RESERVED)
+
+
+def _check_tote_to_station(manager: Any, task: Any) -> Optional[str]:
+    task.params["station"] = task.params.get("station") or task.destination or "pick_station_1"
+    reason = check_box(manager, task, BoxKind.TOTE, in_slot=True)
+    if reason:
+        return reason
+    box = manager.twin.find_box(task.box_id)
+    if not tote_is_home(manager.twin, box):
+        return f"{box.name} is not in its slot {box.slot}"
+    station = manager.twin.warehouse.resolve_zone(task.params["station"])
+    if station is None or "tote_drop" not in station.attributes:
+        return f"{task.params['station']} is not a pick station"
+    task.params["station"] = task.destination = station.key
+    return None
+
+
+def _plan_tote_to_station(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE face → LIFT_TO → GRASP → LOWER → NAVIGATE station tote drop → DELIVER."""
+    route = {"profile": robot.mobility, "layer": robot.layer}
+    twin = planner.twin
+    box = task_box(twin, task)
+    slot = tote_home(twin, box)
+    face = face_cell(planner, slot, robot.position, blocked=blocked, **route)
+    station = twin.warehouse.zones[task.params["station"]]
+    drop = tuple(station.attributes["tote_drop"])
+    actions = [Action(ActionType.NAVIGATE, f"Navigate to slot {slot.slot_id}", face, slot.slot_id, box.id)]
+    actions += lift_steps(slot, face, ActionType.GRASP, box)
+    actions += [
+        Action(ActionType.NAVIGATE, f"Carry {box.name} to {station.label}", drop, station.label, box.id),
+        Action(ActionType.DELIVER, f"Deliver {box.name} at {station.label}", drop, station.label, box.id),
+    ]
+    return actions, [face, drop], 2
+
+
+def _check_return_tote(manager: Any, task: Any) -> Optional[str]:
+    reason = check_box(manager, task, BoxKind.TOTE)
+    if reason:
+        return reason
+    box = manager.twin.find_box(task.box_id)
+    task.params["slot"] = task.params.get("slot") or box.slot
+    if not task.params["slot"]:
+        return f"{box.name} has no slot to return to"
+    if tote_is_home(manager.twin, box) and task.params["slot"] == box.slot:
+        return f"{box.name} is already in its slot {box.slot}"
+    return check_slot(manager, task, BoxKind.TOTE)
+
+
+def _plan_back_to_slot(planner: Any, task: Any, robot: Any, blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE tote → PICK → NAVIGATE face → LIFT_TO → PLACE → LOWER (the reverse trip)."""
+    route = {"profile": robot.mobility, "layer": robot.layer}
+    box = task_box(planner.twin, task)
+    slot = task_slot(planner.twin, task)
+    face = face_cell(planner, slot, box.position, blocked=blocked, **route)
+    actions = [
+        Action(ActionType.NAVIGATE, f"Navigate to {box.name}", box.position, box.name, box.id),
+        Action(ActionType.PICK, f"Pick {box.name}", box.position, box.name, box.id),
+        Action(ActionType.NAVIGATE, f"Carry {box.name} to slot {slot.slot_id}", face, slot.slot_id, box.id),
+    ] + lift_steps(slot, face, ActionType.PLACE, box)
+    return actions, [box.position, face], 2
+
+
+def _check_returns_putaway(manager: Any, task: Any) -> Optional[str]:
+    reason = check_box(manager, task, BoxKind.TOTE)
+    if reason:
+        return reason
+    box = manager.twin.find_box(task.box_id)
+    if box.slot:
+        return f"{box.name} already belongs in slot {box.slot}"
+    return check_slot(manager, task, BoxKind.TOTE)
+
+
+def _plan_returns_putaway(planner: Any, task: Any, robot: Any,
+                          blocked: Set[Cell]) -> Tuple[List[Any], List[Cell], int]:
+    """NAVIGATE returns_qc → GRASP tote → NAVIGATE face → LIFT_TO(level) → PLACE → LOWER."""
+    route = {"profile": robot.mobility, "layer": robot.layer}
+    box = task_box(planner.twin, task)
+    slot = choose_slot(planner, task, robot, BoxKind.TOTE, box.position)
+    face = face_cell(planner, slot, box.position, blocked=blocked, **route)
+    actions = [
+        Action(ActionType.NAVIGATE, f"Navigate to {box.name}", box.position, box.name, box.id),
+        Action(ActionType.GRASP, f"Grasp {box.name}", box.position, box.name, box.id),
+        Action(ActionType.NAVIGATE, f"Carry {box.name} to slot {slot.slot_id}", face, slot.slot_id, box.id),
+    ] + lift_steps(slot, face, ActionType.PLACE, box)
+    return actions, [box.position, face], 2
+
+
+JOB_SPECS[TaskType.TOTE_TO_STATION] = JobSpec(
+    label="Tote to station", guide="box_id(a tote in its slot)[+station, default pick_station_1]",
+    classes=frozenset({"AMR", "HUMANOID"}), check=_check_tote_to_station, plan=_plan_tote_to_station,
+    target=slot_target, carries_box=True)
+JOB_SPECS[TaskType.RETURN_TOTE] = JobSpec(
+    label="Return tote", guide="box_id(a tote away at a station)[+slot, default its own]",
+    classes=frozenset({"AMR", "HUMANOID"}), check=_check_return_tote, plan=_plan_back_to_slot,
+    target=floor_target, carries_box=True)
+JOB_SPECS[TaskType.RETURNS_PUTAWAY] = JobSpec(
+    label="Returns put-away", guide="box_id(a returned tote in returns_qc)[+slot, default the nearest free one]",
+    classes=frozenset({"HUMANOID"}), check=_check_returns_putaway, plan=_plan_returns_putaway,
+    target=floor_target, carries_box=True)
