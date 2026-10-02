@@ -495,22 +495,29 @@ class Simulator:
 
     def _break_deadlock(self, robot: Any, task: Any, blocker: Any) -> None:
         """Step aside so the higher-priority robot can pass. A sidestep is a
-        stop, so it never lands on the walkway (spec §5.2): it goes through
-        step_to directly, so _crossing_wait would not get to hold it back."""
+        stop, so it never lands on the walkway (spec §5.2). It goes through
+        step_to directly, so _crossing_wait and _aisle_wait would not get to
+        hold it back: a forklift or hauler instead leaves out any cell that
+        enters a zone with a person in it (it simply doesn't sidestep if that
+        is every cell), and announces the zone it does enter."""
         twin = self.twin
         occupied = twin.other_robot_cells(robot.id)
+        keeps_out = robot.mobility is not None and robot.mobility.embodiment_class in AISLE_RULE_CLASSES
         options = [
             cell
             for cell in twin.warehouse.neighbors(robot.position, robot.mobility, robot.layer)
             if cell not in occupied and cell != blocker.position
             and twin.warehouse.may_stop(cell, robot.mobility, robot.layer)
+            and not (keeps_out and self._person_in_entered_zone(robot.position, cell))
         ]
         if not options:
             robot.wait_ticks = 0
             return
         options.sort(key=lambda c: -abs(c[0] - blocker.position[0]) - abs(c[1] - blocker.position[1]))
         sidestep = options[0]
+        previous = robot.position
         robot.step_to(sidestep)
+        self._announce_zone_entry(robot, task, previous)
         robot.clear_path()
         robot.wait_ticks = 0
         twin.events.emit(
@@ -570,12 +577,16 @@ class Simulator:
         zones (patrol_loop) are paths, not places, so they never count."""
         if robot.mobility is None or robot.mobility.embodiment_class not in AISLE_RULE_CLASSES:
             return False
-        if any(people.people_in(self.twin, zone.key) for zone in self._entered_zones(robot.position, next_cell)):
+        if self._person_in_entered_zone(robot.position, next_cell):
             self._safety_wait(robot, task, "PERSON_IN_AISLE", next_cell)
             return True
         if robot.wait_reason == "PERSON_IN_AISLE":
             self._safety_resume(robot, task)
         return False
+
+    def _person_in_entered_zone(self, origin: Cell, cell: Cell) -> bool:
+        """Is anyone standing in a zone that stepping from `origin` to `cell` would enter?"""
+        return any(people.people_in(self.twin, zone.key) for zone in self._entered_zones(origin, cell))
 
     def _entered_zones(self, origin: Cell, cell: Cell) -> List[Any]:
         """The places (non-route zones) holding `cell` that `origin` isn't in."""
