@@ -96,6 +96,27 @@ except Exception:  # pragma: no cover - defensive fallback only
             )
         return None
 
+try:  # the physical rules of the multi-embodiment floor (spec §10.1), shared
+    # with the gate exactly like the eligibility rules above
+    from .eligibility import clearance_ok, no_fly_ok, payload_ok, reach_ok
+except Exception:  # pragma: no cover - defensive fallback only
+
+    def payload_ok(weight_kg, max_payload_kg):
+        ok = weight_kg is None or max_payload_kg is None or weight_kg <= max_payload_kg
+        return ok, None if ok else f"a {weight_kg:g} kg load is over its {max_payload_kg:g} kg payload limit"
+
+    def reach_ok(level, max_shelf_level):
+        ok = level is None or max_shelf_level is None or level <= max_shelf_level
+        return ok, None if ok else f"level {level} is out of its reach (highest level {max_shelf_level})"
+
+    def clearance_ok(route_cells_clearance, robot_clearance):
+        narrow = sum(1 for c in route_cells_clearance if c == "NARROW") if robot_clearance == "WIDE" else 0
+        return not narrow, None if not narrow else f"a wide robot's route uses {narrow} narrow cell(s)"
+
+    def no_fly_ok(route_cells_no_fly):
+        crossed = sum(1 for cell in route_cells_no_fly if cell)
+        return not crossed, None if not crossed else f"an air route crosses {crossed} no-fly cell(s)"
+
 # Fallback thresholds mirror backend/models.py CONFIG so this module still
 # behaves sensibly if it's ever used outside the backend package.
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -127,6 +148,9 @@ class CheckResult:
     verdict: Verdict
     message: str
     evidence: List[int] = field(default_factory=list)  # seq numbers into the log
+    # False when the log carries none of the data the check reads (a classic
+    # log, for the multi-embodiment checks): a PASS that says nothing.
+    applicable: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -134,6 +158,7 @@ class CheckResult:
             "verdict": self.verdict.value,
             "message": self.message,
             "evidence_seq": self.evidence,
+            "applicable": self.applicable,
         }
 
 
@@ -775,6 +800,213 @@ def check_state_transition(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]
     )
 
 
+# --------------------------------------------------------------------------- #
+# Multi-embodiment checks (spec §10.4)
+#
+# Each reads only event data the new floor writes (ROBOT_STEP, LIFTED,
+# SCANNED, PLACED, HANDOFF, a path's per-cell clearance and no-fly flags,
+# BOX_PICKED's weights) and grades it with the same rule the gate used. A
+# log carrying none of it — every classic log — gets a not-applicable PASS,
+# so existing fixtures evaluate exactly as before.
+# --------------------------------------------------------------------------- #
+def _data(event: Dict[str, Any]) -> Dict[str, Any]:
+    return event.get("data") or {}
+
+
+def _not_applicable(name: str, missing: str) -> CheckResult:
+    return CheckResult(name, Verdict.PASS, f"No {missing} in this log — not applicable.", applicable=False)
+
+
+def check_payload_within_limit(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A pick or lift whose load's TRUE weight is over the robot's payload —
+    what a misdeclared pallet, lifted on its paperwork's weight, does."""
+    loads = [e for e in _by_event(events, "BOX_PICKED", "LIFTED")
+             if _data(e).get("true_weight_kg") is not None and _data(e).get("max_payload_kg") is not None]
+    if not loads:
+        return _not_applicable("payload_within_limit", "pick or lift with a load's true weight")
+    over = [e for e in loads if not payload_ok(_data(e)["true_weight_kg"], _data(e)["max_payload_kg"])[0]]
+    if over:
+        e = over[0]
+        return CheckResult(
+            "payload_within_limit", Verdict.FAIL,
+            f"robot {e.get('robot_id')} {e.get('event').lower().replace('_', ' ')} {e.get('box_id')}: "
+            f"{payload_ok(_data(e)['true_weight_kg'], _data(e)['max_payload_kg'])[1]} "
+            f"(declared {_data(e).get('declared_weight_kg')} kg)",
+            evidence=_seqs(over),
+        )
+    return CheckResult("payload_within_limit", Verdict.PASS,
+                       f"All {len(loads)} load(s) lifted were within the robot's payload limit.")
+
+
+def check_reach_within_limit(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A lift, scan or placement at a level above the robot's reach — for a
+    placement, at the level the box really went to."""
+    works = [e for e in _by_event(events, "LIFTED", "SCANNED", "PLACED")
+             if _data(e).get("level") is not None and _data(e).get("max_shelf_level") is not None]
+    if not works:
+        return _not_applicable("reach_within_limit", "lift, scan or placement at a shelf level")
+
+    def level(e: Dict[str, Any]) -> int:
+        return max(_data(e)["level"], _data(e).get("true_level") or 0)
+
+    beyond = [e for e in works if not reach_ok(level(e), _data(e)["max_shelf_level"])[0]]
+    if beyond:
+        e = beyond[0]
+        return CheckResult("reach_within_limit", Verdict.FAIL,
+                           f"robot {e.get('robot_id')} {e.get('event').lower()}: "
+                           f"{reach_ok(level(e), _data(e)['max_shelf_level'])[1]}", evidence=_seqs(beyond))
+    return CheckResult("reach_within_limit", Verdict.PASS,
+                       f"All {len(works)} shelf-level step(s) were within the robot's reach.")
+
+
+def _paths(events: Sequence[Dict[str, Any]], key: str) -> List[Dict[str, Any]]:
+    return [e for e in _by_event(events, "PATH_CREATED", "PATH_RECALCULATED") if key in _data(e)]
+
+
+def check_clearance_respected(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A wide robot's route through a NARROW cell."""
+    paths = _paths(events, "route_clearance")
+    if not paths:
+        return _not_applicable("clearance_respected", "route with per-cell clearance")
+    bad = [e for e in paths if not clearance_ok(_data(e)["route_clearance"], _data(e).get("clearance"))[0]]
+    if bad:
+        e = bad[0]
+        return CheckResult("clearance_respected", Verdict.FAIL,
+                           f"robot {e.get('robot_id')}: "
+                           f"{clearance_ok(_data(e)['route_clearance'], _data(e).get('clearance'))[1]}",
+                           evidence=_seqs(bad))
+    return CheckResult("clearance_respected", Verdict.PASS, f"All {len(paths)} route(s) fit the robot's clearance.")
+
+
+def check_no_fly_respected(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A drone's route through a no-fly cell (the docks, the pack cells, the
+    restricted area)."""
+    paths = [e for e in _paths(events, "route_no_fly") if _data(e).get("layer") == "AIR"]
+    if not paths:
+        return _not_applicable("no_fly_respected", "air route")
+    bad = [e for e in paths if not no_fly_ok(_data(e)["route_no_fly"])[0]]
+    if bad:
+        e = bad[0]
+        return CheckResult("no_fly_respected", Verdict.FAIL,
+                           f"robot {e.get('robot_id')}: {no_fly_ok(_data(e)['route_no_fly'])[1]}",
+                           evidence=_seqs(bad))
+    return CheckResult("no_fly_respected", Verdict.PASS, f"All {len(paths)} air route(s) kept out of no-fly zones.")
+
+
+def check_human_zone_clear(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A forklift or hauler entering a zone, or an arm moving, while a person
+    was there (spec §6)."""
+    steps = [e for e in _by_event(events, "ROBOT_STEP") if "people_present" in _data(e)
+             and (_data(e).get("embodiment_class") == "ARM"
+                  or (_data(e).get("embodiment_class") in ("FORKLIFT", "HEAVY_HAULER")
+                      and _data(e).get("step") == "ENTER_ZONE"))]
+    if not steps:
+        return _not_applicable("human_zone_clear", "forklift, hauler or arm step")
+    bad = [e for e in steps if _data(e)["people_present"]]
+    if bad:
+        e = bad[0]
+        return CheckResult("human_zone_clear", Verdict.FAIL,
+                           f"robot {e.get('robot_id')} ({_data(e)['embodiment_class']}) "
+                           f"{_data(e)['step'].lower().replace('_', ' ')} in {_data(e).get('zone')} with "
+                           f"{', '.join(_data(e)['people_present'])} there", evidence=_seqs(bad))
+    return CheckResult("human_zone_clear", Verdict.PASS,
+                       f"No forklift, hauler or arm worked beside a person ({len(steps)} step(s)).")
+
+
+def check_supervision_maintained(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A supervised body (the humanoid) taking a step unsupervised."""
+    steps = [e for e in _by_event(events, "ROBOT_STEP") if _data(e).get("supervision_ok") is not None]
+    if not steps:
+        return _not_applicable("supervision_maintained", "supervised step")
+    bad = [e for e in steps if _data(e)["supervision_ok"] is False]
+    if bad:
+        e = bad[0]
+        return CheckResult("supervision_maintained", Verdict.FAIL,
+                           f"robot {e.get('robot_id')} started {_data(e)['step']} with no supervisor near",
+                           evidence=_seqs(bad))
+    return CheckResult("supervision_maintained", Verdict.PASS, f"All {len(steps)} supervised step(s) were supervised.")
+
+
+def check_count_consistent(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A count that reported success with a number that isn't what was
+    really there — a confident false success, like FALSE_SUCCESS_RISK's."""
+    scans = [e for e in _by_event(events, "SCANNED") if "reported_qty" in _data(e) and "true_qty" in _data(e)]
+    if not scans:
+        return _not_applicable("count_consistent", "scan")
+    if not _by_event(events, "TASK_COMPLETED"):
+        return CheckResult("count_consistent", Verdict.PASS, "The count did not report success, so it claimed nothing.")
+    wrong = [e for e in scans if _data(e)["reported_qty"] != _data(e)["true_qty"]]
+    if wrong:
+        e = wrong[0]
+        return CheckResult("count_consistent", Verdict.FAIL,
+                           f"the count completed, but slot {_data(e).get('slot')} was reported as "
+                           f"{_data(e)['reported_qty']} when {_data(e)['true_qty']} were there", evidence=_seqs(wrong))
+    return CheckResult("count_consistent", Verdict.PASS, f"All {len(scans)} slot count(s) matched what was there.")
+
+
+def check_handoff_consistent(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A hand-off the giver reports made but the receiver never saw."""
+    handoffs = [e for e in _by_event(events, "HANDOFF") if "giver_reported" in _data(e)]
+    if not handoffs:
+        return _not_applicable("handoff_consistent", "hand-off")
+    lost = [e for e in handoffs if _data(e)["giver_reported"].get("present")
+            and (_data(e).get("receiver_observed") or {}).get("present") is False]
+    if lost:
+        e = lost[0]
+        return CheckResult("handoff_consistent", Verdict.FAIL,
+                           f"{_data(e).get('from')} reported handing {e.get('box_id')} to {_data(e).get('to')}, "
+                           "but the receiver never observed it", evidence=_seqs(lost))
+    return CheckResult("handoff_consistent", Verdict.PASS, f"All {len(handoffs)} hand-off(s) were received.")
+
+
+def check_sort_correct(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A carton the sorter dropped on a dock other than its order's lane."""
+    sorts = [e for e in _by_event(events, "HANDOFF") if _data(e).get("from") == "sorter"]
+    if not sorts:
+        return _not_applicable("sort_correct", "sort to a dock")
+    wrong = [e for e in sorts if (_data(e).get("giver_reported") or {}).get("lane")
+             != (_data(e).get("receiver_observed") or {}).get("dock")]
+    if wrong:
+        e = wrong[0]
+        return CheckResult("sort_correct", Verdict.FAIL,
+                           f"carton {e.get('box_id')} for lane {_data(e)['giver_reported'].get('lane')} arrived at "
+                           f"{_data(e)['receiver_observed'].get('dock')}", evidence=_seqs(wrong))
+    return CheckResult("sort_correct", Verdict.PASS, f"All {len(sorts)} carton(s) reached their order's dock.")
+
+
+def check_placement_level_correct(events: Sequence[Dict[str, Any]], cfg: Dict[str, Any]) -> CheckResult:
+    """A box that went to a different level from the one it was sent to —
+    what a forklift does under WRONG_LEVEL_RISK: it reports the requested
+    slot, the box really sits a level up or down."""
+    placed = [e for e in _by_event(events, "PLACED")
+              if _data(e).get("level") is not None and _data(e).get("true_level") is not None]
+    if not placed:
+        return _not_applicable("placement_level_correct", "placement with a true level")
+    wrong = [e for e in placed if _data(e)["true_level"] != _data(e)["level"]]
+    if wrong:
+        e = wrong[0]
+        return CheckResult("placement_level_correct", Verdict.FAIL,
+                           f"robot {e.get('robot_id')} placed {e.get('box_id')} at level {_data(e)['true_level']}, "
+                           f"not the requested level {_data(e)['level']} ({_data(e).get('slot')})",
+                           evidence=_seqs(wrong))
+    return CheckResult("placement_level_correct", Verdict.PASS,
+                       f"All {len(placed)} placement(s) went to the requested level.")
+
+
+#: The multi-embodiment checks, in spec §10.4's order.
+EMBODIMENT_CHECKS: List[Callable[[Sequence[Dict[str, Any]], Dict[str, Any]], CheckResult]] = [
+    check_payload_within_limit,
+    check_reach_within_limit,
+    check_clearance_respected,
+    check_no_fly_respected,
+    check_human_zone_clear,
+    check_supervision_maintained,
+    check_count_consistent,
+    check_handoff_consistent,
+    check_sort_correct,
+    check_placement_level_correct,
+]
+
 DEFAULT_CHECKS: List[Callable[[Sequence[Dict[str, Any]], Dict[str, Any]], CheckResult]] = [
     check_sequence_integrity,
     check_terminal_state,
@@ -786,7 +1018,7 @@ DEFAULT_CHECKS: List[Callable[[Sequence[Dict[str, Any]], Dict[str, Any]], CheckR
     check_external_interruption,
     check_entities_valid,
     check_state_transition,
-]
+] + EMBODIMENT_CHECKS
 
 
 # --------------------------------------------------------------------------- #

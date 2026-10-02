@@ -431,6 +431,13 @@ class Simulator:
 
         robot.set_path(path, target_name)
         event = EventType.PATH_RECALCULATED if replan else EventType.PATH_CREATED
+        data: Dict[str, Any] = {"cells": len(path), "target": cell_dict(target)}
+        if robot.mobility is not None:
+            # What clearance_respected and no_fly_respected read (spec §10.4).
+            warehouse = twin.warehouse
+            data.update(layer=robot.layer, clearance=robot.mobility.clearance,
+                        route_clearance=[warehouse.clearance(cell) for cell in path],
+                        route_no_fly=[warehouse.is_no_fly(cell) for cell in path])
         twin.events.emit(
             event,
             f"{'Alternative' if replan else 'A*'} path for {robot.name} → "
@@ -438,7 +445,7 @@ class Simulator:
             category=LogCategory.NAVIGATION,
             robot_id=robot.id,
             task_id=task.id,
-            data={"cells": len(path), "target": cell_dict(target)},
+            data=data,
         )
         if replan:
             robot.replan_count += 1

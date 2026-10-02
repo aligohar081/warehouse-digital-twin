@@ -314,7 +314,10 @@ class TaskManager:
         zone = twin.warehouse.zones.get(zone_key)
         if zone is None:
             return None
-        occupants = sorted(b.id for b in twin.boxes.values() if b.position in zone.cells)
+        # A SHIPPED box has left on a truck and only keeps its dock position as a
+        # record, so it no longer occupies the zone (as in twin.box_at).
+        occupants = sorted(b.id for b in twin.boxes.values()
+                           if b.position in zone.cells and b.status is not twin.BoxStatus.SHIPPED)
         return {
             "key": zone.key,
             "label": zone.label,
@@ -341,6 +344,12 @@ class TaskManager:
                 "firmware_version": robot.firmware_version,
                 "allowed_task_types": list(robot.allowed_task_types) if robot.allowed_task_types else None,
             }
+            if robot.mobility is not None:  # the new floor's body (spec §10.4); classic logs stay as they were
+                state["robot"].update(
+                    layer=robot.layer, altitude_m=round(robot.altitude_m, 2),
+                    embodiment_class=robot.mobility.embodiment_class, clearance=robot.mobility.clearance,
+                    max_payload_kg=robot.mobility.max_payload_kg, max_shelf_level=robot.mobility.max_shelf_level,
+                )
 
         box = twin.find_box(task.box_id) if task.box_id else None
         if box is not None:
@@ -352,6 +361,9 @@ class TaskManager:
                 "zone": zone.key if zone else None,
                 "status": box.status.value,
             }
+            if twin.layout_name != "classic":
+                state["box"].update(kind=box.kind.value, slot=box.slot, true_weight_kg=box.true_weight_kg,
+                                    declared_weight_kg=box.declared_weight_kg)
 
         if task.box_ids:  # BATCH_DELIVER — one entry per box, same shape as "box" above
             boxes = []

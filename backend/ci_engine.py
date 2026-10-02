@@ -10,7 +10,8 @@ import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .embodiment import GROUND
+from .embodiment import AIR, GROUND
+from .human_jobs import HUMAN_JOBS
 from .models import (
     ACTIVE_TASK_STATES,
     BoxStatus,
@@ -25,6 +26,10 @@ from .models import (
 )
 
 CheckResult = Tuple[bool, str, Dict[str, Any]]
+
+#: One catalog body per profile class whose routes must reach every cell it
+#: may use on a layered floor (spec §10.5): narrow ground, wide ground, air.
+PROFILE_CLASSES = (("narrow ground", "AC-TR50", GROUND), ("wide ground", "NW-PF1200", GROUND), ("air", "CT-IX2", AIR))
 
 
 class CIEngine:
@@ -132,34 +137,38 @@ class CIEngine:
         problems: List[str] = []
         if warehouse.width < 5 or warehouse.height < 5:
             problems.append("grid is too small to operate")
+        solid = (CellType.WALL, CellType.DOCK_DOOR)  # a dock door is part of the wall
         for x in range(warehouse.width):
-            if warehouse.cell_type(x, 0) is not CellType.WALL or \
-               warehouse.cell_type(x, warehouse.height - 1) is not CellType.WALL:
+            if warehouse.cell_type(x, 0) not in solid or \
+               warehouse.cell_type(x, warehouse.height - 1) not in solid:
                 problems.append(f"perimeter breach at column {x}")
                 break
         for y in range(warehouse.height):
-            if warehouse.cell_type(0, y) is not CellType.WALL or \
-               warehouse.cell_type(warehouse.width - 1, y) is not CellType.WALL:
+            if warehouse.cell_type(0, y) not in solid or \
+               warehouse.cell_type(warehouse.width - 1, y) not in solid:
                 problems.append(f"perimeter breach at row {y}")
                 break
-        required = {"charging_station", "loading_zone", "packing_area", "shelf_a"}
-        missing = required - set(warehouse.zones)
+        # The zones the loaded layout says it can't run without (spec §10.5).
+        missing = set(warehouse.required_zones) - set(warehouse.zones)
         if missing:
             problems.append(f"missing zones: {', '.join(sorted(missing))}")
 
-        # Every drivable cell must be reachable from every other drivable cell.
+        # Every drivable cell must be reachable from every other drivable cell
+        # — on a layered floor, for each class of body over the cells it uses.
         walkable = warehouse.walkable_cells()
-        if walkable:
-            seen = {walkable[0]}
-            stack = [walkable[0]]
-            while stack:
-                for neighbor in warehouse.neighbors(stack.pop()):
-                    if neighbor not in seen:
-                        seen.add(neighbor)
-                        stack.append(neighbor)
-            unreachable = len(walkable) - len(seen)
+        if warehouse.layout_name == "classic":
+            unreachable = self._cut_off(walkable, warehouse.neighbors)
             if unreachable:
                 problems.append(f"{unreachable} drivable cells are walled off")
+            connected = "all connected"
+        else:
+            for label, model, layer in PROFILE_CLASSES:
+                profile = self.twin.fleet.model_profile(model)
+                cells = warehouse.passable_cells(profile, layer)
+                unreachable = self._cut_off(cells, lambda cell: warehouse.neighbors(cell, profile, layer))
+                if unreachable:
+                    problems.append(f"{unreachable} cells are cut off for a {label} body")
+            connected = "connected for narrow, wide and air bodies"
         details = {
             "grid": f"{warehouse.width}x{warehouse.height}",
             "zones": len(warehouse.zones),
@@ -168,7 +177,21 @@ class CIEngine:
         if problems:
             return False, "; ".join(problems), details
         return True, f"{warehouse.width}x{warehouse.height} grid, {len(warehouse.zones)} zones, " \
-                     f"{len(walkable)} drivable cells all connected", details
+                     f"{len(walkable)} drivable cells {connected}", details
+
+    @staticmethod
+    def _cut_off(cells: List[tuple], neighbors: Callable[[tuple], List[tuple]]) -> int:
+        """How many of `cells` can't be reached from the first of them."""
+        if not cells:
+            return 0
+        seen = {cells[0]}
+        stack = [cells[0]]
+        while stack:
+            for neighbor in neighbors(stack.pop()):
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        return len(set(cells) - seen)
 
     def _check_robot_state(self) -> CheckResult:
         twin = self.twin
@@ -193,6 +216,17 @@ class CIEngine:
             return False, "; ".join(problems), details
         return True, f"{len(twin.robots)} robots hold valid state", details
 
+    def _allowed_at(self, robot: Any) -> bool:
+        """May `robot` be where it is? Classic: a drivable cell. A layered
+        floor (spec §10.5): an arm on its fixed station, a flying drone over
+        any flyable cell, anything else on a cell its body may use."""
+        warehouse, profile = self.twin.warehouse, robot.mobility
+        if profile is None:
+            return warehouse.is_walkable(*robot.position)
+        if profile.is_fixed:
+            return robot.position in warehouse.fixed_stations
+        return warehouse.passable(robot.position, profile, robot.layer)
+
     def _check_robot_positions(self) -> CheckResult:
         twin = self.twin
         problems: List[str] = []
@@ -200,10 +234,11 @@ class CIEngine:
             x, y = robot.position
             if not twin.warehouse.is_inside(x, y):
                 problems.append(f"{robot.name} is outside the warehouse at ({x},{y})")
-            elif not twin.warehouse.is_walkable(x, y):
+            elif not self._allowed_at(robot):
+                where = "" if robot.layer == GROUND else f" on the {robot.layer} layer"
                 problems.append(
                     f"{robot.name} stands on a "
-                    f"{twin.warehouse.cell_type(x, y).value} cell at ({x},{y})"
+                    f"{twin.warehouse.cell_type(x, y).value} cell at ({x},{y}){where}"
                 )
         details = {
             "positions": {r.name: list(r.position) for r in twin.robots.values()},
@@ -221,7 +256,7 @@ class CIEngine:
                 continue
             previous = robot.position
             for cell in path:
-                if not twin.warehouse.is_walkable(*cell):
+                if not twin.warehouse.passable(cell, robot.mobility, robot.layer):
                     problems.append(f"{robot.name} path crosses a blocked cell {cell}")
                     break
                 if abs(cell[0] - previous[0]) + abs(cell[1] - previous[1]) != 1:
@@ -263,12 +298,14 @@ class CIEngine:
         twin = self.twin
         problems: List[str] = []
         for robot in twin.robots.values():
+            if robot.mains_powered:
+                continue  # an arm runs on mains power: there is no battery to check
             if robot.battery < 0 or robot.battery > 100:
                 problems.append(f"{robot.name} battery is {robot.battery}")
             if robot.battery == 0 and robot.status != RobotStatus.ERROR:
                 problems.append(f"{robot.name} is flat but not in an error state")
-            if robot.status == RobotStatus.CHARGING and \
-                    twin.warehouse.cell_type(*robot.position) is not CellType.CHARGING:
+            charger = CellType.DRONE_PAD if robot.mobility is not None and robot.mobility.is_air else CellType.CHARGING
+            if robot.status == RobotStatus.CHARGING and twin.warehouse.cell_type(*robot.position) is not charger:
                 problems.append(f"{robot.name} is charging away from the charging station")
         batteries = [r.battery for r in twin.robots.values()]
         details = {
@@ -323,8 +360,8 @@ class CIEngine:
                 problems.append(f"{task.id} points at unknown box {task.box_id}")
             if task.status in TERMINAL_TASK_STATES and not task.completed_at:
                 problems.append(f"{task.id} finished without a completion timestamp")
-            if task.status in ACTIVE_TASK_STATES and not task.robot_id:
-                problems.append(f"{task.id} is active without a robot")
+            if task.status in ACTIVE_TASK_STATES and not task.robot_id and task.type not in HUMAN_JOBS:
+                problems.append(f"{task.id} is active without a robot")  # a person's job has none
             if task.status == TaskStatus.FAILED and not task.error:
                 problems.append(f"{task.id} failed without an error message")
         details = twin.tasks.counts()
