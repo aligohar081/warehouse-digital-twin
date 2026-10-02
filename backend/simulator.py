@@ -22,6 +22,7 @@ from .eligibility import reach_ok, robot_eligibility
 from .embodiment import AIR, GROUND, HOVER_CLEARANCE_M, lift_ticks, seconds_to_ticks, step_ticks
 from .goods import carton_weight_kg
 from .maintenance import maintenance_reason
+from .operations.activities import sync_duty
 from .models import (
     CONFIG,
     ActionType,
@@ -1715,8 +1716,13 @@ class Simulator:
         off-duty operator outside real working hours. Never touches an
         operator with no shift configured (manual status control only,
         every operator's behaviour before this existed) or one currently
-        ON_TASK — only flips between AVAILABLE and OFF_DUTY."""
+        ON_TASK — only flips between AVAILABLE and OFF_DUTY. On a layered
+        floor duty follows the simulated shift clock and the HR state instead
+        (backend/operations/activities.py)."""
         twin = self.twin
+        if twin.layout_name != "classic":
+            sync_duty(twin)
+            return
         hour = datetime.now().hour
         for operator in twin.operators.values():
             if not operator.has_shift or operator.status == OperatorStatus.ON_TASK:

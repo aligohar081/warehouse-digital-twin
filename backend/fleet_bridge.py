@@ -229,6 +229,7 @@ class FleetBridge:
         worker = self.service.get_worker(operator.worker_id)
         codes = worker["valid_credential_codes"]
         operator.certification_scopes = credential_scopes(worker)
+        operator.employment_status = worker["employment_status"]
         if codes == list(operator.certifications):
             return False
         previous = list(operator.certifications)

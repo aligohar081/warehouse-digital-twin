@@ -61,6 +61,9 @@ class Operator:
         # synced from the workforce record with `certifications`. An empty list
         # means that credential is unrestricted in that dimension.
         self.certification_scopes: Dict[str, Dict[str, List[str]]] = {}
+        # The workforce record's HR state (ACTIVE, ON_LEAVE, TERMINATED), synced
+        # with the credentials; on the new floor anything but ACTIVE is off duty.
+        self.employment_status: Optional[str] = None
         self.created_at = now_iso()
         self.updated_at = now_iso()
 
@@ -122,6 +125,7 @@ class Operator:
             "transit_until_tick": self.transit_until_tick,
             "certification_scopes": {code: {key: list(values) for key, values in scope.items()}
                                      for code, scope in self.certification_scopes.items()},
+            "employment_status": self.employment_status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -147,4 +151,5 @@ class Operator:
         operator.transit_to = data.get("transit_to")
         operator.transit_until_tick = data.get("transit_until_tick")
         operator.certification_scopes = dict(data.get("certification_scopes") or {})
+        operator.employment_status = data.get("employment_status")
         return operator

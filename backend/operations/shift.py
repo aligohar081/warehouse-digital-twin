@@ -1,5 +1,6 @@
-"""The shift engine (multi-embodiment spec §11.1, §11.4): it keeps the
-distribution-centre floor busy on its own.
+"""The shift engine (multi-embodiment spec §11.1, §11.3, §11.4): it keeps
+the distribution-centre floor busy on its own, and moves its people
+(activities.py).
 
 Seeded streams generate the work — inbound trucks, customer orders, full-
 pallet orders, cycle counts, patrols, returns and outbound departures — at
@@ -76,6 +77,9 @@ class ShiftEngine:
         self._paused_at: Optional[float] = None  # simulation time pause() was called
         self._truck_count = 0
         self._face_index = 0
+        # Operator id -> the simulation time a person who stepped aside for a
+        # forklift waits until before going back (activities.move_people).
+        self.yield_until: Dict[str, float] = {}
         self.counters: Dict[str, int] = {stream: 0 for stream in DEFAULT_RATES}
         self.counters["skipped_orders"] = 0
 
@@ -158,6 +162,10 @@ class ShiftEngine:
                 self._next_due[stream] += 3600.0 / rate
                 self.counters[stream] += 1
                 getattr(self, f"_generate_{stream}")()
+            if self.twin.tick_count % CONFIG["SHIFT_CHECK_EVERY_TICKS"] == 0:
+                from .activities import move_people  # deferred: activities.py imports this module
+
+                move_people(self)
         self.orders.advance()
 
     def _skus(self) -> List[str]:
