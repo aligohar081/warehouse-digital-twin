@@ -315,8 +315,17 @@ class OrderBook:
         return free[0] if free else None
 
     def _promised_tote(self, box_id: str) -> bool:
-        return any(line.get("tote_id") == box_id for order in self.orders.values() if not order.is_terminal
-                   for line in order.lines if order.kind == "CUSTOMER")
+        """True while a live customer line holds `box_id`, from the moment it
+        is chosen until that line's RETURN_TOTE is done: a tote that has gone
+        home is free again for any line, the same order's included (an order
+        repeating a SKU only one tote holds would otherwise wait on itself)."""
+        for order in self.orders.values():
+            if order.is_terminal or order.kind != "CUSTOMER":
+                continue
+            returned = {stage.line for stage in order.stages if stage.task_type == "RETURN_TOTE" and stage.status == DONE}
+            if any(line.get("tote_id") == box_id for number, line in enumerate(order.lines) if number not in returned):
+                return True
+        return False
 
     # ---- a customer order's station and pack cell ------------------------ #
     def _busy(self, attribute: str) -> List[str]:
