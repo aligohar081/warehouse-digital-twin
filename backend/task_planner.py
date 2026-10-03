@@ -275,7 +275,13 @@ class TaskPlanner:
             spec = JOB_SPECS.get(task.type)
             if spec is None or spec.plan is None:
                 raise PlanningError(f"{task.type.value} does not need a movement plan")
-            actions, waypoints, handling_ops = spec.plan(self, task, robot, blocked)
+            # On the new floor a job's targets (slot faces, station drops,
+            # staging and dock cells) are chosen from the layout alone: a robot
+            # standing in the way right now is traffic, which execution waits
+            # out, replans around or sidesteps. A robot with no floor profile
+            # keeps `blocked`, as classic planning always has.
+            spec_blocked = set() if robot.mobility is not None else blocked
+            actions, waypoints, handling_ops = spec.plan(self, task, robot, spec_blocked)
 
         # ---- battery-aware planning ---------------------------------- #
         # A mains-powered arm has no battery to plan for, and a drone gets a

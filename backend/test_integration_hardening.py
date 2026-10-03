@@ -238,6 +238,27 @@ def test_a_failed_order_queues_no_return_for_a_tote_at_home_or_on_its_way(popula
 
 
 # --------------------------------------------------------------------------- #
+# C2: plan-time targets ignore where other robots stand
+# --------------------------------------------------------------------------- #
+def test_a_face_the_layout_cannot_reach_still_fails_with_its_reason(twin):
+    forklift = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(7, 4))
+    slot = twin.warehouse.slot("TS-11-12-0")                     # a narrow aisle a wide forklift can't use
+    with pytest.raises(PlanningError, match="No face of slot TS-11-12-0 is reachable"):
+        jobs.face_cell(twin.planner, slot, forklift.position, forklift.mobility, GROUND)
+
+
+def test_classic_planning_still_steers_a_drop_around_a_robot(tmp_path):
+    classic = classic_floor(tmp_path)
+    robot, other = classic.find_robot("Robo-01"), classic.find_robot("Robo-02")
+    payload = {"type": "PICK_AND_DELIVER", "robot_id": robot.id, "box_id": "Box-A", "destination": "loading_zone"}
+    free = classic.planner.plan(classic.tasks.create_task(payload), robot)[2].target
+    other.position = free                                        # stand on the cell it would have chosen
+    classic.tasks.cancel_task(next(t.id for t in classic.tasks.tasks.values() if not t.is_terminal))
+    steered = classic.planner.plan(classic.tasks.create_task(payload), robot)[2].target
+    assert steered != free
+
+
+# --------------------------------------------------------------------------- #
 # Folded minors
 # --------------------------------------------------------------------------- #
 def test_an_order_engine_cancel_is_the_systems_and_a_user_cancel_stays_the_users(populated):
