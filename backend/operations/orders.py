@@ -30,7 +30,8 @@ picks there is on the floor and Pick 1 is taken or has no picker robot.
 A failed order cancels its live jobs — as the system, giving the reason —
 except a RETURN_TOTE already taking a tote home, and sends home every tote it
 took out that is not home or on its way. A tote leg that fails sends its tote
-home too, before the stage is retried.
+home too, before the stage is retried. An order whose own bookkeeping raises
+fails alone, with the error as its reason; the other orders still advance.
 """
 from __future__ import annotations
 
@@ -180,8 +181,25 @@ class OrderBook:
     # ---- advancing ------------------------------------------------------- #
     def advance(self) -> None:
         for order in list(self.orders.values()):
-            if not order.is_terminal:
+            if order.is_terminal:
+                continue
+            try:
                 self._advance(order)
+            except Exception as exc:  # one broken order fails alone: the others still move on
+                self._fail_broken(order, exc)
+
+    def _fail_broken(self, order: Order, exc: Exception) -> None:
+        """An order whose own advancing raised fails with the error as its reason."""
+        reason = f"The order hit an error: {type(exc).__name__}: {exc}"
+        self.twin.logger.error(LogCategory.OPERATIONS, f"{order.order_id}: {reason}",
+                               data={"order_id": order.order_id})
+        if order.is_terminal:
+            return
+        try:
+            self._fail(order, reason)
+        except Exception:  # failing it cleanly raised too: still take it out of the running
+            order.status, order.failure_reason = FAILED, reason
+            order.completed_at = self.twin.simulation_time
 
     def _advance(self, order: Order) -> None:
         if order.lost:

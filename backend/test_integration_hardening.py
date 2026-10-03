@@ -482,3 +482,34 @@ def test_an_order_engine_cancel_is_the_systems_and_a_user_cancel_stays_the_users
     event = twin.events.query(event_type="TASK_CANCELLED")[-1]
     assert (event["message"], event["category"]) == (f"{mine.id} cancelled by user", "USER")
     assert mine.history[-1]["message"] == "Cancelled by user"
+
+
+def test_the_fleet_reason_names_the_jobs_own_class_first(twin):
+    for name, asset, cell in (("PF1200-205", "AST-000205", (7, 4)), ("PF1200-206", "AST-000206", (7, 8)),
+                              ("HH300-207", "AST-000207", (2, 8)), ("TR50-201", "AST-000201", (8, 13))):
+        twin.add_robot(name=name, asset_id=asset, position=cell)
+    drone = twin.add_robot(name="IX2-208", asset_id="AST-000208", position=(20, 2))
+    drone.battery = 5.0                                          # too low to fly a count
+    task = twin.tasks.create_task({"type": "CYCLE_COUNT", "face": "12,2"})
+    assert task.status is TaskStatus.FAILED
+    assert task.error.startswith("No robot can do this CYCLE_COUNT: IX2-208 can't fly it"), task.error
+
+
+def test_a_request_that_breaks_validation_fails_with_a_plain_reason(twin):
+    twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(7, 4))
+    pallet = twin.add_box(name="PAL", kind="PALLET", sku="S", quantity=10, weight=300.0, position=(3, 4))
+    task = twin.tasks.create_task({"type": "PUTAWAY_PALLET", "box_id": pallet.id, "slot": ["PR-08-02-0"]})
+    assert task.status is TaskStatus.FAILED and task.error.startswith("The request could not be checked")
+    assert not [t for t in twin.tasks.tasks.values() if t.status is TaskStatus.VALIDATING]
+
+
+def test_one_broken_order_fails_alone_and_the_others_still_advance(populated):
+    twin = populated
+    broken = twin.shift.orders.customer([{"sku": "SKU-002", "units": 1}], "dock_4")
+    broken.lines[0].pop("sku")                                   # a corrupt line: reading it raises
+    count = twin.shift.orders.count("12,2")
+    twin.shift.orders.advance()
+    assert broken.status == "FAILED" and broken.failure_reason.startswith("The order hit an error")
+    assert count.status == "IN_PROGRESS" and count.stages[0].attempts == 1
+    assert twin.tasks.get(count.stages[0].task_id) is not None
+    assert TaskType.CYCLE_COUNT is twin.tasks.get(count.stages[0].task_id).type

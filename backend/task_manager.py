@@ -547,7 +547,10 @@ class TaskManager:
 
         task.record(TaskStatus.VALIDATING, "Validation started")
         logger.info(LogCategory.TASK, f"{task.id} validation started", task_id=task.id)
-        ok, error = self.validate(task)
+        try:
+            ok, error = self.validate(task)
+        except Exception as exc:  # a malformed request fails here, not left VALIDATING for good
+            ok, error = False, f"The request could not be checked: {exc}"
         if not ok:
             self.fail_task(task, error or "Validation failed")
             return task
@@ -1245,7 +1248,13 @@ class TaskManager:
         the gate (its order records why) instead of waiting forever."""
         twin = self.twin
         reasons: List[str] = []
-        for robot in twin.robots.values():
+        spec = JOB_SPECS.get(task.type)
+        classes = spec.classes if spec is not None else frozenset()
+        # The bodies the job is for come first, so their reasons (a drone's
+        # energy, say) aren't the ones cut off by the "and N more" below.
+        robots = sorted(twin.robots.values(), key=lambda robot: not (
+            robot.mobility is not None and robot.mobility.embodiment_class in classes))
+        for robot in robots:
             reason = self.capability_reason(robot, task)
             if robot.mobility is None and reason is None:
                 return None  # a classic robot with a classic job: today's rules
