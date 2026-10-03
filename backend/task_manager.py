@@ -1635,6 +1635,39 @@ class TaskManager:
                 if box.status in allow_status:
                     box.set_status(twin.BoxStatus.STORED)
 
+    def _set_down_load(self, task: Task, robot: Any) -> None:
+        """A new-floor job that ends early (failed or cancelled) leaves nothing
+        in its robot's hands, so the robot can charge and take work again. The
+        load is the box the job itself took (its PICK or GRASP made it the
+        box's assigned task). A mobile robot sets it down on its own cell, as
+        a reset does: it is STORED there, still recorded in its home slot if it
+        is a tote. An arm puts an order item back on its working conveyor
+        cell, held there for a retry; with that cell taken, the item fails. A
+        classic robot keeps holding its box, as it always has."""
+        twin = self.twin
+        if robot.mobility is None or not robot.carrying_box:
+            return
+        box = twin.find_box(robot.carrying_box)
+        if box is None or box.assigned_task != task.id:
+            return  # not this job's load (handed to it some other way): left as it is
+        robot.carrying_box = None
+        box.assigned_robot = box.assigned_task = None
+        if robot.mobility.is_fixed:
+            station = twin.warehouse.fixed_stations.get(robot.position)
+            cell = twin.equipment.arm_cells.get(station) if twin.equipment is not None and station else None
+            if cell is not None and twin.equipment.conveyor.is_free(cell):
+                twin.equipment.place(box, cell, robot.id, task_id=task.id, order_id=box.order_id, stop_at=cell)
+                return
+            box.set_status(twin.BoxStatus.FAILED)
+            twin.logger.warning(LogCategory.BOX, f"{box.name} failed: {robot.name} let go of it when {task.id} "
+                                f"ended, and its conveyor cell was taken", task_id=task.id, robot_id=robot.id,
+                                box_id=box.id)
+            return
+        box.position = robot.position
+        box.set_status(twin.BoxStatus.STORED)
+        twin.logger.info(LogCategory.BOX, f"{robot.name} set {box.name} down at ({robot.position[0]},"
+                         f"{robot.position[1]}): {task.id} ended", task_id=task.id, robot_id=robot.id, box_id=box.id)
+
     def fail_task(self, task: Task, error: str) -> None:
         twin = self.twin
         task.error = error
@@ -1645,6 +1678,7 @@ class TaskManager:
             robot.failed_tasks += 1
             if robot.current_task == task.id:
                 robot.current_task = None
+                self._set_down_load(task, robot)
                 twin.end_safety_wait(robot, f"ended: {task.id} failed")
                 robot.clear_path()
                 if not robot.is_halted:
@@ -1666,18 +1700,21 @@ class TaskManager:
             data={"state": self.snapshot_state(task)},
         )
 
-    def cancel_task(self, task_id: str) -> Task:
+    def cancel_task(self, task_id: str, reason: Optional[str] = None) -> Task:
+        """Cancel a task: the user's cancel, or with `reason` the system's (the
+        order engine cancelling a failed order's jobs), logged as such."""
         task = self.tasks.get(task_id)
         if task is None:
             raise KeyError(f"Task '{task_id}' does not exist")
         if task.is_terminal:
             raise ValueError(f"{task_id} already finished with status {task.status.value}")
         twin = self.twin
-        task.record(TaskStatus.CANCELLED, "Cancelled by user")
+        task.record(TaskStatus.CANCELLED, f"Cancelled: {reason}" if reason else "Cancelled by user")
         task.completed_at = now_iso()
         robot = twin.find_robot(task.robot_id) if task.robot_id else None
         if robot is not None and robot.current_task == task.id:
             robot.current_task = None
+            self._set_down_load(task, robot)
             twin.end_safety_wait(robot, f"ended: {task.id} cancelled")
             robot.clear_path()
             if not robot.is_halted:
@@ -1686,8 +1723,8 @@ class TaskManager:
         self._release_operator(task, completed=False)
         twin.events.emit(
             EventType.TASK_CANCELLED,
-            f"{task.id} cancelled by user",
-            category=LogCategory.USER,
+            f"{task.id} cancelled: {reason}" if reason else f"{task.id} cancelled by user",
+            category=LogCategory.TASK if reason else LogCategory.USER,
             level=LogLevel.WARNING,
             task_id=task.id,
             robot_id=task.robot_id,

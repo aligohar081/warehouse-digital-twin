@@ -26,6 +26,11 @@ order's on the line. Its PACK_ORDER starts with it, so the arm is waiting
 when the first item arrives. Pick 2 is a person's station: an order goes
 there when someone who picks there is on the floor and Pick 1 is taken or
 has no picker robot.
+
+A failed order cancels its live jobs — as the system, giving the reason —
+except a RETURN_TOTE already taking a tote home, and sends home every tote it
+took out that is not home or on its way. A tote leg that fails sends its tote
+home too, before the stage is retried.
 """
 from __future__ import annotations
 
@@ -266,6 +271,10 @@ class OrderBook:
     def _stage_failed(self, order: Order, stage: Stage, reason: str) -> None:
         stage.error = reason
         self._bank_placed_units(order, stage)
+        if order.kind == "CUSTOMER" and stage.task_type == "TOTE_TO_STATION":
+            # A tote leg that ended early may have set its tote down on the way:
+            # it goes home, and a retry takes a tote that is home.
+            self._send_tote_home(order.lines[stage.line].get("tote_id"), f"{order.order_id}: {stage.name} failed")
         unresumable = self._cannot_resume_pack(order, stage)
         if unresumable:
             stage.status = FAILED
@@ -283,10 +292,12 @@ class OrderBook:
     def _fail(self, order: Order, reason: str) -> None:
         order.status, order.failure_reason = FAILED, reason
         order.completed_at = self.twin.simulation_time
+        why = f"order {order.order_id} failed"
         for stage in order.stages:
             task = self.twin.tasks.get(stage.task_id) if stage.task_id else None
-            if task is not None and not task.is_terminal:
-                self.twin.tasks.cancel_task(task.id)
+            if task is None or task.is_terminal or task.type is TaskType.RETURN_TOTE:
+                continue  # a RETURN_TOTE under way is taking its tote home: it finishes
+            self.twin.tasks.cancel_task(task.id, reason=why)
         if self.twin.equipment is not None:
             self.twin.equipment.release_order(order.order_id)
         self.twin.events.emit(
@@ -296,6 +307,26 @@ class OrderBook:
             level=LogLevel.WARNING,
             data={"order_id": order.order_id, "kind": order.kind, "reason": reason},
         )
+        if order.kind == "CUSTOMER":
+            for line in order.lines:  # every tote it took out goes home
+                self._send_tote_home(line.get("tote_id"), why)
+
+    def _send_tote_home(self, box_id: Optional[str], why: str) -> None:
+        """Queue a RETURN_TOTE (through the gate) for a tote an order took out,
+        unless it is home already or a job has it (one taking it home, say)."""
+        twin = self.twin
+        tote = twin.find_box(box_id) if box_id else None
+        if tote is None or tote.kind is not BoxKind.TOTE or not tote.slot or tote_is_home(twin, tote):
+            return
+        if twin.tasks.active_task_for_box(tote.id) is not None:
+            return
+        task = twin.tasks.create_task({"type": "RETURN_TOTE", "box_id": tote.id}, internal=True)
+        if task.status is TaskStatus.FAILED:
+            twin.logger.warning(LogCategory.OPERATIONS, f"{tote.name} could not be sent home ({why}): {task.error}",
+                                task_id=task.id, box_id=tote.id)
+        else:
+            twin.logger.info(LogCategory.OPERATIONS, f"{tote.name} sent home as {task.id}: {why}",
+                             task_id=task.id, box_id=tote.id)
 
     # ---- what each stage asks for ---------------------------------------- #
     def _payload(self, order: Order, stage: Stage) -> Optional[Dict[str, Any]]:
