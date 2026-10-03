@@ -13,7 +13,8 @@ from __future__ import annotations
 import random
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from collections import deque
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from datetime import datetime
 
@@ -25,6 +26,7 @@ from .maintenance import maintenance_reason
 from .operations.activities import sync_duty
 from .models import (
     CONFIG,
+    Action,
     ActionType,
     Cell,
     CellType,
@@ -86,6 +88,15 @@ class Simulator:
         # Robot id -> the tick before which a new-floor robot's auto-charge
         # isn't requested again (see _auto_charge).
         self._charge_retry: Dict[str, int] = {}
+        # Robot id -> the tick before which an idle new-floor robot isn't sent
+        # to parking again, and the (cell, tick) it has stood idle on since
+        # (see _park_idle).
+        self._park_retry: Dict[str, int] = {}
+        self._idle_since: Dict[str, Tuple[Cell, int]] = {}
+        # Robot id -> the (blocker, cell, task) of the traffic wait it last
+        # announced, so a new-floor robot that can't get round its blocker
+        # doesn't announce the same wait again every cycle (_handle_block).
+        self._announced: Dict[str, Tuple[str, Cell, str]] = {}
 
     # ------------------------------------------------------------------ #
     # Thread control
@@ -193,6 +204,7 @@ class Simulator:
             self._detect_collisions()
             self._apply_energy(distance_before)
             self._auto_charge()
+            self._park_idle()
             self._check_maintenance()
             self._tick_fleet()
             if twin.tick_count % CONFIG["AUTHORIZATION_CHECK_EVERY_TICKS"] == 0:
@@ -310,7 +322,11 @@ class Simulator:
 
         if not robot.current_path or robot.target_position != target:
             if not self._plan_path(robot, task, target, action.target_name, replan=False):
+                if robot.mobility is not None and not task.is_terminal:
+                    self._traffic_wait(robot, task, action)
                 return
+            if robot.mobility is not None:
+                robot.wait_ticks = 0  # a route at last: a later block counts from scratch
 
         robot.set_status(RobotStatus.DELIVERING if robot.carrying_box else RobotStatus.MOVING)
 
@@ -347,6 +363,7 @@ class Simulator:
 
         robot.wait_ticks = 0
         robot.blocked_by = None
+        self._announced.pop(robot.id, None)
         if not robot.ready_to_step(self.dt):
             return
 
@@ -475,9 +492,16 @@ class Simulator:
         robot.blocked_by = blocker.id
 
         if robot.wait_ticks == 1:
+            robot.set_status(RobotStatus.WAITING)
+            # A new-floor robot that couldn't sidestep is still in the same wait:
+            # it isn't announced again (classic announces it every cycle, as always).
+            seen = (blocker.id, robot.position, task.id)
+            if robot.mobility is not None and self._announced.get(robot.id) == seen:
+                twin.tasks.set_status(task, TaskStatus.BLOCKED, f"Waiting for {blocker.name}")
+                return
+            self._announced[robot.id] = seen
             robot.wait_events += 1
             twin.statistics["collisions_avoided"] += 1
-            robot.set_status(RobotStatus.WAITING)
             twin.events.emit(
                 EventType.COLLISION_AVOIDED,
                 f"Potential collision at ({robot.next_cell[0]},{robot.next_cell[1]}): "
@@ -515,26 +539,20 @@ class Simulator:
         if robot.wait_ticks >= CONFIG["DEADLOCK_WAIT_TICKS"]:
             self._break_deadlock(robot, task, blocker)
 
-    def _break_deadlock(self, robot: Any, task: Any, blocker: Any) -> None:
+    def _break_deadlock(self, robot: Any, task: Any, blocker: Any, avoid: Optional[Set[Cell]] = None) -> bool:
         """Step aside so the higher-priority robot can pass. A sidestep is a
         stop, so it never lands on the walkway (spec §5.2). It goes through
         step_to directly, so _crossing_wait and _aisle_wait would not get to
         hold it back: a forklift or hauler instead leaves out any cell that
         enters a zone with a person in it (it simply doesn't sidestep if that
-        is every cell), and announces the zone it does enter."""
+        is every cell), and announces the zone it does enter. `avoid` leaves
+        out more cells (the blocker's route, when making way for it). Returns
+        whether it stepped."""
         twin = self.twin
-        occupied = twin.other_robot_cells(robot.id)
-        keeps_out = robot.mobility is not None and robot.mobility.embodiment_class in AISLE_RULE_CLASSES
-        options = [
-            cell
-            for cell in twin.warehouse.neighbors(robot.position, robot.mobility, robot.layer)
-            if cell not in occupied and cell != blocker.position
-            and twin.warehouse.may_stop(cell, robot.mobility, robot.layer)
-            and not (keeps_out and self._person_in_entered_zone(robot.position, cell))
-        ]
+        options = self._sidestep_options(robot, blocker, avoid or set())
         if not options:
             robot.wait_ticks = 0
-            return
+            return False
         options.sort(key=lambda c: -abs(c[0] - blocker.position[0]) - abs(c[1] - blocker.position[1]))
         sidestep = options[0]
         previous = robot.position
@@ -552,6 +570,183 @@ class Simulator:
             task_id=task.id,
             position=cell_dict(sidestep),
         )
+        return True
+
+    def _sidestep_options(self, robot: Any, blocker: Any, avoid: Set[Cell]) -> List[Cell]:
+        """The free neighbouring cells `robot` may step aside to (see _break_deadlock)."""
+        twin = self.twin
+        occupied = twin.other_robot_cells(robot.id)
+        keeps_out = robot.mobility is not None and robot.mobility.embodiment_class in AISLE_RULE_CLASSES
+        return [
+            cell
+            for cell in twin.warehouse.neighbors(robot.position, robot.mobility, robot.layer)
+            if cell not in occupied and cell != blocker.position and cell not in avoid
+            and twin.warehouse.may_stop(cell, robot.mobility, robot.layer)
+            and not (keeps_out and self._person_in_entered_zone(robot.position, cell))
+        ]
+
+    # ---- traffic waits with no route (new floor) ----------------------- #
+    def _traffic_wait(self, robot: Any, task: Any, action: Any) -> None:
+        """A NAVIGATE with no route while the other robots stand where they do
+        (_plan_path has set it WAITING). It counts its ticks against the robot
+        holding the goal or cutting the route, as a blocked-by-robot wait
+        does, and every DEADLOCK_WAIT_TICKS it escalates: of two robots held
+        by traffic, the one of lower precedence makes way (a sidestep off the
+        other's route, else a retreat to the nearest cell clear of it); a box
+        dropped into a staging or dock zone, a charge at the station or a move
+        to a named zone takes another free cell of it. Otherwise it keeps
+        waiting and tries again next time: an idle robot in the way moves off
+        a cell jobs need by itself (_park_idle)."""
+        blocker = self._route_blocker(robot, action.target)
+        robot.wait_ticks += 1
+        robot.blocked_by = blocker.id if blocker is not None else None
+        if robot.wait_ticks < CONFIG["DEADLOCK_WAIT_TICKS"]:
+            return
+        robot.wait_ticks = 0
+        if action.params.get("make_way"):
+            self._advance(task)  # the way it was clearing for is gone: carry on with the job
+            robot.clear_path()
+            return
+        if blocker is not None and self._should_yield(robot, blocker) and self._make_way(robot, task, blocker):
+            return
+        self._retarget(robot, task, action)
+
+    def _route_blocker(self, robot: Any, target: Cell) -> Optional[Any]:
+        """The robot holding `target`, else the first one on the route there
+        with the other robots ignored (standing on it, else about to)."""
+        others = [other for other in self.twin.robots.values()
+                  if other.id != robot.id and other.layer == robot.layer]
+        standing = {other.position: other for other in others}
+        if target in standing:
+            return standing[target]
+        path = self.twin.navigation.find_path(robot.position, target, allow_goal_adjacent=False,
+                                              profile=robot.mobility, layer=robot.layer) or []
+        reserved = {other.next_cell: other for other in others if other.next_cell is not None}
+        return next((standing[cell] for cell in path if cell in standing), None) or \
+            next((reserved[cell] for cell in path if cell in reserved), None)
+
+    def _held_by_traffic(self, robot: Any) -> bool:
+        """Is `robot` driving a NAVIGATE that traffic holds up right now?"""
+        task = self.twin.tasks.get(robot.current_task) if robot.current_task else None
+        action = task.current_action if task is not None and not task.is_terminal else None
+        return (action is not None and action.type is ActionType.NAVIGATE and robot.blocked_by is not None
+                and robot.wait_reason is None)
+
+    def _should_yield(self, robot: Any, blocker: Any) -> bool:
+        """Of two robots held up by traffic, the one of lower precedence makes
+        way — unless it can't (no cell to go to), when the other does. A
+        blocker that isn't held up (working, or idle) moves on by itself."""
+        if not self._held_by_traffic(blocker):
+            return False
+        if self._precedence(robot) < self._precedence(blocker):
+            return True
+        route = self._route_of(robot)
+        return not self._sidestep_options(blocker, robot, route) and self._refuge(blocker, route) is None
+
+    def _route_of(self, robot: Any) -> Set[Cell]:
+        """The cells `robot` needs: where it stands and, while it drives a
+        NAVIGATE, its route to the target (with the other robots ignored)."""
+        cells = {robot.position}
+        task = self.twin.tasks.get(robot.current_task) if robot.current_task else None
+        action = task.current_action if task is not None and not task.is_terminal else None
+        if action is not None and action.type is ActionType.NAVIGATE and action.target is not None:
+            path = robot.current_path or self.twin.navigation.find_path(
+                robot.position, action.target, allow_goal_adjacent=False, profile=robot.mobility,
+                layer=robot.layer)
+            cells.update(path or ())
+            cells.add(action.target)
+        return cells
+
+    def _make_way(self, robot: Any, task: Any, blocker: Any) -> bool:
+        """Clear `blocker`'s way: a sidestep off its route if a neighbouring
+        cell is clear of it, else a retreat — a NAVIGATE put in before the
+        current one — to the nearest cell clear of it (out of a one-lane
+        aisle, say, across the walkway if need be)."""
+        route = self._route_of(blocker)
+        if self._break_deadlock(robot, task, blocker, avoid=route):
+            return True
+        refuge = self._refuge(robot, route)
+        if refuge is None:
+            return False
+        task.actions.insert(task.action_index, Action(
+            ActionType.NAVIGATE, f"Make way for {blocker.name}", refuge, "a clear cell",
+            params={"make_way": blocker.id}))
+        robot.clear_path()
+        self.twin.events.emit(
+            EventType.DEADLOCK_RESOLVED,
+            f"{robot.name} backs off to ({refuge[0]},{refuge[1]}) to let {blocker.name} pass",
+            category=LogCategory.COLLISION,
+            level=LogLevel.WARNING,
+            robot_id=robot.id,
+            task_id=task.id,
+            position=cell_dict(refuge),
+        )
+        return True
+
+    def _refuge(self, robot: Any, avoid: Set[Cell], limit: int = 40) -> Optional[Cell]:
+        """The nearest cell `robot` can drive to (the other robots in the way)
+        and stop on that isn't in `avoid`; a forklift or hauler doesn't count
+        a way into a zone with a person in it. None within `limit` cells."""
+        warehouse = self.twin.warehouse
+        occupied = self.twin.other_robot_cells(robot.id)
+        keeps_out = robot.mobility is not None and robot.mobility.embodiment_class in AISLE_RULE_CLASSES
+        seen = {robot.position}
+        frontier = deque([(robot.position, 0)])
+        while frontier:
+            cell, depth = frontier.popleft()
+            if depth >= limit:
+                continue
+            for nxt in warehouse.neighbors(cell, robot.mobility, robot.layer):
+                if nxt in seen or nxt in occupied or (keeps_out and self._person_in_entered_zone(cell, nxt)):
+                    continue
+                seen.add(nxt)
+                if nxt not in avoid and warehouse.may_stop(nxt, robot.mobility, robot.layer):
+                    return nxt
+                frontier.append((nxt, depth + 1))
+        return None
+
+    def _retarget(self, robot: Any, task: Any, action: Any) -> bool:
+        """Another free cell of the zone a NAVIGATE heads into, where the job
+        allows one: a box dropped into a staging or dock zone, a charge at the
+        charging station, or a MOVE_ROBOT to a named zone. Any other target is
+        one exact cell (a slot face, a tote drop, a box to pick up)."""
+        twin = self.twin
+        warehouse = twin.warehouse
+        index = task.action_index
+        after = task.actions[index + 1] if index + 1 < len(task.actions) else None
+        zone = None
+        drops = after is not None and after.type in (ActionType.DELIVER, ActionType.CHARGE)
+        if drops and after.target == action.target:
+            here = warehouse.zone_of_cell(action.target)
+            if here is not None and here.cell_type in (CellType.STAGING, CellType.DOCK, CellType.CHARGING):
+                zone = here
+        elif task.type is TaskType.MOVE_ROBOT and not action.params.get("make_way"):
+            named = warehouse.resolve_zone(task.destination)
+            if named is not None and action.target in named.cells:
+                zone = named
+        if zone is None:
+            return False
+        prefer = None
+        if after is not None and after.type is ActionType.DELIVER:  # a cell with no box on it, if there is one
+            taken = {box.position for box in twin.boxes.values() if box.status is not BoxStatus.SHIPPED}
+            prefer = {cell for cell in zone.cells if cell not in taken}
+        cell = twin.navigation.best_cell_in_zone(
+            [cell for cell in zone.cells if cell != action.target], robot.position,
+            blocked=twin.other_robot_cells(robot.id), prefer=prefer, profile=robot.mobility, layer=robot.layer)
+        if cell is None:
+            return False
+        previous = action.target
+        action.target = cell
+        if after is not None and after.target == previous:
+            after.target = cell
+        robot.clear_path()
+        twin.logger.info(
+            LogCategory.NAVIGATION,
+            f"{robot.name} takes ({cell[0]},{cell[1]}) in {zone.label} instead: "
+            f"({previous[0]},{previous[1]}) is held up",
+            robot_id=robot.id, task_id=task.id, position=cell_dict(cell),
+        )
+        return True
 
     def _detect_collisions(self) -> None:
         """A real, natural overlap — under normal operation this should
@@ -1664,6 +1859,68 @@ class Simulator:
                     LogCategory.BATTERY, f"Auto-charge for {robot.name} failed: {exc}",
                     robot_id=robot.id,
                 )
+
+    def _park_idle(self) -> None:
+        """An idle ground robot on the new floor — no task, not charging or on
+        a charger, not an arm or a drone — that has stood
+        SHIFT_CHECK_EVERY_TICKS on a cell jobs need, while other robots have
+        work, moves to parking_area (an internal MOVE_ROBOT). Those cells are
+        Warehouse.cells_jobs_need (slot faces, tote drops and work cells,
+        one-lane cells) and any cell another robot's NAVIGATE is heading for;
+        a picker on a station's work cell is where its own job wants it. With
+        no job on the floor nothing needs the cell, so the robot stays. With
+        parking full or out of reach (or the robot unable to go) it is asked
+        again only every SHIFT_CHECK_EVERY_TICKS, as _auto_charge does."""
+        twin = self.twin
+        if "parking_area" not in twin.warehouse.zones:
+            return
+        working = {robot.id for robot in twin.robots.values() if robot.current_task}
+        wanted: Optional[FrozenSet[Cell]] = None
+        for robot in list(twin.robots.values()):
+            profile = robot.mobility
+            if (profile is None or profile.is_fixed or profile.is_air or robot.layer != GROUND
+                    or robot.current_task or robot.carrying_box or robot.status != RobotStatus.IDLE
+                    or self._on_charger(robot)
+                    or (robot.allowed_task_types and "MOVE_ROBOT" not in robot.allowed_task_types)):
+                self._idle_since.pop(robot.id, None)  # not idle here, or never sent anywhere (a picker)
+                continue
+            cell, since = self._idle_since.get(robot.id, (None, twin.tick_count))
+            if cell != robot.position:
+                self._idle_since[robot.id] = (robot.position, twin.tick_count)
+                continue
+            if twin.tick_count - since < CONFIG["SHIFT_CHECK_EVERY_TICKS"]:
+                continue
+            if not working or self._park_retry.get(robot.id, 0) > twin.tick_count \
+                    or twin.tasks.queued_count_for_robot(robot.id):
+                continue
+            if wanted is None:
+                wanted = twin.warehouse.cells_jobs_need() | self._navigation_targets()
+            if robot.position not in wanted or (profile.embodiment_class == "PICKER"
+                                                and robot.position in self._work_cells()):
+                continue
+            self._park_retry[robot.id] = twin.tick_count + CONFIG["SHIFT_CHECK_EVERY_TICKS"]
+            twin.logger.info(
+                LogCategory.ROBOT,
+                f"{robot.name} is idle at ({robot.position[0]},{robot.position[1]}), a cell jobs need — "
+                f"moving to parking",
+                robot_id=robot.id, position=cell_dict(robot.position),
+            )
+            twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": robot.id, "destination": "parking_area"},
+                                   internal=True)
+
+    def _navigation_targets(self) -> Set[Cell]:
+        """The cells robots' current NAVIGATE steps are heading for."""
+        targets: Set[Cell] = set()
+        for robot in self.twin.robots.values():
+            task = self.twin.tasks.get(robot.current_task) if robot.current_task else None
+            action = task.current_action if task is not None and not task.is_terminal else None
+            if action is not None and action.type is ActionType.NAVIGATE and action.target is not None:
+                targets.add(tuple(action.target))
+        return targets
+
+    def _work_cells(self) -> Set[Cell]:
+        return {tuple(zone.attributes["work_cell"]) for zone in self.twin.warehouse.zones.values()
+                if "work_cell" in zone.attributes}
 
     # ---- governance / trust-layer checks ------------------------------ #
     def _check_maintenance(self) -> None:

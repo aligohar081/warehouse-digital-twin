@@ -240,6 +240,21 @@ def test_a_failed_order_queues_no_return_for_a_tote_at_home_or_on_its_way(popula
 # --------------------------------------------------------------------------- #
 # C2: plan-time targets ignore where other robots stand
 # --------------------------------------------------------------------------- #
+def test_robots_in_the_aisle_do_not_fail_a_tote_job_at_plan_time(twin, sim):
+    # TS-11-12-0's only face is (11,13) in the one-wide tote_aisle_1; robots at
+    # (8,13) and (14,13) cut every route to it while the job is planned.
+    amr = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=(19, 16))
+    twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(14, 13))
+    twin.add_robot(name="Aisle-West", model_code="AC-TR50", position=(8, 13))
+    tote = twin.add_box(name="TOTE-2", kind="TOTE", sku="SKU-2", quantity=20, weight=21.5, slot="TS-11-12-0")
+    job = twin.tasks.create_task({"type": "TOTE_TO_STATION", "box_id": tote.id, "robot_id": amr.id})
+    sim.tick()
+    assert job.status is not TaskStatus.FAILED, job.error
+    assert job.actions[0].target == (11, 13)
+    tick_until(sim, lambda: job.is_terminal)                     # it waits, then goes once the aisle clears
+    assert job.status is TaskStatus.COMPLETED, job.error
+
+
 def test_a_face_the_layout_cannot_reach_still_fails_with_its_reason(twin):
     forklift = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(7, 4))
     slot = twin.warehouse.slot("TS-11-12-0")                     # a narrow aisle a wide forklift can't use
@@ -256,6 +271,155 @@ def test_classic_planning_still_steers_a_drop_around_a_robot(tmp_path):
     classic.tasks.cancel_task(next(t.id for t in classic.tasks.tasks.values() if not t.is_terminal))
     steered = classic.planner.plan(classic.tasks.create_task(payload), robot)[2].target
     assert steered != free
+
+
+# --------------------------------------------------------------------------- #
+# C3 (a): a traffic wait with no route escalates
+# --------------------------------------------------------------------------- #
+def test_two_forklifts_swapping_cells_both_get_there(twin, sim):
+    a = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(8, 7))
+    b = twin.add_robot(name="PF1200-206", asset_id="AST-000206", position=(4, 7))
+    to_b = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": a.id, "destination": "4,7"})
+    to_a = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": b.id, "destination": "8,7"})
+    tick_until(sim, lambda: to_b.is_terminal and to_a.is_terminal, 1500)
+    assert (to_b.status, to_a.status) == (TaskStatus.COMPLETED, TaskStatus.COMPLETED), (to_b.error, to_a.error)
+
+
+def test_a_no_route_wait_counts_its_ticks_against_the_robot_in_the_way(twin, sim):
+    a = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(8, 7))
+    b = twin.add_robot(name="PF1200-206", asset_id="AST-000206", position=(4, 7))
+    twin.stop_robot(b.id)                                        # it stays on the goal cell
+    twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": a.id, "destination": "4,7"})
+    ticks(sim, 5)
+    assert a.status is RobotStatus.WAITING and a.blocked_by == b.id and a.wait_ticks >= 3
+
+
+#: Head-on swaps in the one-wide tote_aisle_1: each robot's goal is the cell
+#: the other stands on, so neither has a route while the other is there.
+HEAD_ON_SWAPS = [((10, 13), (11, 13)),              # side by side, mid-aisle
+                 ((9, 13), (14, 13)),               # across the aisle
+                 ((15, 13), (16, 13))]              # beside the walkway crossing at (17,13)
+
+
+@pytest.mark.parametrize("west_first", [True, False], ids=["west robot first", "east robot first"])
+@pytest.mark.parametrize("west_cell, east_cell", HEAD_ON_SWAPS)
+def test_a_head_on_swap_in_a_one_lane_aisle_resolves(twin, sim, west_first, west_cell, east_cell):
+    if west_first:                                               # the robot created first has the lower id
+        west = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=west_cell)
+        east = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=east_cell)
+    else:
+        east = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=east_cell)
+        west = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=west_cell)
+    going_east = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": west.id,
+                                         "destination": f"{east_cell[0]},{east_cell[1]}"})
+    going_west = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": east.id,
+                                         "destination": f"{west_cell[0]},{west_cell[1]}"})
+    tick_until(sim, lambda: going_east.is_terminal and going_west.is_terminal, 3000)
+    assert (going_east.status, going_west.status) == (TaskStatus.COMPLETED, TaskStatus.COMPLETED), \
+        (going_east.error, going_west.error)
+
+
+def test_when_the_robot_that_should_make_way_cannot_the_other_one_does(twin, sim):
+    # A swap at the dead end of pallet_aisle_1: the first robot (the lower id,
+    # so it would make way) is boxed into the corner, so the second one steps aside.
+    cornered = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(16, 3))
+    other = twin.add_robot(name="PF1200-206", asset_id="AST-000206", position=(15, 3))
+    wall = twin.add_robot(name="Corner", model_code="AC-TR50", position=(16, 4))
+    twin.stop_robot(wall.id)
+    out = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": cornered.id, "destination": "15,3"})
+    into = twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": other.id, "destination": "16,3"})
+    tick_until(sim, lambda: out.is_terminal and into.is_terminal, 3000)
+    assert (out.status, into.status) == (TaskStatus.COMPLETED, TaskStatus.COMPLETED), (out.error, into.error)
+    resolved = [e for e in twin.events.query(event_type="DEADLOCK_RESOLVED") if e["robot_id"] == other.id]
+    assert resolved, "the robot with room to move made way"
+
+
+def test_a_drop_cell_held_up_by_a_robot_is_swapped_for_another_free_cell_of_the_zone(twin, sim):
+    hauler = twin.add_robot(name="HH300-207", asset_id="AST-000207", position=(2, 8))
+    pallet = twin.add_box(name="PAL", kind="PALLET", sku="S", quantity=10, weight=200.0, position=(2, 9))
+    task = twin.tasks.create_task({"type": "UNLOAD_TRUCK", "box_id": pallet.id})
+    tick_until(sim, lambda: bool(task.actions))
+    planned = task.actions[2].target                              # the intake_staging cell it chose
+    squatter = twin.add_robot(name="Squatter", model_code="AC-TR50", position=planned)
+    twin.stop_robot(squatter.id)                                  # it never leaves
+    tick_until(sim, lambda: task.is_terminal, 3000)
+    assert task.status is TaskStatus.COMPLETED, task.error
+    assert pallet.position != planned and twin.warehouse.zone_of_cell(pallet.position).key == "intake_staging"
+
+
+def test_a_boxed_in_robot_announces_its_wait_once(twin, sim):
+    forklift = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(16, 3))   # a dead end
+    twin.tasks.create_task({"type": "MOVE_ROBOT", "robot_id": forklift.id, "destination": "9,3"})
+    sim.tick()                                                   # its route west is planned
+    for name, cell in (("Box-In-1", (15, 3)), ("Box-In-2", (16, 4))):
+        robot = twin.add_robot(name=name, model_code="AC-TR50", position=cell)
+        twin.stop_robot(robot.id)                                # they never move
+    ticks(sim, 10 * CONFIG["DEADLOCK_WAIT_TICKS"])
+    mine = lambda kind: [e for e in twin.events.query(event_type=kind, limit=10000) if e["robot_id"] == forklift.id]
+    assert forklift.position == (16, 3)
+    assert len(mine("COLLISION_AVOIDED")) == 1 and len(mine("ROBOT_WAITING")) == 1
+
+
+# --------------------------------------------------------------------------- #
+# C3 (b): an idle robot moves off a cell jobs need
+# --------------------------------------------------------------------------- #
+def busy_elsewhere(twin):
+    """Work on the floor: a forklift charging at the charging station (a long job)."""
+    fork = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(2, 13))
+    fork.battery = 10.0
+    return twin.request_charge(fork.id)
+
+
+@pytest.mark.parametrize("cell", [(19, 16), (12, 13), (10, 1), (10, 3)],
+                         ids=["tote drop", "tote aisle", "one-lane top aisle", "pallet face"])
+def test_an_idle_robot_on_a_cell_jobs_need_moves_to_parking(twin, sim, cell):
+    busy_elsewhere(twin)
+    amr = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=cell)
+    ticks(sim, CHECK + 2)
+    moves = tasks_of(twin, "MOVE_ROBOT", amr)
+    assert len(moves) == 1 and moves[0].internal and moves[0].destination == "parking_area"
+    tick_until(sim, lambda: moves[0].is_terminal)
+    assert moves[0].status is TaskStatus.COMPLETED, moves[0].error
+    assert twin.warehouse.zone_of_cell(amr.position).key == "parking_area"
+    ticks(sim, 3 * CHECK)
+    assert len(tasks_of(twin, "MOVE_ROBOT", amr)) == 1            # parked: it stays
+
+
+def test_with_no_job_on_the_floor_an_idle_robot_stays_where_it_is(twin, sim):
+    amr = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=(12, 13))
+    ticks(sim, 3 * CHECK)
+    assert not tasks_of(twin, "MOVE_ROBOT") and amr.position == (12, 13)
+
+
+def test_robots_off_the_cells_jobs_need_stay_put(twin, sim):
+    charge = busy_elsewhere(twin)
+    staged = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=(5, 5))       # intake staging
+    picker = twin.add_robot(name="PK30-203", asset_id="AST-000203", position=(20, 14))     # its own work cell
+    twin.add_robot(name="IX2-208", asset_id="AST-000208", position=(20, 2))                # a drone on its pad
+    twin.add_robot(name="CX10-210", asset_id="AST-000210")                                 # an arm
+    stopped = twin.add_robot(name="TR50-201", asset_id="AST-000201", position=(10, 13))
+    twin.stop_robot(stopped.id)                                  # halted in the aisle: not idle
+    ticks(sim, 3 * CHECK)
+    assert not charge.is_terminal and not tasks_of(twin, "MOVE_ROBOT")
+    assert staged.position == (5, 5) and picker.position == (20, 14) and stopped.position == (10, 13)
+
+
+def test_a_robot_that_cannot_park_asks_again_only_every_check(twin, sim):
+    busy_elsewhere(twin)
+    for number, cell in enumerate(twin.warehouse.zones["parking_area"].cells):
+        twin.add_robot(name=f"Parked-{number}", model_code="AC-TR50", position=cell)       # parking is full
+    amr = twin.add_robot(name="TR50-101", asset_id="AST-000101", position=(12, 13))
+    ticks(sim, 5 * CHECK)
+    moves = tasks_of(twin, "MOVE_ROBOT", amr)
+    assert 1 <= len(moves) <= 5 and all(task.status is TaskStatus.FAILED for task in moves)
+    assert amr.position == (12, 13)
+
+
+def test_classic_robots_never_go_parking(tmp_path):
+    classic = classic_floor(tmp_path)
+    simulator = running(classic)
+    ticks(simulator, 3 * CHECK)
+    assert not tasks_of(classic, "MOVE_ROBOT")
 
 
 # --------------------------------------------------------------------------- #

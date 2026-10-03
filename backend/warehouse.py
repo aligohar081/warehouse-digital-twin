@@ -7,7 +7,7 @@ this module reports, so changing a floor plan only means editing its layout.
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, FrozenSet, List, Optional, Set
 
 from .embodiment import AIR, GROUND, LAYERS, MobilityProfile
 from .layouts import build_layout
@@ -34,6 +34,7 @@ class Warehouse:
         self.slots: Dict[str, Slot] = plan.slots
         self.fixed_stations: Dict[Cell, str] = plan.fixed_stations
         self.required_zones = plan.required_zones
+        self._jobs_need: Optional[FrozenSet[Cell]] = None  # cells_jobs_need(), worked out on first use
         self._index()
 
     def _index(self) -> None:
@@ -185,6 +186,26 @@ class Warehouse:
 
     def slot_at(self, cell: Cell, level: int) -> Optional[Slot]:
         return next((slot for slot in self._slots_at.get(cell, ()) if slot.level == level), None)
+
+    def cells_jobs_need(self) -> FrozenSet[Cell]:
+        """The cells an idle robot shouldn't stand on, because jobs need them:
+        every slot's face cells, every station's tote drop and work cell, and
+        every one-lane cell — a drivable cell whose two neighbours along one
+        axis are both off-limits to ground robots, so a robot stopped there
+        blocks the lane (the tote aisles, the top aisle, the walkway
+        crossings). Worked out once, on first use."""
+        if self._jobs_need is None:
+            cells = {face for slot in self.slots.values() for face in slot.faces}
+            for zone in self.zones.values():
+                cells.update(tuple(zone.attributes[key]) for key in ("tote_drop", "work_cell")
+                             if key in zone.attributes)
+            walkable = self.is_walkable
+            for x, y in self.walkable_cells():
+                if (not walkable(x - 1, y) and not walkable(x + 1, y)) or \
+                        (not walkable(x, y - 1) and not walkable(x, y + 1)):
+                    cells.add((x, y))
+            self._jobs_need = frozenset(cells)
+        return self._jobs_need
 
     def label_for_cell(self, cell: Cell) -> str:
         zone = self.zone_of_cell(cell)
