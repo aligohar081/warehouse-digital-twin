@@ -451,6 +451,19 @@ def test_the_classic_estimate_is_unchanged(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# I2: a customer order holds a station only once its first tote can be had
+# --------------------------------------------------------------------------- #
+def test_an_order_whose_first_tote_is_busy_holds_no_station_or_cell(populated):
+    twin = populated
+    twin.tasks.create_task({"type": "TOTE_TO_STATION", "box_id": "TOTE-1"})     # another job holds SKU-002's tote
+    waiting = twin.shift.orders.customer([{"sku": "SKU-002", "units": 1}], "dock_4")
+    ready = twin.shift.orders.customer([{"sku": "SKU-003", "units": 1}], "dock_5")
+    twin.shift.orders.advance()
+    assert (waiting.status, waiting.pick_station, waiting.pack_cell) == ("OPEN", None, None)
+    assert (ready.status, ready.pick_station) == ("IN_PROGRESS", "pick_station_1")
+
+
+# --------------------------------------------------------------------------- #
 # Folded minors
 # --------------------------------------------------------------------------- #
 def test_an_order_engine_cancel_is_the_systems_and_a_user_cancel_stays_the_users(populated):

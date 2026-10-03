@@ -21,11 +21,11 @@ line, a PACK_ORDER for the items not yet in the carton (the same carton, in
 the same cell). A PACK_ORDER that can't be resumed that way fails the order.
 
 A customer order needs a pick station and a pack cell to itself: it waits,
-OPEN, until both are free, so items for one arm never queue behind another
-order's on the line. Its PACK_ORDER starts with it, so the arm is waiting
-when the first item arrives. Pick 2 is a person's station: an order goes
-there when someone who picks there is on the floor and Pick 1 is taken or
-has no picker robot.
+OPEN and holding neither, until both are free and its first line's tote can
+be had, so items for one arm never queue behind another order's on the line.
+Its PACK_ORDER starts with it, so the arm is waiting when the first item
+arrives. Pick 2 is a person's station: an order goes there when someone who
+picks there is on the floor and Pick 1 is taken or has no picker robot.
 
 A failed order cancels its live jobs — as the system, giving the reason —
 except a RETURN_TOTE already taking a tote home, and sends home every tote it
@@ -432,8 +432,9 @@ class OrderBook:
     # ---- a customer order's station and pack cell ------------------------ #
     def _busy(self, attribute: str) -> List[str]:
         """The pick stations (or pack cells) running orders still need: a
-        station until the order's last line is picked and its tote is on its
-        way home, a pack cell until its carton is on the line."""
+        station until every stage of every line is done — the last line
+        picked and its tote back in its slot (its RETURN_TOTE done) — and a
+        pack cell until its PACK_ORDER is done (the carton is on the line)."""
         busy = []
         for order in self.orders.values():
             if order.kind != "CUSTOMER" or order.status != IN_PROGRESS:
@@ -446,8 +447,20 @@ class OrderBook:
                 busy.append(getattr(order, attribute))
         return busy
 
+    def _first_tote_free(self, order: Order) -> bool:
+        """Can the order's first line have its tote now? While another line or
+        job holds every tote of that SKU the order waits, claiming nothing.
+        With no tote holding enough at all, the stage itself fails (retried
+        once, then the order fails with the reason)."""
+        line = order.lines[0]
+        try:
+            return self._choose_tote(line["sku"], int(line["units"])) is not None
+        except OrderError:
+            return True
+
     def _acquire(self, order: Order) -> bool:
-        """Claim a free pick station and pack cell for `order`, or wait."""
+        """Claim a free pick station and pack cell for `order` once its first
+        tote can be had, or wait holding neither."""
         twin = self.twin
         arms = {twin.warehouse.fixed_stations.get(robot.position) for robot in twin.robots.values()
                 if robot.mobility is not None and robot.mobility.is_fixed and not robot.is_halted}
@@ -458,7 +471,7 @@ class OrderBook:
         people_on = any(o.worker_id in PICK_STATION_PEOPLE and o.status != OperatorStatus.OFF_DUTY
                         and o.zone is not None for o in twin.operators.values())
         usable = [s for s in stations if (s == PICK_STATIONS[0] and picker) or (s == PICK_STATIONS[1] and people_on)]
-        if not packs or not usable:
+        if not packs or not usable or not self._first_tote_free(order):
             return False
         order.pick_station, order.pack_cell = usable[0], packs[0]
         self.twin.logger.info(LogCategory.OPERATIONS, f"{order.order_id} picks at {order.pick_station} and "
