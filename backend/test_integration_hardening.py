@@ -423,6 +423,34 @@ def test_classic_robots_never_go_parking(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# I1: the new-floor battery estimate
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("slot, weight", [("PR-08-02-0", 300.0), ("PR-08-02-4", 1100.0), ("PR-16-05-4", 1100.0)])
+def test_a_putaway_estimate_is_within_five_percent_of_its_real_drain(twin, sim, slot, weight):
+    fork = twin.add_robot(name="PF1200-205", asset_id="AST-000205", position=(7, 4))
+    pallet = twin.add_box(name="PAL", kind="PALLET", sku="S", quantity=10, weight=weight, position=(3, 4))
+    before = fork.battery
+    task = twin.tasks.create_task({"type": "PUTAWAY_PALLET", "box_id": pallet.id, "slot": slot})
+    tick_until(sim, lambda: task.is_terminal, 5000)
+    assert task.status is TaskStatus.COMPLETED, task.error
+    used = before - fork.battery
+    estimate = task.battery_estimate - CONFIG["BATTERY_RESERVE"]
+    assert estimate == pytest.approx(used, rel=0.05), (estimate, used)
+
+
+def test_the_classic_estimate_is_unchanged(tmp_path):
+    classic = classic_floor(tmp_path)
+    robot = classic.find_robot("Robo-01")
+    task = classic.tasks.create_task({"type": "PICK_AND_DELIVER", "robot_id": robot.id, "box_id": "Box-A",
+                                      "destination": "loading_zone"})
+    actions = classic.planner.plan(task, robot)
+    nav = classic.navigation
+    cells = nav.distance(robot.position, actions[0].target) + nav.distance(actions[0].target, actions[2].target)
+    assert task.battery_estimate == float(math.ceil(cells / CONFIG["BATTERY_DRAIN_MOVES"])
+                                          + 2 * CONFIG["BATTERY_PICK_COST"] + CONFIG["BATTERY_RESERVE"])
+
+
+# --------------------------------------------------------------------------- #
 # Folded minors
 # --------------------------------------------------------------------------- #
 def test_an_order_engine_cancel_is_the_systems_and_a_user_cancel_stays_the_users(populated):

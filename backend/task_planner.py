@@ -10,7 +10,7 @@ import math
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import energy
-from .embodiment import AIR, GROUND, MobilityProfile
+from .embodiment import AIR, GROUND, MobilityProfile, lift_ticks, step_ticks
 from .models import (
     CONFIG,
     Action,
@@ -20,6 +20,7 @@ from .models import (
     LogCategory,
     LogLevel,
     TaskType,
+    manhattan,
 )
 
 
@@ -118,10 +119,16 @@ class TaskPlanner:
     # ------------------------------------------------------------------ #
     # Battery estimation
     # ------------------------------------------------------------------ #
-    def estimate_battery(self, robot: Any, waypoints: List[Cell], handling_ops: int = 0) -> float:
+    def estimate_battery(self, robot: Any, waypoints: List[Cell], handling_ops: int = 0,
+                         actions: Optional[List[Action]] = None, task: Optional[Any] = None) -> float:
         """Estimate battery percentage required to drive a route and handle
-        boxes: 1% a cell plus a cost per box on classic; on the new floor, the
-        §5.5 energy of driving the route at the body's speed (backend/energy.py)."""
+        boxes: 1% a cell plus a cost per box on classic. On the new floor it is
+        the §5.5 energy (backend/energy.py) of the planned `actions` when given
+        (_steps_wh: loaded legs, lifts and handling time), else of driving the
+        route through `waypoints` at the body's speed."""
+        if energy.has_battery(robot.mobility) and actions is not None:
+            used = self._steps_wh(robot, actions, task)
+            return round(energy.wh_to_pct(robot.mobility, used), 2) + float(CONFIG["BATTERY_RESERVE"])
         nav = self.twin.navigation
         origin = robot.position
         total_cells = 0
@@ -137,6 +144,62 @@ class TaskPlanner:
         movement_cost = math.ceil(total_cells / CONFIG["BATTERY_DRAIN_MOVES"])
         handling_cost = handling_ops * CONFIG["BATTERY_PICK_COST"]
         return float(movement_cost + handling_cost + CONFIG["BATTERY_RESERVE"])
+
+    def _steps_wh(self, robot: Any, actions: List[Action], task: Optional[Any]) -> float:
+        """The Wh a ground robot's plan takes (spec §5.5), step by step as the
+        simulator bills it: each leg at the moving rate and the body's speed —
+        a loaded leg at the loaded rate and loaded speed —, each LIFT_TO's
+        m × g × Δh for the load (its declared weight, all the planner knows)
+        plus the carriage, and every handling step's time (its start tick
+        included) at the idle rate."""
+        # Deferred: the simulator's module imports reach back to this one.
+        from .simulator import DELIVER_TICKS, PICK_TICKS, TIMED_BY_TICKS
+
+        twin, profile = self.twin, robot.mobility
+        timed_by_ticks = task is not None and task.type in TIMED_BY_TICKS
+
+        def timed(step: str) -> int:
+            try:
+                return step_ticks(profile, step)
+            except ValueError:  # a body with no timing for it: the step itself will say so
+                return 0
+
+        def handling(step: str, classic_ticks: int) -> int:
+            seconds = profile.grasp_s if step == "GRASP" else profile.place_s
+            return classic_ticks if timed_by_ticks or seconds is None else timed(step)
+
+        here, height = robot.position, robot.lift_height_m
+        load = twin.find_box(robot.carrying_box) if robot.carrying_box else None
+        carrying = load is not None
+        wh, idle_ticks = 0.0, 0
+        for action in actions:
+            kind = action.type
+            if kind is ActionType.NAVIGATE and action.target is not None:
+                cells = twin.navigation.distance(here, action.target, allow_goal_adjacent=False,
+                                                 profile=profile, layer=robot.layer)
+                wh += energy.route_wh(profile, manhattan(here, action.target) if cells is None else cells,
+                                      loaded=carrying)
+                here = action.target
+            elif kind in (ActionType.PICK, ActionType.GRASP):
+                ticks = handling("GRASP", PICK_TICKS) if kind is ActionType.PICK else timed("GRASP")
+                idle_ticks += 1 + ticks
+                load, carrying = twin.find_box(action.box_id) if action.box_id else None, True
+            elif kind in (ActionType.DELIVER, ActionType.PLACE, ActionType.PLACE_ON_CONVEYOR):
+                ticks = handling("PLACE", DELIVER_TICKS) if kind is ActionType.DELIVER \
+                    else timed(kind.value if kind is ActionType.PLACE_ON_CONVEYOR else "PLACE")
+                idle_ticks += 1 + ticks
+                load, carrying = None, False
+            elif kind is ActionType.LIFT_TO:
+                slot = twin.warehouse.slot(action.slot_id) if action.slot_id else None
+                target = slot.height_m if slot is not None else float(action.params.get("height_m", 0.0))
+                idle_ticks += 1 + lift_ticks(profile, height, target)
+                wh += energy.lift_wh(profile, load.declared_weight_kg if load is not None else 0.0, target - height)
+                height = target
+            elif kind is ActionType.LOWER:
+                idle_ticks += 1 + lift_ticks(profile, height, 0.0)
+                height = 0.0
+        # Idle is × 0.3 of the moving rate whether or not the robot holds a load.
+        return wh + idle_ticks * energy.ground_wh_per_tick(profile, moving=False, loaded=False)
 
     # ------------------------------------------------------------------ #
     # Planning
@@ -288,7 +351,7 @@ class TaskPlanner:
         # hard energy gate instead of a detour (spec §5.5, §10.1).
         flies = robot.mobility is not None and robot.mobility.is_air
         if task.type != TaskType.CHARGE_ROBOT and waypoints and not robot.mains_powered and not flies:
-            required = self.estimate_battery(robot, waypoints, handling_ops)
+            required = self.estimate_battery(robot, waypoints, handling_ops, actions=actions, task=task)
             task.battery_estimate = required
             if robot.battery < required:
                 charge_cell, charge_label = self.resolve_target(
