@@ -19,9 +19,11 @@ from .digital_twin import DigitalTwin
 from .eval_engine import evaluate_events
 from .event_system import Broadcaster
 from .inventory_api import register_inventory_routes
+from .layouts import LAYOUTS
 from .maintenance import maintenance_reason
 from .models import CONFIG, LogCategory, Priority, SimulationStatus, now_iso
 from .policy import DEFAULT_POLICY_PATH, effective_policy, load_policies
+from .seeds import distribution_center
 from .simulator import Simulator
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,19 +75,42 @@ def _mission_report_rows(tasks_dir: str) -> list:
     return [flatten_record(r) for r in query_decisions(tasks_dir=tasks_dir)]
 
 
+def _seed_floor(twin: DigitalTwin) -> None:
+    """Classic seeds itself (load_demo). The new floor gets its stopgap seed and
+    a running shift, since the dashboard has no shift controls yet (plan 1c)."""
+    if twin.layout_name == "distribution_center":
+        distribution_center.seed(twin)
+        twin.shift.start()
+
+
+def build_twin(layout: str = "classic", base_dir: str = BASE_DIR) -> DigitalTwin:
+    """The app's own twin on the floor called `layout`. Classic keeps logs/ and
+    data/; any other floor gets logs/<layout>/ and data/<layout>/, so switching
+    floors never reseeds classic's inventory file."""
+    if layout not in LAYOUTS:
+        raise ValueError(f"WAREHOUSE_LAYOUT must be one of {sorted(LAYOUTS)}, not {layout!r}")
+    folder = () if layout == "classic" else (layout,)
+    data_dir = os.path.join(base_dir, "data", *folder)
+    twin = DigitalTwin(
+        log_dir=os.path.join(base_dir, "logs", *folder),
+        data_dir=data_dir,
+        inventory_path=os.path.join(data_dir, "inventory.sqlite3"),
+        layout=layout,
+    )
+    _seed_floor(twin)
+    return twin
+
+
 def create_app(
     twin: Optional[DigitalTwin] = None,
     autostart: bool = True,
     run_thread: bool = True,
+    layout: str = "classic",
 ) -> Tuple[Flask, DigitalTwin, Simulator, CIEngine]:
     app = Flask(__name__, static_folder=None)
     app.config["JSON_SORT_KEYS"] = False
 
-    twin = twin or DigitalTwin(
-        log_dir=os.path.join(BASE_DIR, "logs"),
-        data_dir=os.path.join(BASE_DIR, "data"),
-        inventory_path=os.path.join(BASE_DIR, "data", "inventory.sqlite3"),
-    )
+    twin = twin or build_twin(layout, BASE_DIR)
     broadcaster = Broadcaster()
     simulator = Simulator(twin, broadcaster=broadcaster)
     ci = CIEngine(twin)
@@ -729,7 +754,9 @@ tr.pass {{ background: #eefaf0; }}
     @guarded
     def sim_reset():
         data = _payload()
-        twin.reset(demo_tasks=bool(data.get("demo_tasks", True)))
+        with twin.lock:
+            twin.reset(demo_tasks=bool(data.get("demo_tasks", True)))
+            _seed_floor(twin)
         simulator.start()
         broadcaster.publish("state", twin.snapshot(include_layout=True))
         return jsonify({"ok": True, "state": twin.snapshot(include_layout=True)})
@@ -837,7 +864,9 @@ tr.pass {{ background: #eefaf0; }}
     @app.post("/api/state/reset")
     @guarded
     def reset_state():
-        twin.reset(demo_tasks=True)
+        with twin.lock:
+            twin.reset(demo_tasks=True)
+            _seed_floor(twin)
         broadcaster.publish("state", twin.snapshot(include_layout=True))
         return jsonify({"ok": True, "state": twin.snapshot(include_layout=True)})
 
@@ -894,10 +923,10 @@ tr.pass {{ background: #eefaf0; }}
 def main() -> None:
     host = os.environ.get("WAREHOUSE_HOST", "127.0.0.1")
     port = int(os.environ.get("WAREHOUSE_PORT", "5000"))
-    app, twin, simulator, _ci = create_app()
+    app, twin, simulator, _ci = create_app(layout=os.environ.get("WAREHOUSE_LAYOUT", "classic"))
     twin.logger.info(
         LogCategory.SYSTEM,
-        f"Warehouse control centre listening on http://{host}:{port}",
+        f"Warehouse control centre ({twin.layout_name} floor) listening on http://{host}:{port}",
     )
     try:
         app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)

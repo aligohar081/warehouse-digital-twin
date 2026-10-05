@@ -54,7 +54,21 @@ python -m backend.app
 ```
 
 Dashboard: `http://127.0.0.1:5000` (override with `WAREHOUSE_HOST` /
-`WAREHOUSE_PORT` env vars). Stop with Ctrl+C.
+`WAREHOUSE_PORT` env vars). Stop with Ctrl+C. On macOS the AirPlay
+Receiver holds port 5000, so pick another port (`WAREHOUSE_PORT=5050`).
+
+`WAREHOUSE_LAYOUT` picks the floor: `classic` (the default, 20x15) or
+`distribution_center` (the 32x20 multi-embodiment floor). The new floor
+boots with the shift soak's fleet, goods and crew, its shift already
+running, and keeps its own `logs/distribution_center/` and
+`data/distribution_center/` (its own inventory file), so switching floors
+never reseeds classic's `data/inventory.sqlite3`. The dashboard doesn't
+draw the new floor's cell types, people, conveyor or shift panel yet
+(multi-embodiment spec §12, plan 1c).
+
+```bash
+WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5050 python -m backend.app
+```
 
 ## 4. Run the test suite (pytest)
 
