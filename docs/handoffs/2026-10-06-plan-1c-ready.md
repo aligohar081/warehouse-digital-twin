@@ -9,7 +9,7 @@
 - `bb1fb42` — the new floor boots with its shift paused (and a reset pauses it), so it runs only the tasks the user assigns, as classic does; the user asked for this ahead of plan 1c. Until Tasks 5 and 10 land, nothing can start the shift. `test_app_layout.py`'s two running-shift assertions were flipped with the user's OK; new tests in `backend/test_app_shift_paused.py`.
 - `bf86fe2` — `CLAUDE.md`, `ARCHITECTURE.md`, `.claude/settings.json` (`autoCompactWindow: 200000`).
 - `3466cac` — removed the superseded handoffs, plan 1b's probe scripts and tracked `.DS_Store` files.
-- `docs/handoffs/2026-10-04-plan-1c-inputs/` stays until plan 1c lands: the plan cites its README for plan 1b's deferred minors.
+- `docs/handoffs/2026-10-04-plan-1c-inputs/` (removed once plan 1c landed; see git history): the plan cites its README for plan 1b's deferred minors.
 
 ## Next
 

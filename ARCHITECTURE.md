@@ -1,19 +1,19 @@
 # Architecture
 
-Last verified against commit 67af707 (the code is unchanged through 3e99df8, which only adds plan 1c). Where code and docs disagree, the code wins. Keep this file true: a change that adds, moves or removes a unit, a route or a step of the tick updates it in the same commit.
+Last verified against commit 212dbf3 (the end of plan 1c's code). Where code and docs disagree, the code wins. Keep this file true: a change that adds, moves or removes a unit, a route or a step of the tick updates it in the same commit.
 
 ## 1. What this is
 
-A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboard. One `DigitalTwin` object holds all state; a `Simulator` advances it in fixed ticks (0.15 simulated seconds each). There are two floors, picked by a layout name: `classic` (20x15, two AMR-style robots, five boxes, the default everywhere) and `distribution_center` (32x20: docks, pallet racks, tote shelves, a pedestrian walkway, pick and pack stations, a conveyor and sorter). Robots come in eight embodiments (AMR, FORKLIFT, SCOUT, HEAVY_HAULER, DRONE, PICKER, ARM, HUMANOID) whose bodies come from an SQLite fleet catalog. People (operators) exist as zone presence, not grid entities. Goods are pallets, totes, items and cartons tracked by a stock ledger. Every task goes through a pre-execution gate (eligibility of robot, AI agent and human operator) and is graded after the fact by an eval engine; injected faults and a 12-check "mock CI" test the trust layer. A separate inventory package plays the fleet-manager and workforce source systems, bound to live robots and operators by `FleetBridge`.
+A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboard. One `DigitalTwin` object holds all state; a `Simulator` advances it in fixed ticks (0.15 simulated seconds each). There are two floors, picked by a layout name: `classic` (20x15, two AMR-style robots, five boxes; the default of `DigitalTwin()`, `Warehouse()` and every existing test) and `distribution_center` (32x20, the app's default: docks, pallet racks, tote shelves, a pedestrian walkway, pick and pack stations, a conveyor and sorter). Robots come in eight embodiments (AMR, FORKLIFT, SCOUT, HEAVY_HAULER, DRONE, PICKER, ARM, HUMANOID) whose bodies come from an SQLite fleet catalog. People (operators) exist as zone presence, not grid entities. Goods are pallets, totes, items and cartons tracked by a stock ledger. Every task goes through a pre-execution gate (eligibility of robot, AI agent and human operator) and is graded after the fact by an eval engine; injected faults and a 12-check "mock CI" test the trust layer. A separate inventory package plays the fleet-manager and workforce source systems, bound to live robots and operators by `FleetBridge`.
 
 ## 2. Repo map
 
 | Path | Responsibility |
 |---|---|
 | `backend/` | The whole Python package. Run as `python -m backend.app`. |
-| `frontend/` | Static dashboard served by Flask: `index.html` + `app.js` + `style.css`; `fleet.html` + `fleet.js` + `fleet.css`. |
+| `frontend/` | Static dashboard served by Flask: `index.html` + `app.js` + `style.css`; `fleet.html` + `fleet.js` + `fleet.css`; `floor_model.js` (DOM-free drawing helpers, read as `window.FloorModel`); `tests/floor_model_test.js` and `tests/panels_test.js` (run under JavaScriptCore by pytest). |
 | `evals/` | promptfoo suites, test generators, `shared/providers` and `shared/asserts`. See `evals/README.md`. |
-| `docs/superpowers/specs/`, `docs/superpowers/plans/` | Design specs and implementation plans (history; see section 10). |
+| `docs/superpowers/specs/`, `docs/superpowers/plans/` | Design specs and implementation plans (history; see Design history below the module tables). |
 | `docs/handoffs/` | Session hand-off notes for the multi-embodiment work. |
 | `logs/`, `data/` | Runtime output (section 6). `logs/eval_examples/` holds tracked eval fixtures; `logs/tasks/` holds six tracked sample task logs. |
 | `policies.example.yaml` | Copy to `policies.yaml` to override `CONFIG` and the approved baselines (`policies.yaml` itself is absent at HEAD). |
@@ -26,7 +26,9 @@ A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboar
 |---|---|---|
 | Root | `digital_twin.py` | `DigitalTwin`: owns everything below; add/find/reset/snapshot/save/load; `lock`. |
 | | `simulator.py` | `Simulator`: the tick, per-robot controller, traffic, job steps, energy, charging, parking, SSE publish. |
-| | `app.py` | Flask app factory `create_app`, `build_twin`, all routes except inventory. |
+| | `app.py` | Flask app factory `create_app`, `build_twin`, `_job_request`; all routes except inventory and operations. |
+| | `operations_api.py` | `register_operations_routes`: `/api/shift*`, `/api/orders*`, `/api/stock`, `/api/people`, `/api/equipment`, `POST /api/faults/<kind>`. |
+| | `soak.py` | `run_soak()` and `python -m backend.soak`: a fixed-seed shift on the seeded new floor, counting collisions, grades, orders, escalations, tick time. |
 | Floor | `layouts/` | `LAYOUTS` registry, `build_layout`; `base.py` (`Layout`, `Zone`, `Slot`, `rect`, WIDE/NARROW), `classic.py`, `distribution_center.py`. |
 | | `warehouse.py` | `Warehouse(layout=name)`: grid, zones and aliases, slots, `passable(cell, profile, layer)`, clearance, no-fly, `to_dict`. |
 | | `navigation.py` | A* over the grid; profile- and layer-aware. |
@@ -52,7 +54,9 @@ A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboar
 | | `fleet_bridge.py`, `inventory_api.py` | Binds robots and operators to records and applies OTA/lifecycle effects; `/api/fleet/*` and `/api/workforce/*` routes. |
 | AI chat | `agent_chat.py`, `agent_tools.py`, `llm.py` | Groq tool-use chat agent (7 tools, always needs a Groq key) and optional one-shot narration (`AGENT_LLM_ENABLED`, off by default). |
 | Misc | `models.py` | Enums (`TaskType` has 29 values), `CONFIG`, class and role presets, approved baselines, `Action`, `IdFactory`. Calls `policy.load_policies()` at import. |
-| | `seeds/distribution_center.py` | Stopgap seed for the new floor (12 robots, 6 totes, 3 pallets, 10 operators). |
+| | `seeds/` | `SEEDS` (layout name to seed; `DigitalTwin.seed_floor` runs it). `classic.py`: the demo agents, operators, robots, boxes, tasks. `distribution_center.py`: 15 non-decommissioned robots from the inventory, 10 workers, 60 pallets, 80 totes, the agent Ada, no demo tasks. |
+
+Design history: `docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md` (binding spec for the multi-embodiment work), `docs/superpowers/specs/2026-09-30-fleet-workforce-inventory-design.md`, and `docs/superpowers/plans/` (`2026-09-30-fleet-workforce-inventory.md`, `2026-09-30-multi-embodiment-1a-floor-and-motion.md`, `2026-10-01-multi-embodiment-1b-jobs-rules-shift.md`, `2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md`).
 
 ### Module dependencies (arrows are imports; some are deferred to break cycles)
 
@@ -69,12 +73,13 @@ A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboar
          │        └─► fleet_bridge ─► inventory/   (inventory imports nothing else from backend)
          ├─► ci_engine ─► embodiment, human_jobs   (reads the twin it is handed)
          ├─► eval_engine ─► eligibility            (reads log files, not the twin)
+         ├─► operations_api ─► faults, operations.orders
          ├─► inventory_api ─► inventory
          └─► agent_chat ─► agent_tools ─► eval_engine, decision_graph, jobs
  models.py ◄─► policy.py;  almost every module imports models.py
 ```
 
-`app.py` builds the `Simulator` and hands it the twin. Deferred (in-function) imports break cycles: `task_planner` imports `jobs` and `simulator`; `digital_twin` imports `scheduler` inside `__init__`; `operations/shift.py` imports `activities` inside `tick`; `policy.py` imports `models` inside `apply_policy`.
+`app.py` builds the `Simulator` and hands it the twin, and `register_operations_routes` (in `operations_api.py`) the twin and broadcaster. Deferred (in-function) imports break cycles: `task_planner` imports `jobs` and `simulator`; `digital_twin` imports `scheduler` inside `__init__`; `operations/shift.py` imports `activities` inside `tick`; `policy.py` imports `models` inside `apply_policy`.
 
 ## 3. The tick
 
@@ -82,15 +87,15 @@ A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboar
 
 1. `tick_count += 1`; `simulation_time += TICK_DT`.
 2. `twin.scheduler.tick()`: recurring tasks come due.
-3. `twin.shift.tick()` (in try/except; an error is logged and skipped): when the shift is RUNNING, generate due work (trucks, customer orders, ...); every `SHIFT_CHECK_EVERY_TICKS` (20) move people; always `orders.advance()`. A shift is PAUSED until `start()`; the app seeds the new floor and leaves it paused (and a reset pauses it), so the floor runs only assigned tasks; `start()` raises on classic.
+3. `twin.shift.tick()` (in try/except; an error is logged and skipped): when the shift is RUNNING, generate due work (trucks, customer orders, ...); every `SHIFT_CHECK_EVERY_TICKS` (20) move people; always `orders.advance()`. A shift is PAUSED until `start()` (the dashboard's Start button or `POST /api/shift/start`); the app seeds the new floor and leaves it paused (and a reset pauses it), so the floor runs only assigned tasks; `start()` raises on classic.
 4. `people.update_transits(twin)`: finished walks land before robots decide.
 5. `twin.tasks.dispatch()`: queued (`PLANNING`) tasks get a robot and a plan.
 6. For each robot in `_execution_order()` (higher task priority first, then id): `_tick_robot(robot)`. An exception marks the robot ERROR and fails its task.
 7. `human_jobs.tick(twin)`: people's jobs advance (walk, work, return).
-8. If the floor has equipment: `equipment.tick()` (conveyor, sorter); every 20 ticks `human_jobs.ensure_jam_jobs`.
+8. If the floor has equipment: `equipment.tick()` (conveyor, sorter; in try/except, an error is logged and skipped); every 20 ticks `human_jobs.ensure_jam_jobs` (it is passed `_jam_asks`, the count of gate rejections per jam).
 9. `_detect_collisions()`.
 10. `_apply_energy()`: per-tick watt-hour drain for bodies with a battery profile.
-11. `_auto_charge()`: idle low-battery robots go to a charger (a drone idle in the air flies home).
+11. `_auto_charge()`: idle low-battery robots go to a charger (a drone idle in the air flies home; a drone idle on its pad keeps charging there until full).
 12. `_park_idle()`: a new-floor ground robot idle on a cell jobs need is sent to `parking_area`, but only while other robots have work.
 13. `_check_maintenance()`: one-time wear alert per robot.
 14. `_tick_fleet()`: OTA progress, heartbeats, operator sync (errors are logged, never raised).
@@ -129,7 +134,7 @@ Statuses (`models.TaskStatus`): CREATED, VALIDATING, PLANNING (queued), ASSIGNED
 
 The sixteen older types (`PICK_AND_DELIVER` ... `BATCH_DELIVER` and the actor-class tasks) keep their own code paths on both floors. Steps with a physical duration (`LIFT_TO`, `LOWER`, `TAKEOFF`, `LAND`, `SCAN`, `GRASP`, `PLACE`, `PLACE_ON_CONVEYOR`, `WAIT_CLEAR`) run through `Simulator._act_step`: `_begin_<step>` checks the precondition and returns a tick count (or `None` to keep waiting; `ValueError` fails the task), the simulator counts the ticks, then `_finish_<step>` makes it so (True advances). Durations come from the catalog via `embodiment.step_ticks`. The five oldest box jobs keep `PICK_TICKS`/`DELIVER_TICKS` (`TIMED_BY_TICKS`).
 
-To add a job type: add the `TaskType` (`models.py`); register a `JobSpec` in `jobs.py`; add a `CERTIFICATION_REQUIREMENTS` entry if a person needs a credential; add a new `ActionType` step only if needed (then also `STEP_ACTIONS` and `_begin_`/`_finish_` in `simulator.py`). `DigitalTwin.options()` and the chat agent's guide read `JOB_SPECS` automatically; the dashboard's `TASK_FIELDS` in `frontend/app.js` does not (it has no entry for any of the 13).
+To add a job type: add the `TaskType` (`models.py`); register a `JobSpec` in `jobs.py`; add a `CERTIFICATION_REQUIREMENTS` entry if a person needs a credential; add a new `ActionType` step only if needed (then also `STEP_ACTIONS` and `_begin_`/`_finish_` in `simulator.py`). `DigitalTwin.options()` and the chat agent's guide read `JOB_SPECS` automatically; the dashboard's job form does too: `DigitalTwin.options()` adds each type's `fields` and `guide` (`task_form`, from `TASK_FIELDS` in `digital_twin.py`), and `app.js` shows the matching inputs. `app._job_request` checks a job type's own fields before `create_task`: blank ones are dropped, `quantity` must be a whole number of at least 1, and a field the type doesn't take is a 400.
 
 ## 5. The trust layer
 
@@ -143,23 +148,23 @@ Full concept mapping: `TRUST_LAYER.md`. Code map:
 | Mid-task re-check | `_check_authorization_changes` | `robot_eligibility` plus `physical_recheck`; emits `TASK_AUTHORIZATION_CHANGED` once per task. Flags only. |
 | Evaluation (after the fact) | `eval_engine.evaluate_events` | Reads `logs/tasks/<id>.json`. `DEFAULT_CHECKS` = 10 base checks (sequence, terminal state, path, battery, collision, stuck, controller errors, interruption, `entities_valid`, `state_transition`) + 10 `EMBODIMENT_CHECKS` (payload, reach, clearance, no-fly, human zone clear, supervision, count, hand-off, sort, placement level). A check with no matching events is a not-applicable PASS. Calls `GET /api/tasks/<id>/eval`, `POST /api/evals/run`, `python -m backend.run_evals`. |
 | System checks | `CIEngine` (`ci_engine.py`) | 12 checks on the live twin, on demand (`POST /api/ci/run`), not per tick. The environment check uses the layout's `required_zones` and per-body connectivity on layered floors. |
-| Injected faults | `FaultInjector` (`twin.faults`) | `roll(kind)` is called where a fault can happen: `scan_miscount`, `grasp_fail`, `wrong_level` (simulator); `conveyor_jam`, `handoff_loss`, `mis_sort` (equipment); `misdeclared_weight` (shift engine, inbound pallets). Each has a `CONFIG` risk (default 0.0); `arm(kind)` queues a one-shot. No HTTP route arms a fault yet. |
+| Injected faults | `FaultInjector` (`twin.faults`) | `roll(kind)` is called where a fault can happen: `scan_miscount`, `grasp_fail`, `wrong_level` (simulator); `conveyor_jam`, `handoff_loss`, `mis_sort` (equipment); `misdeclared_weight` (shift engine, inbound pallets). Each has a `CONFIG` risk (default 0.0); `arm(kind)` queues a one-shot, which `POST /api/faults/<kind>` (and the dashboard's Inject button) does. |
 
 The gate and the grade share `eligibility.py` on purpose: change a rule there and both change. The physical rules at the bottom of that file return `(ok, reason)`; `eval_engine.py` imports the same ones (with fallbacks). `Operator.certifications` is kept in sync from the workforce record by `FleetBridge`.
 
 ## 6. State and persistence
 
-**`DigitalTwin` is the root object** (`digital_twin.py`). It owns `lock`, `logger`, `events`, `ids`, `warehouse`, `navigation`, `planner`, `tasks`, `robots`, `boxes`, `agents`, `operators`, `stock`, `equipment`, `faults`, `scheduler`, `shift`, `statistics`, `history`, `inventory`, `fleet`. The frontend renders only its snapshots. Constructor: `DigitalTwin(log_dir="logs", data_dir="data", persist_logs=True, demo=True, demo_tasks=True, inventory_path=":memory:", layout="classic")`. Only classic loads a twin demo (`load_demo`); a non-classic twin boots empty and the app seeds it (`app._seed_floor`).
+**`DigitalTwin` is the root object** (`digital_twin.py`). It owns `lock`, `logger`, `events`, `ids`, `warehouse`, `navigation`, `planner`, `tasks`, `robots`, `boxes`, `agents`, `operators`, `stock`, `equipment`, `faults`, `scheduler`, `shift`, `statistics`, `history`, `inventory`, `fleet`. The frontend renders only its snapshots. Constructor: `DigitalTwin(log_dir="logs", data_dir="data", persist_logs=True, demo=True, demo_tasks=True, inventory_path=":memory:", layout="classic")`. Only classic loads a twin demo (`load_demo`); a non-classic twin boots empty and is seeded by `seed_floor()` (`backend/seeds`; `floor_seeded` remembers it, and `reset()` reruns it). `build_twin` calls it unless the twin is already seeded.
 
 **Locks.** `twin.lock` is an `RLock`. The only allowed order is `twin.lock` then the inventory store lock (`InventoryStore.lock`). `FleetBridge.mutate()` takes `twin.lock` and runs an inventory action; the inventory service notifies listeners (`FleetBridge._on_change`) only after the outermost transaction commits, outside the store lock. Other locks (`TaskManager._lock`, `EventSystem._lock`, `WarehouseLogger._lock`, `Broadcaster._lock`) are held briefly and not while calling other components (subscribers and sinks run outside them). `StockLedger`, `Equipment`, `people` and `ShiftEngine` take no lock; the caller must hold `twin.lock`. At HEAD these entry points do not take `twin.lock` themselves: `TaskManager.create_task`/`cancel_task`/`pause_task`/`resume_task`, `stop_robot`, `resume_robot`, `reset_robot`, `request_charge`, `emergency_stop`.
 
 **Events and broadcast.** `twin.events.emit(EventType, message, category, ...)` appends to a ring buffer (`MAX_EVENTS_IN_MEMORY`), writes through the logger, then calls subscribers synchronously: the app's SSE publisher and the `ShiftEngine` (which feeds `OrderBook.on_event`). The logger also has sinks (the app publishes every record as SSE `log`). `Broadcaster` gives each browser a bounded queue and drops frames for slow clients.
 
-**Save and load.** `POST /api/state/save|load` use `serialize()` / `load_state()` (version 1 JSON at `<data_dir>/warehouse_state.json`). They cover robots, boxes, agents, operators, tasks, schedules, statistics, simulation clock and id counters, then `fleet.rebind_all()`. They do not write the stock ledger, equipment, shift engine and orders, armed faults or the layout name, so a floor with stock, a running conveyor or a running shift does not round-trip; plan 1c (Tasks 3 and 4) adds a version 2 format. `GET /api/export/state` returns the same JSON.
+**Save and load.** `POST /api/state/save|load` use `serialize()` / `load_state()` (JSON at `<data_dir>/warehouse_state.json`; `STATE_VERSION = 2`). A version 2 save adds the layout name, the stock ledger, equipment, the shift engine and its orders, and `floor_seeded`; `load_state` reads versions 1 and 2, refuses any other version, and checks that stock and the conveyor hold only boxes the save lists. A version 1 save (and any classic save) stays loadable and says nothing about the new floor's parts. Both versions cover robots, boxes, agents, operators, tasks, schedules, statistics, simulation clock and id counters, then `fleet.rebind_all()`. Armed faults are not saved. `GET /api/export/state` returns the same JSON.
 
 **Inventory store.** `inventory/` is a SQLite database (schema version 3; WAL mode for file databases, in-memory by default). `InventoryService` is mixins (`catalog`, `fleet`, `servicing`, `ota`, `workforce`) over `ServiceCore` and `InventoryStore`. `bootstrap.open_inventory(path, demo, profile=layout_name)` seeds from a process-wide in-memory template; a file seeded under another schema, seed or profile is re-seeded and the old one kept as `.bak`. Seed profiles: `classic`, `distribution_center`. Changes append to `change_log`; feeds are `/api/fleet/changes` and `/api/workforce/changes`.
 
-**Folders and `WAREHOUSE_LAYOUT`.** `python -m backend.app` reads `WAREHOUSE_LAYOUT` (default `classic`), plus `WAREHOUSE_HOST` (127.0.0.1) and `WAREHOUSE_PORT` (5000). `build_twin(layout)` refuses an unknown layout before writing anything.
+**Folders and `WAREHOUSE_LAYOUT`.** `python -m backend.app` reads `WAREHOUSE_LAYOUT` (default `distribution_center`, `app.DEFAULT_LAYOUT`; `classic` is still the default of `DigitalTwin()`), plus `WAREHOUSE_HOST` (127.0.0.1) and `WAREHOUSE_PORT` (5000). `build_twin(layout)` refuses an unknown layout before writing anything.
 
 | Floor | Logs | Data |
 |---|---|---|
@@ -170,7 +175,7 @@ Both `*/distribution_center/` folders are git-ignored, as are `logs/*.log`, `log
 
 ## 7. HTTP API and frontend
 
-`backend/app.py` has every route except inventory; `backend/inventory_api.py` adds `/api/fleet/*` and `/api/workforce/*` (`NotFound` 404, `Conflict` 409, `ValueError` 400). Errors are `{"ok": false, "error": ..., "field": ...}`; `guarded` maps `KeyError` to 404 and `ValueError` to 400.
+`backend/app.py` has every route except those below; `backend/operations_api.py` adds the operations routes (unknown id or fault kind 404, classic has no shift or conveyor so 409, bad input 400; every handler holds `twin.lock`; a shift change publishes state at once); `backend/inventory_api.py` adds `/api/fleet/*` and `/api/workforce/*` (`NotFound` 404, `Conflict` 409, `ValueError` 400). Errors are `{"ok": false, "error": ..., "field": ...}`; `guarded` maps `KeyError` to 404 and `ValueError` to 400.
 
 | Group | Routes |
 |---|---|
@@ -181,28 +186,30 @@ Both `*/distribution_center/` folders are git-ignored, as are `logs/*.log`, `log
 | Trust and policy | `GET /api/tasks/<id>/eval`, `POST /api/evals/run`, `GET /api/decisions`, `/api/policies` (+ `reload`, `llm-narration`, `collision-risk`, `false-success-risk`), `/api/reports/missions.{csv,html}`, `POST /api/ci/run`, `GET /api/ci/status` |
 | Schedules and chat | `/api/schedules` (GET, POST, toggle, DELETE), `POST /api/agent/chat` |
 | Persistence | `/api/state/{save,load,reset}`, `/api/export/{state,tasks}`, `/api/logs/{clear,export}`, `/api/tasks/<id>/logs/export` |
+| Operations (`operations_api.py`) | `GET /api/shift`, `POST /api/shift/{start,pause,config}` (config takes `pace`, `seed`, `rates`), `GET /api/orders` (filters `status`, `kind`, `limit`) and `/api/orders/<id>`, `GET /api/stock`, `/api/people`, `/api/equipment`, `POST /api/faults/<kind>` |
 | Stream | `GET /api/stream` (SSE) |
 
-Not present at HEAD: any route for shift, orders, stock, equipment or faults. `POST /api/simulation/reset` and `/api/state/reset` reset the twin under `twin.lock`, then re-run `_seed_floor`.
+`POST /api/simulation/reset` and `/api/state/reset` reset the twin under `twin.lock`, then rerun the floor's seed (`twin.reset` does it).
 
-**Getting state.** `GET /api/state` returns `twin.snapshot(include_layout=True)` (adds `warehouse` and `config`). The stream sends `state` first with the layout, then every 2 ticks a snapshot without it, plus `log`, `event`, `ci` and `agent-chat` frames. A snapshot has `layout_name`, `environment`, `robots`, `boxes`, `agents`, `operators`, `tasks` (latest 60), `statistics`, `robot_statistics`, `ci`, `options`; it carries no stock, conveyor, orders or shift data.
+**Getting state.** `GET /api/state` returns `twin.snapshot(include_layout=True)` (adds `warehouse`, `cell_types`, `no_fly_cells` and `config`). The stream sends `state` first with the layout, then every 2 ticks a snapshot without it, plus `log`, `event`, `ci` and `agent-chat` frames. A snapshot has `layout_name`, `environment`, `robots`, `boxes`, `agents`, `operators`, `tasks` (latest 60), `statistics`, `robot_statistics`, `ci`, `options`, `equipment` (the conveyor and sorter view) and `shift` (the shift panel); the last two are null on classic. It carries no stock or order list (use the operations routes).
 
-**Pages.** `index.html` + `app.js` (one IIFE, `var`/`function`, no build step, no libraries): loads `/api/state` and `/api/logs`, then opens `EventSource("/api/stream")` for `state`, `log`, `ci`, `agent-chat` (it does not listen for `event`); also polls schedules, fleet load and trends every 5 s. It draws a canvas floor from `snapshot.warehouse`; `cellFill` only knows classic cell types, so new-floor types draw as plain floor, and there are no people, conveyor, air-layer or shift views. `fleet.html` + `fleet.js`: the fleet and workforce source systems; polls every 3 s (`POLL_MS`), no SSE.
+**Pages.** `index.html` + `app.js` (one IIFE, `var`/`function`, no build step, no libraries): loads `/api/state` and `/api/logs`, then opens `EventSource("/api/stream")` for `state`, `log`, `ci`, `agent-chat` (it does not listen for `event`); also polls schedules, fleet load and trends every 5 s. It draws the floor on a canvas from the snapshot's `cell_types` table through `floor_model.js` (`FloorModel`): cell fills and legend per layout, robot letters and glyphs, an air layer (checkbox shown when the floor has no-fly cells or a drone), arms, people, and the conveyor with its items. The legend and fills are rebuilt only when the layout changes. Panels: a Shift panel (new floor only: status, Start, Pause, pace, stats, failed orders, safety escalations, fault injection through `POST /api/faults/<kind>`), a Robot panel for the robot clicked on the floor, and a Create-task form whose fields and guide come from `options.task_types`. The header links to the fleet page. `fleet.html` + `fleet.js`: the fleet and workforce source systems; polls every 3 s (`POLL_MS`), no SSE.
 
 ## 8. Tests
 
 Pytest, no threads: tests build a twin and call `Simulator.tick()` directly.
 
-- Location and names: `backend/tests.py` (main suite) and 51 `backend/test_*.py` files; 698 `def test_` lines at HEAD (more once parametrised). `pytest.ini`: `testpaths = backend`, `python_files = tests.py test_*.py`, `addopts = -q`. There is no `conftest.py`; each file defines its own fixtures (usually `twin` and `sim`).
+- Location and names: `backend/tests.py` (main suite) and 64 `backend/test_*.py` files; 820 `def test_` lines at HEAD (more once parametrised). `pytest.ini`: `testpaths = backend`, `python_files = tests.py test_*.py`, `addopts = -q`. There is no `conftest.py`; each file defines its own fixtures (usually `twin` and `sim`).
 - Suite command: `.venv/bin/python -m pytest -o addopts="" -q`.
 - Classic fixtures use `DigitalTwin(log_dir=..., data_dir=..., persist_logs=False, demo=True, demo_tasks=False)`. New-floor tests pass `layout="distribution_center"` to the same constructor, then add robots, boxes and operators through the public API (`add_robot(name=, asset_id=, position=)`, `add_box(kind=, slot=, ...)`, `add_operator(name=, worker_id=)`); the twin boots empty. `Warehouse(layout="distribution_center")` is used for layout-only tests.
 - Guards that pin the classic floor: `test_layout_classic_golden.py` (grid cell by cell), `test_inventory_seed_golden.py` (fleet and workforce seed fingerprint), `test_layouts.py` (registry and default layout).
-- Soak: `test_shift_soak.py` (fault-free shift on the new floor). Trust-layer tests: `test_trust_rules.py`, `test_trust_checks*.py` (grade `logs/eval_examples/multi_embodiment/`), `test_eval_engine.py` (grades `logs/eval_examples/` and the real `logs/tasks/`).
-- Two known failures, per `RUN.md` and the plan docs (not re-run for this document): `test_eval_engine.py::test_real_task_006_box_conflict_is_caught` and `tests.py::test_idle_robot_with_a_low_battery_charges_itself`. Tests and the app rewrite files under `logs/tasks/`; do not stage them by accident.
+- Plan 1c tests: `test_floor_seed.py` (seeds), `test_operations_api.py`, `test_job_api.py`, `test_app_shift_paused.py` (routes and boot), `test_save_load_v2.py`, `test_save_load_shift.py` (save v2), `test_long_shift_orders.py`, `test_long_shift_people.py`, `test_traffic_residuals.py` (long-shift rules and plan 1b residuals), `test_floor_model_js.py`, `test_panels_js.py` (run `frontend/tests/*.js` under JavaScriptCore; skipped where `jsc` is absent), `test_soak.py`, `test_fault_matrix.py` (each injected fault caught by its check), `test_docs_examples.py` (README, RUN.md, TRUST_LAYER.md and `policies.example.yaml` match the code).
+- Soak: `test_shift_soak.py` (fault-free shift on the new floor) and `backend/soak.py`. Trust-layer tests: `test_trust_rules.py`, `test_trust_checks*.py` (grade `logs/eval_examples/multi_embodiment/`), `test_eval_engine.py` (grades `logs/eval_examples/` and the real `logs/tasks/`).
+- Two known failures, per `RUN.md` and the plan docs: `test_eval_engine.py::test_real_task_006_box_conflict_is_caught` and `tests.py::test_idle_robot_with_a_low_battery_charges_itself`. Tests and the app rewrite files under `logs/tasks/`; do not stage them by accident.
 
 ## 9. Invariants a change must keep
 
-- **Classic is untouched.** `DigitalTwin()`, `Warehouse()` and `create_app()` default to `classic`. Its grid, zones, seed, battery model (percent per cell), wall-clock operator shifts, AUTO scoring, `PICK_TICKS`/`DELIVER_TICKS` and event data must not change. `models.WALKABLE_CELLS` is classic's set. The golden tests above enforce part of this.
+- **Classic is untouched.** `DigitalTwin()` and `Warehouse()` default to `classic` (the app itself defaults to `distribution_center`; `WAREHOUSE_LAYOUT=classic` runs classic). Its grid, zones, seed, battery model (percent per cell), wall-clock operator shifts, AUTO scoring, `PICK_TICKS`/`DELIVER_TICKS` and event data must not change. `models.WALKABLE_CELLS` is classic's set. The golden tests above enforce part of this.
 - **No profile, old behaviour.** `robot.mobility` is set only when `layout_name != "classic"` (`add_robot`, `FleetBridge.floor_profile`). A robot with `mobility is None` keeps classic routing, speed, battery and jobs, and cannot take a `JOB_SPECS` type (`capability_reason`, `no_profile_reason`). Guard every new-floor behaviour with `robot.mobility is not None` or `twin.equipment is not None`.
 - **One gate.** Every task, including `internal=True`, goes through `create_task` and `validate` (only `STOP_ROBOT`/`RESUME_ROBOT` skip it). Eligibility rules live once in `eligibility.py`.
 - **Lock order** `twin.lock` then inventory store lock; inventory listeners run after commit; new code that touches stock, equipment, people, shift or faults must hold `twin.lock`.
@@ -211,14 +218,3 @@ Pytest, no threads: tests build a twin and call `Simulator.tick()` directly.
 - **Keep `inventory/` standalone** (it imports nothing from the rest of `backend`).
 - **Style:** `from __future__ import annotations`, module docstrings, plain-language messages; bad input raises `ValueError`, an unknown robot, operator or task id raises `KeyError`.
 - **Stage only your files.** Runs rewrite `logs/tasks/task_00*.json` and `.DS_Store` files.
-
-## 10. Planned, not yet built (plan 1c)
-
-Source: the Goal and Architecture paragraphs of `docs/superpowers/plans/2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md` (written, not yet executed). None of this exists in the code yet unless marked. When plan 1c lands, fold this section into the sections above.
-
-- **Goal:** the app boots the distribution-centre floor with its full seed (15 non-retired robots, 10 workers, 60 pallets, 80 totes); save and load v2; HTTP for shift, orders, stock, people, equipment and faults; a dashboard that draws the layout-driven floor, glyphs, air layer, people, conveyor, robot and shift panels; a fixed-seed soak that runs clean; and closing two residuals from plan 1b.
-- **New units named:** `backend/seeds/` with classic and distribution-centre seeds (planned; only the stopgap `seeds/distribution_center.py` exists); `backend/operations_api.py` (the operations routes); `backend/soak.py` (soak runner and CLI); `frontend/floor_model.js` (DOM-free view helpers, unit-tested with JavaScriptCore).
-- **Existing units to change:** `to_dict`/`from_dict` on the ledger, equipment, shift engine and orders (save/load v2); a `cell_types` table and live equipment and shift data in the snapshot; the long-shift policies plan 1b deferred.
-- Code comments that point at it: `faults.py` (`POST /api/faults/<kind>`), `operations/shift.py` ("its HTTP controls are plan 1c's"), `app._seed_floor`.
-
-Design history: `docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md` (binding spec for the multi-embodiment work), `docs/superpowers/specs/2026-09-30-fleet-workforce-inventory-design.md`, and `docs/superpowers/plans/` (`2026-09-30-fleet-workforce-inventory.md`, `2026-09-30-multi-embodiment-1a-floor-and-motion.md`, `2026-10-01-multi-embodiment-1b-jobs-rules-shift.md`, `2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md`).
