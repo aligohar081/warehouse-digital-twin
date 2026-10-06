@@ -10,3 +10,6 @@ evals/.env
 logs/distribution_center/
 data/distribution_center/
 .DS_Store
+_archive/
+tmp/
+.claude/settings.local.json
