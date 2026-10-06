@@ -832,6 +832,33 @@ canvas { display: block; width: 100%; height: auto; }
 .chat-input-row input:focus { outline: none; border-color: var(--cyan); }
 .chat-input-row .btn { flex: none; }
 
+/* ------------------------------------------------------------- robot panel */
+#floor { cursor: pointer; }
+.robot-panel-head { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
+.robot-panel-grid { display: grid; gap: 8px 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 9px; }
+.robot-panel h4, .shift-sub {
+  margin: 0 0 6px;
+  font-family: var(--display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.robot-panel .kv dd { overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------- shift panel */
+.shift-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.shift-row { align-items: flex-end; }
+.shift-row .btn { flex: 0 0 auto; margin-bottom: 9px; }
+.shift-stats { grid-template-columns: repeat(2, 1fr); margin-bottom: 4px; }
+.shift-sub { margin-top: 10px; }
+.shift-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; font-size: 12px; color: var(--ink-2); }
+.shift-list li { padding: 4px 6px; background: var(--panel-2); border-left: 2px solid var(--fault); overflow-wrap: anywhere; }
+.shift-list li.empty { background: transparent; border-left: 0; color: var(--faint); padding: 2px 0; }
+.shift-list .mono { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+.task-guide { margin: -4px 0 9px; font-family: var(--mono); font-size: 11px; min-height: 0; overflow-wrap: anywhere; }
+
 /* --------------------------------------------------------------- scrollbars */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: #0d1215; }
@@ -857,6 +884,23 @@ canvas { display: block; width: 100%; height: auto; }
   .topbar h1 { font-size: 22px; }
   .readout-item.wide { flex: 1 1 120px; }
   .log-stream { height: 260px; }
+}
+
+/* Phone width (spec §12): the floor scales to fit (resizeCanvas in app.js),
+   every panel stacks in one column, and nothing is wider than the screen. */
+@media (max-width: 480px) {
+  .shell { padding: 8px 8px 32px; gap: 10px; }
+  .rail { gap: 10px; }
+  .rail-left, .rail-right, .robot-grid, .task-board, .robot-panel-grid { grid-template-columns: minmax(0, 1fr); }
+  .topbar { gap: 10px; padding: 8px 10px; }
+  .topbar h1 { font-size: 19px; }
+  .identity { min-width: 0; }
+  .readout-item { flex: 1 1 30%; padding: 5px 8px; }
+  .readout-item.wide { flex: 1 1 100%; }
+  .field-row .field, .filter-row > * { min-width: 0; }
+  .kv dd { overflow-wrap: anywhere; }
+  .notif-panel { position: fixed; top: 60px; left: 8px; right: 8px; width: auto; }
+  .log-row { grid-template-columns: 52px 40px 64px minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

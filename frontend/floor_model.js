@@ -341,6 +341,252 @@
     return view;
   }
 
+  /* -------------------------------------------------------------- panels */
+  var TERMINAL = { COMPLETED: true, FAILED: true, CANCELLED: true };
+
+  /* How the robot panel names each robot type. */
+  var CLASS_LABELS = {
+    AMR: "AMR", FORKLIFT: "Forklift", HEAVY_HAULER: "Heavy hauler", PICKER: "Picker",
+    SCOUT: "Scout", DRONE: "Drone", ARM: "Arm", HUMANOID: "Humanoid"
+  };
+
+  /* "TOTE_TO_STATION" → "Tote to station". */
+  function titleize(value) {
+    var text = String(value || "").replace(/_/g, " ").toLowerCase();
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function findById(list, id) {
+    for (var i = 0; i < (list || []).length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  /* What the robot panel shows (spec §12 Robot panel): the model and asset,
+     the body's limits from its floor profile (payload, reach, clearance),
+     the current job, its step and any wait, and the link to the robot's
+     inventory record on the fleet page. `tasks` (the snapshot's) names the
+     job; a robot with no floor profile (classic) has no limits to show. */
+  function robotPanel(robot, tasks) {
+    var mobility = robot.mobility;
+    var limits = [];
+    if (mobility) {
+      limits.push(["Payload", mobility.max_payload_kg + " kg"]);
+      if (mobility.movement === "FIXED") {
+        limits.push(["Reach", mobility.reach_mm ? mobility.reach_mm + " mm" : "—"]);
+      } else {
+        limits.push(["Reach", "shelf level " + mobility.max_shelf_level + " (lift " + mobility.max_lift_m + " m)"]);
+      }
+      limits.push(["Clearance", mobility.clearance ||
+        (mobility.movement === "AIR" ? "flies (air layer)" : "fixed station")]);
+    }
+    var task = robot.current_task ? findById(tasks, robot.current_task) : null;
+    var job = robot.current_task
+      ? robot.current_task + (task ? " · " + titleize(task.type) : "")
+      : "none";
+    var step = task && task.current_action ? task.current_action : (robot.activity ? titleize(robot.activity) : "—");
+    return {
+      id: robot.id,
+      name: robot.name,
+      letter: robotLetter(robot),
+      status: robot.status,
+      waitReason: robot.wait_reason || null,
+      identity: [
+        ["Model", robot.model_code || "—"],
+        ["Asset", robot.asset_id || "—"],
+        ["Type", CLASS_LABELS[mobility ? mobility.embodiment_class : robot.robot_class] ||
+          titleize(mobility ? mobility.embodiment_class : robot.robot_class)],
+        ["Layer", robot.layer === "AIR" ? "air, " + robot.altitude_m + " m up" : "ground"]
+      ],
+      limits: limits,
+      job: [
+        ["Job", job],
+        ["Step", step],
+        ["Waiting for", robot.wait_reason ? titleize(robot.wait_reason) : "—"]
+      ],
+      inventoryUrl: robot.asset_id ? "/fleet.html?asset=" + encodeURIComponent(robot.asset_id) : null
+    };
+  }
+
+  function count(value) {
+    if (typeof value === "number") return value;
+    return value && value.length ? value.length : 0;
+  }
+
+  /* What the shift panel shows (spec §12 Shift panel), from the snapshot's
+     shift (ShiftEngine.panel()); null on a floor with no shift (classic).
+     in_flight and backlog may be counts or lists of orders. */
+  function shiftPanel(shift) {
+    if (!shift) return null;
+    var done = 0;
+    var orders = shift.orders || {};
+    Object.keys(orders).forEach(function (kind) { done += orders[kind].DONE || 0; });
+    return {
+      status: shift.status,
+      running: shift.status === "RUNNING",
+      clock: shift.clock,
+      pace: shift.config ? shift.config.pace : null,
+      seed: shift.config ? shift.config.seed : null,
+      inFlight: count(shift.in_flight),
+      backlog: count(shift.backlog),
+      done: done,
+      throughput: shift.throughput_per_hour,
+      failed: (shift.failed_orders || []).map(function (order) {
+        return { id: order.order_id, kind: order.kind, reason: order.reason || "no reason recorded" };
+      }),
+      escalations: (shift.exceptions || []).filter(function (item) {
+        return item.type === "SAFETY_WAIT_ESCALATED";
+      }).map(function (item) { return { message: item.message, tick: item.tick }; })
+    };
+  }
+
+  /* The fault kinds POST /api/faults/<kind> arms (backend/faults.py
+     FAULT_RISKS), for the shift panel's "Inject fault" control. */
+  var FAULT_KINDS = [
+    ["conveyor_jam", "Conveyor jam"], ["grasp_fail", "Grasp failure"], ["handoff_loss", "Hand-off loss"],
+    ["mis_sort", "Mis-sort"], ["misdeclared_weight", "Misdeclared weight"], ["scan_miscount", "Scan miscount"],
+    ["wrong_level", "Wrong rack level"]
+  ];
+
+  /* Every field the task form can show (a data-when element in index.html). */
+  var FORM_FIELDS = ["box", "box_ids", "source", "destination", "priority", "agent", "operator",
+    "slot", "quantity", "station", "face", "dock", "lane", "order_id", "pack_cell", "segment"];
+  /* The new job types' own fields (backend/jobs.py JOB_PARAM_KEYS), sent as typed. */
+  var JOB_FIELDS = ["slot", "quantity", "station", "face", "dock", "lane", "order_id", "pack_cell", "segment"];
+  /* A field named by its payload key is the form field it fills. */
+  var FIELD_ALIASES = { box_id: "box", agent_id: "agent", operator_id: "operator" };
+  /* The form's fields for each task type when options() names none (a
+     backend from before plan 1c): what the dashboard has always shown. */
+  var DEFAULT_TASK_FIELDS = {
+    PICK_AND_DELIVER: ["box", "source", "destination", "priority"],
+    MOVE_BOX: ["box", "source", "destination", "priority"],
+    DELIVER_BOX: ["box", "destination", "priority"],
+    PICK_BOX: ["box", "priority"],
+    MOVE_ROBOT: ["destination", "priority"],
+    CHARGE_ROBOT: ["priority"],
+    STOP_ROBOT: [],
+    RESUME_ROBOT: [],
+    AGENT_INSPECTION: ["agent"],
+    HUMAN_INSPECTION: ["operator"],
+    MIXED_MAINTENANCE_MISSION: ["destination", "agent", "operator", "priority"],
+    AGENT_REPLAN: ["agent"],
+    AGENT_AUDIT: ["agent"],
+    OPERATOR_APPROVAL: ["operator"],
+    OPERATOR_MAINTENANCE_SIGNOFF: ["operator"],
+    BATCH_DELIVER: ["box_ids", "destination", "priority"]
+  };
+
+  function taskTypeEntry(options, type) {
+    var types = (options && options.task_types) || [];
+    for (var i = 0; i < types.length; i++) if (types[i].id === type) return types[i];
+    return null;
+  }
+
+  /* The form fields to show for a task type, from options().task_types[*]
+     .fields (Task 6) — payload names (box_id) read as the form's (box), the
+     robot selector always shown — else the dashboard's own table. */
+  function taskFields(options, type) {
+    var entry = taskTypeEntry(options, type);
+    var fields = entry && entry.fields ? entry.fields : (DEFAULT_TASK_FIELDS[type] || []);
+    var out = [];
+    fields.forEach(function (field) {
+      var name = FIELD_ALIASES[field] || field;
+      if (name === "robot" || name === "robot_id") return;
+      if (out.indexOf(name) === -1) out.push(name);
+    });
+    return out;
+  }
+
+  /* The task type's one-line payload guide, or "". */
+  function taskGuide(options, type) {
+    var entry = taskTypeEntry(options, type);
+    return (entry && entry.guide) || "";
+  }
+
+  /* The POST /api/tasks body from the form's values (keyed by field name),
+     sending only the type's fields. The older fields go exactly as the form
+     always sent them; a new job's field goes only when it is filled in (an
+     empty one takes the job's default), trimmed, and a whole-number quantity
+     as a number (anything else is sent as typed, for the API to refuse). */
+  function taskPayload(type, fields, values) {
+    function has(field) { return fields.indexOf(field) !== -1; }
+    var body = { type: type, robot_id: values.robot };
+    if (has("box")) body.box_id = values.box;
+    if (has("box_ids")) body.box_ids = values.box_ids || [];
+    if (has("source") && values.source) body.source = values.source;
+    if (has("destination")) body.destination = values.destination;
+    if (has("priority")) body.priority = values.priority;
+    if (has("agent")) body.agent_id = values.agent;
+    if (has("operator")) {
+      body.operator_id = values.operator;
+      if (values.dual_signoff) {
+        body.dual_signoff = true;
+        if (values.second_operator && values.second_operator !== "AUTO") body.second_operator_id = values.second_operator;
+      }
+    }
+    JOB_FIELDS.forEach(function (field) {
+      var value = values[field];
+      if (!has(field) || value === undefined || value === null || String(value).replace(/\s+/g, "") === "") return;
+      var text = String(value).replace(/^\s+|\s+$/g, "");
+      body[field] = field === "quantity" && /^\d+$/.test(text) ? Number(text) : text;
+    });
+    return body;
+  }
+
+  /* The choices for a job field's select, from the layout's zones: pick
+     stations (a tote drop), pack cells (an arm), sorter lanes (its chutes)
+     and the outbound pallet docks. [] for any other field. */
+  function fieldChoices(layout, field) {
+    var zones = (layout && layout.zones) || [];
+    var choices = [];
+    zones.forEach(function (zone) {
+      var a = zone.attributes || {};
+      if ((field === "station" && a.tote_drop) || (field === "pack_cell" && a.arm_cell) ||
+          (field === "dock" && a.dock_role === "OUTBOUND_PALLETS")) {
+        choices.push({ value: zone.key, label: zone.label });
+      }
+      if (field === "lane" && a.chutes) {
+        a.chutes.forEach(function (key) {
+          var dock = zones.filter(function (z) { return z.key === key; })[0];
+          choices.push({ value: key, label: dock ? dock.label : key });
+        });
+      }
+    });
+    return choices;
+  }
+
+  /* An operator's status as the dashboard shows it: a person still walking
+     back from a job (it ended early, or a jam is cleared and they are on the
+     way back) reads RETURNING rather than ON_TASK. */
+  function personStatus(operator, tasks) {
+    if (operator.status !== "ON_TASK" || !operator.current_task) return operator.status;
+    var task = findById(tasks, operator.current_task);
+    if (task && (TERMINAL[task.status] || (task.params && task.params.phase === "RETURN"))) return "RETURNING";
+    return operator.status;
+  }
+
+  /* The value of `name` in a query string ("?robot=robot_003"), or null. */
+  function queryParam(search, name) {
+    var pairs = String(search || "").replace(/^\?/, "").split("&");
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i].split("=");
+      if (decodeURIComponent(pair[0]) === name && pair.length > 1) {
+        return decodeURIComponent(pair.slice(1).join("=").replace(/\+/g, " "));
+      }
+    }
+    return null;
+  }
+
+  /* The robot under a click, in cell units ({id, x, y} as drawn): the
+     nearest within 0.6 of a cell, the one drawn last on a tie. */
+  function hitRobot(points, x, y) {
+    var best = null, bestDistance = 0.6;
+    (points || []).forEach(function (point) {
+      var distance = Math.sqrt((point.x - x) * (point.x - x) + (point.y - y) * (point.y - y));
+      if (distance <= bestDistance) { best = point.id; bestDistance = distance; }
+    });
+    return best;
+  }
+
   /* ------------------------------------------------------------- exports */
   root.FloorModel = {
     PALETTE: PALETTE,
@@ -362,6 +608,18 @@
     armView: armView,
     initials: initials,
     peopleDots: peopleDots,
-    conveyorView: conveyorView
+    conveyorView: conveyorView,
+    FAULT_KINDS: FAULT_KINDS,
+    FORM_FIELDS: FORM_FIELDS,
+    titleize: titleize,
+    robotPanel: robotPanel,
+    shiftPanel: shiftPanel,
+    taskFields: taskFields,
+    taskGuide: taskGuide,
+    taskPayload: taskPayload,
+    fieldChoices: fieldChoices,
+    personStatus: personStatus,
+    queryParam: queryParam,
+    hitRobot: hitRobot
   };
 })(typeof window !== "undefined" ? window : this);

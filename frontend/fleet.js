@@ -25,6 +25,7 @@
   var state = {
     view: "robots",
     robots: [], workers: [], models: [], releases: [], definitions: [],
+    floor: {},   // asset id -> its robot on the simulated floor (GET /api/robots)
     drawer: null,
     feed: [], cursors: { fleet: null, workforce: null }
   };
@@ -154,6 +155,11 @@
   // ------------------------------------------------------------------ lists
   function matches(text, needle) { return !needle || String(text).toLowerCase().indexOf(needle) !== -1; }
 
+  /* The dashboard with this asset's floor robot selected (spec §12 Fleet page). */
+  function floorLink(robotId) {
+    return '<a class="btn small floor-link" href="/?robot=' + encodeURIComponent(robotId) + '">On the floor</a>';
+  }
+
   function renderRobots() {
     var sites = {};
     state.robots.forEach(function (r) { sites[r.site_code] = true; });
@@ -179,7 +185,9 @@
       var report = r.lifecycle_status === "DECOMMISSIONED" ? '<span class="sub">retired</span>'
         : (f.report_stale ? chip("stale", "bad") : '<span class="sub">' + esc(ago(r.reported_at)) + "</span>") +
           " " + statusChip(r.connectivity);
+      var floor = state.floor[r.asset_id];
       return '<tr class="clickable" data-asset="' + esc(r.asset_id) + '"><td class="mono">' + esc(r.asset_id) +
+        (floor ? "<div>" + floorLink(floor.id) + "</div>" : "") +
         "</td><td>" + esc(r.model_name) + '<div class="sub">' + esc(r.manufacturer_name) + " · " + esc(r.embodiment_class) +
         '</div></td><td class="mono">' + esc(r.serial_number) + "</td><td>" + esc(r.site_code) + "</td><td>" +
         statusChip(r.lifecycle_status) + "</td><td>" + software + "</td><td>" + statusChip(f.calibration_worst) +
@@ -228,7 +236,8 @@
       ["Fleet", robot.fleet_id], ["Site / home zone", robot.site_code + " / " + (robot.home_zone || "—")],
       ["Commissioned", day(robot.commissioned_at)], ["Lifecycle", { html: statusChip(robot.lifecycle_status) }],
       ["Record revision", robot.revision],
-      ["On this floor as", floor ? floor.name + " — " + (floor.ota_installing ? "UPDATING" : floor.status) : "not on the simulated floor"]
+      ["On this floor as", floor ? { html: esc(floor.name + " — " + (floor.ota_installing ? "UPDATING" : floor.status)) +
+        " " + floorLink(floor.id) } : "not on the simulated floor"]
     ]);
     var lifecycle = live ? form("POST", base + "/status", "Set status", [
       select("status", "Lifecycle", options(["IN_SERVICE", "MAINTENANCE", "OUT_OF_SERVICE"].filter(function (s) {
@@ -563,7 +572,12 @@
     if (state.view === "workers") {
       return api("GET", "/api/workforce/workers").then(function (d) { state.workers = d.workers; renderWorkers(); });
     }
-    return api("GET", "/api/fleet/robots").then(function (d) { state.robots = d.robots; renderRobots(); });
+    return Promise.all([api("GET", "/api/fleet/robots"), api("GET", "/api/robots")]).then(function (results) {
+      state.robots = results[0].robots;
+      state.floor = {};
+      results[1].robots.forEach(function (robot) { if (robot.asset_id) state.floor[robot.asset_id] = robot; });
+      renderRobots();
+    });
   }
 
   function refresh(force) {
@@ -588,6 +602,7 @@
       tab.addEventListener("click", function () { setView(tab.dataset.view); });
     });
     $("robotTable").addEventListener("click", function (event) {
+      if (event.target.closest("a")) return;   // the "On the floor" link goes to the dashboard
       var row = event.target.closest("tr[data-asset]");
       if (row) openDrawer("robot", row.dataset.asset);
     });
@@ -610,6 +625,9 @@
       state.models = results[0].models;
       state.releases = results[1].releases;
       state.definitions = results[2].definitions;
+      // /fleet.html?asset=<id> (the dashboard's robot panel links here) opens that record.
+      var asset = /[?&]asset=([^&]+)/.exec(window.location.search);
+      if (asset) openDrawer("robot", decodeURIComponent(asset[1]));
       return refresh(true);
     }).catch(function (error) {
       toast(error.message, true);

@@ -22,10 +22,12 @@
     ci: null,
     cellTypes: [],
     noFly: [],
-    equipment: null
+    equipment: null,
+    shift: null
   };
 
   var selectedTaskId = null;
+  var selectedRobotId = null;   // the robot the robot panel shows
   var optionsSignature = "";
   var logBuffer = [];
   var LOG_CAP = 600;
@@ -51,26 +53,13 @@
 
   var ROBOT_TINT = ["#31d1c4", "#ffb300", "#9b8cff", "#7ddf64", "#ff9538", "#ff5252"];
 
-  var TASK_FIELDS = {
-    PICK_AND_DELIVER: ["box", "source", "destination", "priority"],
-    MOVE_BOX: ["box", "source", "destination", "priority"],
-    DELIVER_BOX: ["box", "destination", "priority"],
-    PICK_BOX: ["box", "priority"],
-    MOVE_ROBOT: ["destination", "priority"],
-    CHARGE_ROBOT: ["priority"],
-    STOP_ROBOT: [],
-    RESUME_ROBOT: [],
-    // The three actor-class task types (see TRUST_LAYER.md) — "robot" has
-    // no data-when in the HTML so it stays visible for these too, but the
-    // backend simply ignores it for AGENT_INSPECTION/HUMAN_INSPECTION.
-    AGENT_INSPECTION: ["agent"],
-    HUMAN_INSPECTION: ["operator"],
-    MIXED_MAINTENANCE_MISSION: ["destination", "agent", "operator", "priority"],
-    AGENT_REPLAN: ["agent"],
-    AGENT_AUDIT: ["agent"],
-    OPERATOR_APPROVAL: ["operator"],
-    OPERATOR_MAINTENANCE_SIGNOFF: ["operator"],
-    BATCH_DELIVER: ["box_ids", "destination", "priority"]
+  // The task form's fields for each type come from options().task_types
+  // (FloorModel.taskFields). "robot" has no data-when in the HTML, so it stays
+  // visible for every type; the backend ignores it where it doesn't apply.
+  // The new job types' own fields and the inputs that hold them:
+  var JOB_INPUTS = {
+    slot: "taskSlot", quantity: "taskQuantity", station: "taskStation", face: "taskFace", dock: "taskDock",
+    lane: "taskLane", order_id: "taskOrder", pack_cell: "taskPackCell", segment: "taskSegment"
   };
 
   var STATUS_CHIP = {
@@ -81,7 +70,7 @@
     TRANSPORTING: "run", BLOCKED: "wait", PAUSED: "wait",
     COMPLETED: "ok", FAILED: "bad", CANCELLED: "idle",
     STORED: "idle", RESERVED: "info", DELIVERED: "ok",
-    THINKING: "run", AVAILABLE: "idle", ON_TASK: "run", OFF_DUTY: "wait",
+    THINKING: "run", AVAILABLE: "idle", ON_TASK: "run", OFF_DUTY: "wait", RETURNING: "wait",
     PASS: "ok", WARN: "wait", FAIL: "bad"
   };
 
@@ -117,6 +106,12 @@
   }
   function findBox(id) {
     for (var i = 0; i < state.boxes.length; i++) if (state.boxes[i].id === id) return state.boxes[i];
+    return null;
+  }
+  function findRobot(id) {
+    for (var i = 0; i < state.robots.length; i++) {
+      if (state.robots[i].id === id || state.robots[i].name === id) return state.robots[i];
+    }
     return null;
   }
   function robotLabel(id) {
@@ -228,6 +223,14 @@
     fillSelect($("taskPriority"), options.priorities.map(function (p) {
       return { value: p, label: titleize(p) };
     }), { selected: "NORMAL" });
+    // A job's station, pack cell, sorter lane or dock: "" takes its default.
+    [["station", "taskStation"], ["pack_cell", "taskPackCell"], ["lane", "taskLane"], ["dock", "taskDock"]]
+      .forEach(function (pair) {
+        fillSelect($(pair[1]), FM.fieldChoices(state.layout, pair[0]), { placeholder: "Default" });
+      });
+    if ($("faultKind").options.length === 0) {
+      fillSelect($("faultKind"), FM.FAULT_KINDS.map(function (k) { return { value: k[0], label: k[1] }; }));
+    }
 
     fillSelect($("speedSelect"), options.speeds.map(function (s) {
       return { value: String(s), label: s + "×" };
@@ -264,11 +267,12 @@
 
   function applyTaskFieldVisibility() {
     var type = $("taskType").value;
-    var allowed = TASK_FIELDS[type] || [];
+    var allowed = FM.taskFields(state.options, type);
     var fields = document.querySelectorAll("#taskForm [data-when]");
     for (var i = 0; i < fields.length; i++) {
       fields[i].hidden = allowed.indexOf(fields[i].dataset.when) === -1;
     }
+    $("taskGuide").textContent = FM.taskGuide(state.options, type);
   }
 
   /* -------------------------------------------------------------- rendering */
@@ -570,7 +574,7 @@
       row.appendChild(el("td", null, operator.name));
       row.appendChild(el("td", null, operator.role ? titleize(operator.role) : "—"));
       var statusCell = el("td");
-      statusCell.appendChild(chip(operator.status));
+      statusCell.appendChild(chip(FM.personStatus(operator, state.tasks)));
       row.appendChild(statusCell);
       row.appendChild(el("td", null, operator.certifications.join(", ") || "—"));
       row.appendChild(el("td", "mono", operator.shift_start_hour != null
@@ -1029,8 +1033,10 @@
   function resizeCanvas() {
     if (!state.layout) return;
     var wrap = canvas.parentElement;
-    var available = Math.max(320, wrap.clientWidth - 16);
-    var cell = Math.max(16, Math.floor(available / state.layout.width));
+    // Scale to the width there is, down to phone width (spec §12): no
+    // minimum that would push the floor wider than its panel.
+    var available = Math.max(64, wrap.clientWidth - 16);
+    var cell = Math.max(2, Math.floor(available / state.layout.width));
     var ratio = window.devicePixelRatio || 1;
     geometry.cell = cell;
     geometry.w = cell * state.layout.width;
@@ -1459,6 +1465,18 @@
         ctx.restore();
       }
 
+      // the robot the robot panel shows
+      if (robot.id === selectedRobotId) {
+        ctx.save();
+        ctx.strokeStyle = COLORS.cyan;
+        ctx.lineWidth = Math.max(1.5, cell * 0.05);
+        ctx.setLineDash([cell * 0.16, cell * 0.1]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, size * 0.84, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // carried box rides on the chassis, with its kind badge on the new floor
       if (robot.carrying_box) {
         drawBox(cx, cy - size * 0.1, size * 0.5, COLORS.boxCarried,
@@ -1520,6 +1538,145 @@
     });
   }
 
+  /* ------------------------------------------------------------ robot panel */
+  function kvList(pairs) {
+    var list = el("dl", "kv");
+    pairs.forEach(function (pair) {
+      list.appendChild(el("dt", null, pair[0]));
+      list.appendChild(el("dd", null, String(pair[1])));
+    });
+    return list;
+  }
+
+  // The robot clicked on the floor (spec §12 Robot panel): model, asset and
+  // limits, its job, step and wait, and a link to its inventory record.
+  function renderRobotPanel() {
+    var panel = $("robotPanel");
+    var robot = selectedRobotId ? findRobot(selectedRobotId) : null;
+    if (!robot) {
+      panel.hidden = true;
+      panel.dataset.signature = "";
+      return;
+    }
+    var view = FM.robotPanel(robot, state.tasks);
+    panel.hidden = false;
+    // Rebuild only on a change, so the link isn't swapped out under a click.
+    var signature = JSON.stringify(view);
+    if (panel.dataset.signature === signature) return;
+    panel.dataset.signature = signature;
+    $("robotPanelName").textContent = view.name + (view.letter ? " · " + view.letter : "");
+    var body = $("robotPanelBody");
+    body.innerHTML = "";
+    var head = el("div", "robot-panel-head");
+    head.appendChild(chip(view.status));
+    if (view.waitReason) head.appendChild(el("span", "chip wait", "Waiting: " + FM.titleize(view.waitReason)));
+    body.appendChild(head);
+    var grid = el("div", "robot-panel-grid");
+    [
+      ["Identity", view.identity],
+      ["Limits", view.limits.length ? view.limits : [["Floor profile", "none (a classic robot)"]]],
+      ["Job", view.job]
+    ].forEach(function (section) {
+      var box = el("div", "robot-panel-section");
+      box.appendChild(el("h4", null, section[0]));
+      box.appendChild(kvList(section[1]));
+      grid.appendChild(box);
+    });
+    body.appendChild(grid);
+    if (view.inventoryUrl) {
+      var link = el("a", "btn small", "Inventory record");
+      link.href = view.inventoryUrl;
+      body.appendChild(link);
+    } else {
+      body.appendChild(el("p", "form-note", "Not bound to an inventory record."));
+    }
+  }
+
+  function selectRobot(id) {
+    var robot = findRobot(id);
+    selectedRobotId = robot ? robot.id : null;
+    renderRobotPanel();
+    var panel = $("robotPanel");
+    if (!panel.hidden && panel.scrollIntoView) panel.scrollIntoView({ block: "nearest" });
+  }
+
+  // A click on the floor selects the robot drawn under it.
+  function robotAtClick(event) {
+    var rect = canvas.getBoundingClientRect();
+    var scale = rect.width ? geometry.w / rect.width : 1;
+    var x = (event.clientX - rect.left) * scale / geometry.cell - 0.5;
+    var y = (event.clientY - rect.top) * scale / geometry.cell - 0.5;
+    var layers = FM.robotLayers(state.robots, showAir);
+    return FM.hitRobot(layers.ground.concat(layers.air).map(function (robot) {
+      var shown = render.robots[robot.id] || robot.position;
+      return { id: robot.id, x: shown.x, y: shown.y };
+    }), x, y);
+  }
+
+  /* ------------------------------------------------------------ shift panel */
+  function shiftList(node, items, empty, line) {
+    node.innerHTML = "";
+    if (!items.length) {
+      node.appendChild(el("li", "empty", empty));
+      return;
+    }
+    items.forEach(function (item) { node.appendChild(line(item)); });
+  }
+
+  // The shift (spec §12 Shift panel; new floor only): clock, start and pause,
+  // pace, orders in flight, throughput, backlog, failed orders and safety
+  // escalations, and faults on demand (Plan ruling 9).
+  function renderShift() {
+    var view = FM.shiftPanel(state.shift);
+    var panel = $("shiftPanel");
+    panel.hidden = !view;
+    if (!view) return;
+    $("shiftClock").textContent = view.clock;
+    var status = $("shiftStatus");
+    status.textContent = view.status;
+    status.className = "chip " + (view.running ? "run" : "wait");
+    $("shiftStartBtn").disabled = view.running;
+    $("shiftPauseBtn").disabled = !view.running;
+    var pace = $("shiftPace");
+    if (document.activeElement !== pace) pace.value = view.pace;
+    var grid = $("shiftStats");
+    grid.innerHTML = "";
+    [["In flight", view.inFlight, "accent"], ["Backlog", view.backlog, ""], ["Done", view.done, "good"],
+      ["Per hour", view.throughput, ""]].forEach(function (item) {
+      var cell = el("div", "stat");
+      cell.appendChild(el("span", "stat-label", item[0]));
+      cell.appendChild(el("div", "stat-value " + item[2], item[1] === undefined || item[1] === null ? "—" : String(item[1])));
+      grid.appendChild(cell);
+    });
+    shiftList($("shiftFailed"), view.failed, "No failed orders.", function (order) {
+      var item = el("li");
+      item.appendChild(el("span", "mono", order.id));
+      item.appendChild(document.createTextNode(" " + FM.titleize(order.kind) + ": " + order.reason));
+      return item;
+    });
+    shiftList($("shiftEscalations"), view.escalations, "No safety escalations.", function (entry) {
+      return el("li", null, entry.message);
+    });
+  }
+
+  // A shift control or fault: POST it, then show the shift it answers with.
+  function shiftAction(path, body, message) {
+    var note = $("shiftNote");
+    api(path, { method: "POST", body: body || {} })
+      .then(function (result) {
+        if (result && result.shift && result.shift.status) {
+          state.shift = result.shift;
+          renderShift();
+        }
+        note.className = "form-note ok";
+        note.textContent = message;
+      })
+      .catch(function (error) {
+        note.className = "form-note bad";
+        note.textContent = error.message;
+      });
+  }
+
   // The "Air layer" toggle only appears on a floor that has one.
   function renderAirToggle() {
     $("airToggleWrap").hidden = !(state.noFly.length || state.robots.some(FM.isDrone));
@@ -1554,6 +1711,7 @@
     state.statistics = snapshot.statistics || {};
     state.robotStatistics = snapshot.robot_statistics || [];
     state.equipment = snapshot.equipment || null;   // null on classic: no conveyor
+    state.shift = snapshot.shift || null;           // null on classic: no shift engine
     state.options = snapshot.options || state.options;
     if (snapshot.ci) state.ci = snapshot.ci;
     domDirty = true;
@@ -1572,6 +1730,8 @@
       renderTimeline();
       renderCi();
       renderAirToggle();
+      renderShift();
+      renderRobotPanel();
       syncOptions();
       syncTaskFilter();
       var speed = $("speedSelect");
@@ -1868,6 +2028,28 @@
 
     $("airToggle").addEventListener("change", function () { showAir = this.checked; });
 
+    canvas.addEventListener("click", function (event) {
+      if (!state.layout) return;
+      var id = robotAtClick(event);
+      if (id) selectRobot(id);
+    });
+    $("robotPanelClose").addEventListener("click", function () { selectRobot(null); });
+
+    $("shiftStartBtn").addEventListener("click", function () {
+      shiftAction("/api/shift/start", {}, "Shift started");
+    });
+    $("shiftPauseBtn").addEventListener("click", function () {
+      shiftAction("/api/shift/pause", {}, "Shift paused: orders in flight carry on");
+    });
+    $("shiftPaceBtn").addEventListener("click", function () {
+      shiftAction("/api/shift/config", { pace: Number($("shiftPace").value) }, "Pace set to " + $("shiftPace").value);
+    });
+    $("faultBtn").addEventListener("click", function () {
+      var kind = $("faultKind").value;
+      shiftAction("/api/faults/" + encodeURIComponent(kind), { count: 1 },
+        FM.titleize(kind) + " armed: it happens at the next chance");
+    });
+
     $("estopBtn").addEventListener("click", function () {
       api("/api/simulation/emergency-stop", { method: "POST" })
         .then(function () { toast("Emergency stop engaged — every robot is halted", "bad"); })
@@ -1890,24 +2072,21 @@
     $("taskForm").addEventListener("submit", function (event) {
       event.preventDefault();
       var note = $("taskFormNote");
-      var allowed = TASK_FIELDS[$("taskType").value] || [];
-      var body = { type: $("taskType").value, robot_id: $("taskRobot").value };
-      if (allowed.indexOf("box") !== -1) body.box_id = $("taskBox").value;
-      if (allowed.indexOf("box_ids") !== -1) {
-        body.box_ids = Array.prototype.slice.call($("taskBoxes").selectedOptions)
-          .map(function (o) { return o.value; });
-      }
-      if (allowed.indexOf("source") !== -1 && $("taskSource").value) body.source = $("taskSource").value;
-      if (allowed.indexOf("destination") !== -1) body.destination = $("taskDestination").value;
-      if (allowed.indexOf("priority") !== -1) body.priority = $("taskPriority").value;
-      if (allowed.indexOf("agent") !== -1) body.agent_id = $("taskAgent").value;
-      if (allowed.indexOf("operator") !== -1) {
-        body.operator_id = $("taskOperator").value;
-        if ($("taskDualSignoff").checked) {
-          body.dual_signoff = true;
-          if ($("taskSecondOperator").value !== "AUTO") body.second_operator_id = $("taskSecondOperator").value;
-        }
-      }
+      var type = $("taskType").value;
+      var values = {
+        robot: $("taskRobot").value,
+        box: $("taskBox").value,
+        box_ids: Array.prototype.slice.call($("taskBoxes").selectedOptions).map(function (o) { return o.value; }),
+        source: $("taskSource").value,
+        destination: $("taskDestination").value,
+        priority: $("taskPriority").value,
+        agent: $("taskAgent").value,
+        operator: $("taskOperator").value,
+        dual_signoff: $("taskDualSignoff").checked,
+        second_operator: $("taskSecondOperator").value
+      };
+      Object.keys(JOB_INPUTS).forEach(function (field) { values[field] = $(JOB_INPUTS[field]).value; });
+      var body = FM.taskPayload(type, FM.taskFields(state.options, type), values);
 
       api("/api/tasks", { method: "POST", body: body })
         .then(function (result) {
@@ -2157,6 +2336,11 @@
       .then(function (snapshot) {
         applyState(snapshot);
         resizeCanvas();
+        var wanted = FM.queryParam(window.location.search, "robot");
+        if (wanted) {
+          if (findRobot(wanted)) selectRobot(wanted);
+          else toast("Robot " + wanted + " is not on the floor", "bad");
+        }
         return api("/api/logs?limit=300");
       })
       .then(function (body) {
