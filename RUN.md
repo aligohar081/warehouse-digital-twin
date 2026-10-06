@@ -59,8 +59,9 @@ Receiver holds port 5000, so pick another port (`WAREHOUSE_PORT=5050`).
 
 `WAREHOUSE_LAYOUT` picks the floor: `classic` (the default, 20x15) or
 `distribution_center` (the 32x20 multi-embodiment floor). The new floor
-boots with the shift soak's fleet, goods and crew, its shift already
-running, and keeps its own `logs/distribution_center/` and
+boots with the shift soak's fleet, goods and crew and its shift paused,
+so, like classic, it runs only the tasks you assign (the shift's Start
+control comes with plan 1c). It keeps its own `logs/distribution_center/` and
 `data/distribution_center/` (its own inventory file), so switching floors
 never reseeds classic's `data/inventory.sqlite3`. The dashboard doesn't
 draw the new floor's cell types, people, conveyor or shift panel yet

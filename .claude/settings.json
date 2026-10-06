@@ -1,0 +1,20 @@
+{
+  "autoCompactWindow": 200000,
+  "permissions": {
+    "deny": [
+      "Read(./.git/**)",
+      "Read(./.venv/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./.pytest_cache/**)",
+      "Read(./_archive/**)",
+      "Read(./data/**)",
+      "Read(./logs/distribution_center/**)",
+      "Read(./logs/*.log)",
+      "Read(./logs/events.json)",
+      "Read(./logs/tasks/**)",
+      "Read(./evals/*.generated.yaml)",
+      "Read(./docs/superpowers/plans/2026-09-30-*)",
+      "Read(./docs/superpowers/plans/2026-10-01-*)"
+    ]
+  }
+}
