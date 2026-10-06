@@ -19,14 +19,18 @@
     statistics: {},
     robotStatistics: [],
     options: null,
-    ci: null
+    ci: null,
+    cellTypes: [],
+    noFly: [],
+    equipment: null
   };
 
   var selectedTaskId = null;
   var optionsSignature = "";
   var logBuffer = [];
   var LOG_CAP = 600;
-  var render = { robots: {}, dash: 0 };
+  var render = { robots: {}, items: {}, dash: 0, fills: {}, roles: {}, walkway: [] };
+  var showAir = true;    // the "Air layer" toggle: drones and the no-fly overlay
   var NOTIF_LEVELS = { WARNING: 1, ERROR: 1, CRITICAL: 1 };
   var NOTIF_CAP = 60;
   var notifications = [];
@@ -37,45 +41,15 @@
   var chatOpen = false;
   var chatBusy = false;
 
-  var COLORS = {
-    floor: "#0e1417",
-    grid: "#182126",
-    wall: "#2c3a41",
-    shelf: "#243138",
-    shelfLine: "#33454e",
-    storage: "#1d2a30",
-    charging: "#16302f",
-    loading: "#2c2716",
-    unloading: "#252c1a",
-    packing: "#231d2e",
-    parking: "#1b2429",
-    restricted: "#2b1e14",
-    amber: "#ffb300",
-    cyan: "#31d1c4",
-    ok: "#7ddf64",
-    warn: "#ff9538",
-    fault: "#ff5252",
-    ink: "#e7eef1",
-    muted: "#7b8d95",
-    faint: "#4d5f67",
-    box: "#c98b3a",
-    boxCarried: "#ffb300",
-    boxDelivered: "#5f8f4f"
-  };
+  // Pure floor helpers (frontend/floor_model.js, loaded first by index.html).
+  var FM = window.FloorModel;
+
+  // The palette lives in the floor model, so its tests can pin the classic
+  // floor's colours; the fills and the legend come from the snapshot's
+  // cell_types table (see layoutChanged and renderLegend).
+  var COLORS = FM.PALETTE;
 
   var ROBOT_TINT = ["#31d1c4", "#ffb300", "#9b8cff", "#7ddf64", "#ff9538", "#ff5252"];
-
-  var LEGEND = [
-    ["Racking", COLORS.shelf],
-    ["Pick face", COLORS.storage],
-    ["Charging", COLORS.charging],
-    ["Loading", COLORS.loading],
-    ["Unloading", COLORS.unloading],
-    ["Packing", COLORS.packing],
-    ["Parking", COLORS.parking],
-    ["Restricted", COLORS.restricted],
-    ["Route", COLORS.amber]
-  ];
 
   var TASK_FIELDS = {
     PICK_AND_DELIVER: ["box", "source", "destination", "priority"],
@@ -140,6 +114,10 @@
   function boxLabel(id) {
     for (var i = 0; i < state.boxes.length; i++) if (state.boxes[i].id === id) return state.boxes[i].name;
     return id || "—";
+  }
+  function findBox(id) {
+    for (var i = 0; i < state.boxes.length; i++) if (state.boxes[i].id === id) return state.boxes[i];
+    return null;
   }
   function robotLabel(id) {
     for (var i = 0; i < state.robots.length; i++) if (state.robots[i].id === id) return state.robots[i].name;
@@ -1066,18 +1044,16 @@
   }
 
   function cellFill(type) {
-    switch (type) {
-      case "WALL": return COLORS.wall;
-      case "SHELF": return COLORS.shelf;
-      case "STORAGE": return COLORS.storage;
-      case "CHARGING": return COLORS.charging;
-      case "LOADING": return COLORS.loading;
-      case "UNLOADING": return COLORS.unloading;
-      case "PACKING": return COLORS.packing;
-      case "PARKING": return COLORS.parking;
-      case "RESTRICTED": return COLORS.restricted;
-      default: return COLORS.floor;
-    }
+    return render.fills[type] || COLORS.floor;
+  }
+
+  // The layout arrived or changed: recompute what is drawn from its
+  // cell_types table and cells, and the legend.
+  function layoutChanged() {
+    render.fills = FM.cellFills(state.cellTypes, COLORS);
+    render.roles = FM.cellRoles(state.cellTypes);
+    render.walkway = state.layout.cells.filter(function (c) { return c.type === "WALKWAY"; });
+    renderLegend();
   }
 
   function drawFloor() {
@@ -1089,14 +1065,15 @@
     layout.cells.forEach(function (item) {
       ctx.fillStyle = cellFill(item.type);
       ctx.fillRect(item.x * cell, item.y * cell, cell, cell);
-      if (item.type === "SHELF" && shelfPattern) {
+      var pattern = FM.cellPattern(render.roles[item.type]);
+      if (pattern === "rack" && shelfPattern) {
         ctx.save();
         ctx.translate(item.x * cell, item.y * cell);
         ctx.fillStyle = shelfPattern;
         ctx.fillRect(0, 0, cell, cell);
         ctx.restore();
       }
-      if (item.type === "RESTRICTED" && hazardPattern) {
+      if (pattern === "hazard" && hazardPattern) {
         ctx.save();
         ctx.translate(item.x * cell, item.y * cell);
         ctx.fillStyle = hazardPattern;
@@ -1123,20 +1100,128 @@
     ctx.font = "600 " + Math.max(8, Math.round(cell * 0.3)) + "px 'Saira Condensed', sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    layout.zones.forEach(function (zone) {
-      var xs = zone.cells.map(function (c) { return c.x; });
-      var ys = zone.cells.map(function (c) { return c.y; });
-      var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
-      var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
-      ctx.strokeStyle = zone.type === "RESTRICTED" ? "rgba(255,179,0,0.55)" : "rgba(49,209,196,0.24)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x0 * cell + 1.5, y0 * cell + 1.5, (x1 - x0 + 1) * cell - 3, (y1 - y0 + 1) * cell - 3);
+    // Routes and plain aisles get no frame; see FloorModel.zoneFrames.
+    FM.zoneFrames(layout.zones).forEach(function (frame) {
+      var x0 = frame.x0, x1 = frame.x1, y0 = frame.y0, y1 = frame.y1;
+      if (frame.outline) {
+        ctx.strokeStyle = frame.restricted ? "rgba(255,179,0,0.55)" : "rgba(49,209,196,0.24)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x0 * cell + 1.5, y0 * cell + 1.5, (x1 - x0 + 1) * cell - 3, (y1 - y0 + 1) * cell - 3);
+      }
       ctx.fillStyle = "rgba(231,238,241,0.4)";
-      ctx.fillText(
-        zone.label.toUpperCase(),
-        ((x0 + x1 + 1) / 2) * cell,
-        ((y0 + y1 + 1) / 2) * cell
-      );
+      var lx = ((x0 + x1 + 1) / 2) * cell, ly = ((y0 + y1 + 1) / 2) * cell;
+      if (frame.vertical) {    // a one-cell strip (the walkway): its label stands upright
+        ctx.save();
+        ctx.translate(lx, ly);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(frame.label.toUpperCase(), 0, 0);
+        ctx.restore();
+      } else {
+        ctx.fillText(frame.label.toUpperCase(), lx, ly);
+      }
+    });
+  }
+
+  // The no-fly overlay: part of the air layer, so the toggle hides it too.
+  function drawNoFly() {
+    if (!showAir || !state.noFly.length) return;
+    var cell = geometry.cell;
+    ctx.save();
+    ctx.fillStyle = "rgba(155,140,255,0.10)";
+    ctx.strokeStyle = "rgba(155,140,255,0.30)";
+    ctx.lineWidth = 1;
+    state.noFly.forEach(function (c) {
+      ctx.fillRect(c.x * cell, c.y * cell, cell, cell);
+      ctx.beginPath();
+      ctx.moveTo(c.x * cell + cell * 0.3, c.y * cell + cell * 0.3);
+      ctx.lineTo(c.x * cell + cell * 0.7, c.y * cell + cell * 0.7);
+      ctx.moveTo(c.x * cell + cell * 0.7, c.y * cell + cell * 0.3);
+      ctx.lineTo(c.x * cell + cell * 0.3, c.y * cell + cell * 0.7);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  // Jammed conveyor cells in red, and the items riding the line, each
+  // gliding to the cell the backend reports it on.
+  function drawConveyor() {
+    var view = FM.conveyorView(state.equipment);
+    if (!view.items.length && !view.jammed.length && !Object.keys(render.items).length) return;
+    var cell = geometry.cell;
+    ctx.save();
+    view.jammed.forEach(function (c) {
+      ctx.fillStyle = "rgba(255,82,82,0.42)";
+      ctx.fillRect(c.x * cell, c.y * cell, cell, cell);
+      ctx.strokeStyle = COLORS.fault;
+      ctx.lineWidth = Math.max(1.5, cell * 0.06);
+      ctx.strokeRect(c.x * cell + 1.5, c.y * cell + 1.5, cell - 3, cell - 3);
+    });
+    ctx.restore();
+    var seen = {};
+    view.items.forEach(function (item) {
+      seen[item.boxId] = true;
+      var display = render.items[item.boxId];
+      if (!display || Math.abs(item.x - display.x) > 2.5 || Math.abs(item.y - display.y) > 2.5) {
+        display = render.items[item.boxId] = { x: item.x, y: item.y };
+      }
+      display.x += (item.x - display.x) * 0.24;
+      display.y += (item.y - display.y) * 0.24;
+      var box = findBox(item.boxId);
+      drawBox((display.x + 0.5) * cell, (display.y + 0.5) * cell, cell * 0.4,
+        box && box.kind === "CARTON" ? COLORS.boxDelivered : COLORS.box,
+        box ? FM.kindLetter(box.kind) : "");
+    });
+    Object.keys(render.items).forEach(function (id) { if (!seen[id]) delete render.items[id]; });
+  }
+
+  // Each arm's reachable cells, and its pack cell framed: cyan at work,
+  // amber while it is paused for a person (or a jam upstream).
+  function drawArms() {
+    var cell = geometry.cell;
+    state.robots.forEach(function (robot) {
+      var view = FM.armView(robot, state.equipment, state.layout);
+      if (!view) return;
+      ctx.save();
+      ctx.fillStyle = view.paused ? "rgba(255,179,0,0.16)" : "rgba(49,209,196,0.10)";
+      view.reach.forEach(function (c) { ctx.fillRect(c.x * cell + 2, c.y * cell + 2, cell - 4, cell - 4); });
+      var frame = view.station ? FM.zoneFrames(state.layout.zones).filter(function (f) {
+        return f.key === view.station;
+      })[0] : null;
+      if (frame) {
+        ctx.strokeStyle = view.paused ? COLORS.amber : "rgba(49,209,196,0.7)";
+        ctx.lineWidth = Math.max(1.5, cell * 0.06);
+        ctx.setLineDash(view.paused ? [cell * 0.2, cell * 0.12] : []);
+        ctx.strokeRect(frame.x0 * cell + 3, frame.y0 * cell + 3,
+          (frame.x1 - frame.x0 + 1) * cell - 6, (frame.y1 - frame.y0 + 1) * cell - 6);
+      }
+      ctx.restore();
+    });
+  }
+
+  // People as small dots with their initials (spec §12 People): in their
+  // zone, or on the walkway while they walk between two zones.
+  function drawPeople() {
+    if (!state.operators.length) return;
+    var cell = geometry.cell;
+    var radius = Math.max(4, cell * 0.2);
+    FM.peopleDots(state.operators, state.layout.zones, render.walkway).forEach(function (dot) {
+      var cx = (dot.x + 0.28) * cell, cy = (dot.y + 0.28) * cell;
+      ctx.save();
+      ctx.fillStyle = dot.inTransit ? COLORS.cyan : COLORS.ink;
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (cell >= 18) {
+        ctx.fillStyle = "#0f1417";
+        ctx.font = "700 " + Math.max(7, Math.round(radius * 1.05)) + "px 'Saira Condensed', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(dot.initials, cx, cy + 0.5);
+      }
+      ctx.restore();
     });
   }
 
@@ -1145,6 +1230,7 @@
     render.dash = (render.dash + 0.6) % 24;
     state.robots.forEach(function (robot) {
       if (!robot.current_path.length) return;
+      if (!showAir && FM.isDrone(robot)) return;
       var tint = robotTint(robot.id);
       var display = render.robots[robot.id] || { x: robot.position.x, y: robot.position.y };
       ctx.save();
@@ -1212,7 +1298,8 @@
   function drawBoxes() {
     var cell = geometry.cell;
     state.boxes.forEach(function (box) {
-      if (box.status === "CARRIED" || box.status === "DELIVERING") return; // drawn on the robot
+      if (box.status === "CARRIED" || box.status === "DELIVERING") return; // drawn on the robot or the line
+      if (box.status === "SHIPPED") return;  // it left on a truck
       var color = box.status === "DELIVERED" ? COLORS.boxDelivered :
         box.status === "RESERVED" || box.status === "PICKING" ? COLORS.boxCarried : COLORS.box;
       drawBox((box.position.x + 0.5) * cell, (box.position.y + 0.5) * cell, cell * 0.52, color,
@@ -1220,9 +1307,81 @@
     });
   }
 
-  function drawRobots() {
+  function roundedRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // A robot type's chassis (FloorModel.robotGlyph), around the origin and
+  // facing +x, in the current fill and stroke. Returns where its heading
+  // notch goes, or 0 for a body whose front needs no notch.
+  function drawChassis(glyph, size) {
+    var half = size / 2;
+    if (glyph === "diamond") {
+      ctx.beginPath();
+      ctx.moveTo(half, 0); ctx.lineTo(0, -half); ctx.lineTo(-half, 0); ctx.lineTo(0, half);
+      ctx.closePath();
+    } else if (glyph === "round" || glyph === "arm" || glyph === "rotor") {
+      ctx.beginPath();
+      ctx.arc(0, 0, glyph === "round" ? half : glyph === "arm" ? size * 0.42 : size * 0.26, 0, Math.PI * 2);
+    } else if (glyph === "wide") {
+      roundedRect(-size * 0.575, -size * 0.425, size * 1.15, size * 0.85, size * 0.22);
+    } else if (glyph === "forklift") {
+      roundedRect(-half, -half, size * 0.7, size, size * 0.18);
+    } else {
+      roundedRect(-half, -half, size, size, size * 0.22);
+    }
+    ctx.fill();
+    ctx.stroke();
+    if (glyph === "forklift") {          // the forks point the way it faces
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillRect(size * 0.2, -size * 0.3, size * 0.36, size * 0.1);
+      ctx.fillRect(size * 0.2, size * 0.2, size * 0.36, size * 0.1);
+      return 0;
+    }
+    if (glyph === "rotor") {             // four rotors round the drone's body
+      [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(function (s) {
+        ctx.beginPath();
+        ctx.arc(s[0] * size * 0.34, s[1] * size * 0.34, size * 0.16, 0, Math.PI * 2);
+        ctx.stroke();
+      });
+      return 0;
+    }
+    if (glyph === "arm") {               // a fixed base: no front
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.14, 0, Math.PI * 2);
+      ctx.fill();
+      return 0;
+    }
+    return glyph === "wide" ? size * 0.575 : half;
+  }
+
+  function drawBadge(x, y, r, text) {
+    ctx.save();
+    ctx.fillStyle = "#0f1417";
+    ctx.strokeStyle = COLORS.amber;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COLORS.amber;
+    ctx.font = "700 " + Math.max(7, Math.round(r * 1.5)) + "px 'Saira Condensed', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, x, y + 0.5);
+    ctx.restore();
+  }
+
+  function drawRobots(robots) {
     var cell = geometry.cell;
-    state.robots.forEach(function (robot) {
+    robots.forEach(function (robot) {
       var target = robot.position;
       var display = render.robots[robot.id];
       if (!display) {
@@ -1241,12 +1400,14 @@
       var tint = robotTint(robot.id);
       var halted = robot.status === "STOPPED" || robot.status === "ERROR";
       var waiting = robot.status === "WAITING";
+      var flying = robot.layer === "AIR";
 
       ctx.save();
-      // shadow
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      // shadow (a flying drone's falls further below it, and fainter)
+      var drop = flying ? Math.min(cell * 0.45, (robot.altitude_m || 0) * cell * 0.12) : 0;
+      ctx.fillStyle = flying ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.45)";
       ctx.beginPath();
-      ctx.ellipse(cx, cy + size * 0.42, size * 0.44, size * 0.16, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx, cy + size * 0.42 + drop, size * 0.44, size * 0.16, 0, 0, Math.PI * 2);
       ctx.fill();
 
       // chassis
@@ -1256,31 +1417,54 @@
       ctx.fillStyle = halted ? "#3a2226" : "#1d272c";
       ctx.strokeStyle = halted ? COLORS.fault : waiting ? COLORS.warn : tint;
       ctx.lineWidth = Math.max(1.6, cell * 0.06);
-      var r = size * 0.22;
-      ctx.beginPath();
-      ctx.moveTo(-size / 2 + r, -size / 2);
-      ctx.arcTo(size / 2, -size / 2, size / 2, size / 2, r);
-      ctx.arcTo(size / 2, size / 2, -size / 2, size / 2, r);
-      ctx.arcTo(-size / 2, size / 2, -size / 2, -size / 2, r);
-      ctx.arcTo(-size / 2, -size / 2, size / 2, -size / 2, r);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      var front = drawChassis(FM.robotGlyph(robot), size);
 
       // heading notch
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.beginPath();
-      ctx.moveTo(size * 0.5, 0);
-      ctx.lineTo(size * 0.22, -size * 0.18);
-      ctx.lineTo(size * 0.22, size * 0.18);
-      ctx.closePath();
-      ctx.fill();
+      if (front) {
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.beginPath();
+        ctx.moveTo(front, 0);
+        ctx.lineTo(front - size * 0.28, -size * 0.18);
+        ctx.lineTo(front - size * 0.28, size * 0.18);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.restore();
 
-      // carried box rides on the chassis
+      // the type letter, on robots with a floor profile only (Plan ruling 10)
+      var letter = FM.robotLetter(robot);
+      if (letter) {
+        ctx.save();
+        ctx.fillStyle = COLORS.ink;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        if (robot.carrying_box) {        // the box rides on top: the letter moves to a corner
+          ctx.font = "700 " + Math.max(7, Math.round(cell * 0.22)) + "px 'Saira Condensed', sans-serif";
+          ctx.fillText(letter, cx - size * 0.3, cy + size * 0.28);
+        } else {
+          ctx.font = "700 " + Math.max(8, Math.round(cell * 0.36)) + "px 'Saira Condensed', sans-serif";
+          ctx.fillText(letter, cx, cy + 0.5);
+        }
+        ctx.restore();
+      }
+
+      // an amber ring while it holds a physical wait (robot.wait_reason)
+      if (robot.wait_reason) {
+        ctx.save();
+        ctx.strokeStyle = COLORS.amber;
+        ctx.lineWidth = Math.max(1.5, cell * 0.07);
+        ctx.beginPath();
+        ctx.arc(cx, cy, size * 0.68, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // carried box rides on the chassis, with its kind badge on the new floor
       if (robot.carrying_box) {
         drawBox(cx, cy - size * 0.1, size * 0.5, COLORS.boxCarried,
           boxLabel(robot.carrying_box).replace(/^Box-/, ""));
+        var badge = FM.kindBadge(robot, findBox(robot.carrying_box));
+        if (badge) drawBadge(cx + size * 0.25, cy - size * 0.35, Math.max(4, size * 0.17), badge);
       }
 
       // name + battery gauge
@@ -1310,9 +1494,15 @@
   function draw() {
     if (state.layout) {
       drawFloor();
+      drawNoFly();
+      drawConveyor();
+      drawArms();
       drawRoutes();
       drawBoxes();
-      drawRobots();
+      var layers = FM.robotLayers(state.robots, showAir);
+      drawRobots(layers.ground);
+      drawPeople();
+      drawRobots(layers.air);   // the air layer draws above everything (spec §12)
     }
     requestAnimationFrame(draw);
   }
@@ -1320,7 +1510,7 @@
   function renderLegend() {
     var node = $("legend");
     node.innerHTML = "";
-    LEGEND.forEach(function (item) {
+    FM.legendItems(state.cellTypes, COLORS).forEach(function (item) {
       var span = el("span");
       var swatch = el("i");
       swatch.style.background = item[1];
@@ -1328,6 +1518,11 @@
       span.appendChild(document.createTextNode(item[0]));
       node.appendChild(span);
     });
+  }
+
+  // The "Air layer" toggle only appears on a floor that has one.
+  function renderAirToggle() {
+    $("airToggleWrap").hidden = !(state.noFly.length || state.robots.some(FM.isDrone));
   }
 
   /* --------------------------------------------------------------- ingestion */
@@ -1338,6 +1533,9 @@
         state.layout.width !== snapshot.warehouse.width ||
         state.layout.height !== snapshot.warehouse.height;
       state.layout = snapshot.warehouse;
+      state.cellTypes = snapshot.cell_types || [];
+      state.noFly = FM.noFlyCells(snapshot.no_fly_cells);
+      layoutChanged();
       if (changed) resizeCanvas();
     }
     if (snapshot.config) state.config = snapshot.config;
@@ -1349,6 +1547,7 @@
     state.tasks = snapshot.tasks || [];
     state.statistics = snapshot.statistics || {};
     state.robotStatistics = snapshot.robot_statistics || [];
+    state.equipment = snapshot.equipment || null;   // null on classic: no conveyor
     state.options = snapshot.options || state.options;
     if (snapshot.ci) state.ci = snapshot.ci;
     domDirty = true;
@@ -1366,6 +1565,7 @@
       renderOperators();
       renderTimeline();
       renderCi();
+      renderAirToggle();
       syncOptions();
       syncTaskFilter();
       var speed = $("speedSelect");
@@ -1659,6 +1859,8 @@
     $("falseSuccessRiskSlider").addEventListener("input", function () {
       $("falseSuccessRiskValue").textContent = this.value + "%";
     });
+
+    $("airToggle").addEventListener("change", function () { showAir = this.checked; });
 
     $("estopBtn").addEventListener("click", function () {
       api("/api/simulation/emergency-stop", { method: "POST" })

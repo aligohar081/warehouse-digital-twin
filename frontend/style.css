@@ -361,6 +361,10 @@ select { appearance: none; cursor: pointer; }
   color: var(--muted);
 }
 .legend i { width: 9px; height: 9px; border-radius: 1px; display: inline-block; }
+/* The air layer switch (drones and the no-fly overlay); hidden on a floor with none. */
+.air-toggle { font-family: var(--display); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+.air-toggle input { accent-color: var(--violet); }
+.air-toggle[hidden] { display: none; }
 
 .canvas-wrap {
   background: #0b1013;

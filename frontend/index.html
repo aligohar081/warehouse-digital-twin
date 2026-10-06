@@ -218,6 +218,9 @@
       <div class="map-head">
         <h2 class="panel-title">Warehouse floor</h2>
         <div class="legend" id="legend"></div>
+        <label class="toggle air-toggle" id="airToggleWrap" hidden>
+          <input type="checkbox" id="airToggle" checked /><span>Air layer</span>
+        </label>
       </div>
       <div class="canvas-wrap">
         <canvas id="floor" role="img" aria-label="Live warehouse floor plan with robot positions"></canvas>
@@ -433,6 +436,7 @@
   </form>
 </div>
 
+<script src="floor_model.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
