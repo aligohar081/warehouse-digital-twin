@@ -16,8 +16,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .decision_graph import flatten_record, query_decisions
+from .digital_twin import TASK_GUIDES
 from .eval_engine import evaluate_events
-from .jobs import JOB_SPECS
+from .jobs import JOB_PARAM_KEYS, JOB_SPECS
 from .models import LogCategory, TaskType, Priority
 
 MAX_QUERY_RESULTS = 15
@@ -25,19 +26,25 @@ MAX_QUERY_RESULTS = 15
 # Kept deliberately compact (this whole module's TOOLS list is resent on
 # every single turn of the tool-use loop, uncached — see backend/
 # agent_chat.py — and Groq's free tier is only 8000 tokens/minute, so a
-# verbose schema is a real reliability problem, not just noise).
-TASK_TYPE_GUIDE = (
-    "PICK_AND_DELIVER:box+dest | MOVE_ROBOT:dest | PICK_BOX:box | "
-    "DELIVER_BOX:box+dest | MOVE_BOX:box+dest(robot auto-picked) | "
-    "BATCH_DELIVER:box_ids(2+)+dest | CHARGE_ROBOT:robot_id | "
-    "STOP_ROBOT/RESUME_ROBOT:robot_id | AGENT_INSPECTION:agent_id | "
-    "HUMAN_INSPECTION:operator_id(needs safety_inspection) | "
-    "MIXED_MAINTENANCE_MISSION:dest(agent+robot+operator, needs electrical_safety) | "
-    "AGENT_REPLAN:agent_id(reviews queue, doesn't act) | "
-    "AGENT_AUDIT:agent_id(reviews recent logs/CI) | "
-    "OPERATOR_APPROVAL:operator_id[+robot_id](needs safety_inspection) | "
-    "OPERATOR_MAINTENANCE_SIGNOFF:operator_id[+robot_id](needs electrical_safety, resets wear)"
-) + "".join(f" | {kind.value}:{spec.guide}" for kind, spec in JOB_SPECS.items())  # the new-floor jobs
+# verbose schema is a real reliability problem, not just noise). The older
+# types' lines are the twin's TASK_GUIDES (the dashboard's task form shows the
+# same ones); the new-floor jobs' are their JobSpec guides.
+TASK_TYPE_GUIDE = " | ".join(f"{kind}:{guide}" for kind, guide in TASK_GUIDES.items()) + \
+    "".join(f" | {kind.value}:{spec.guide}" for kind, spec in JOB_SPECS.items())
+
+#: The create_task tool's schema for each field a new-floor job reads
+#: (jobs.JOB_PARAM_KEYS) — kept as short as the rest, for the same reason.
+JOB_FIELD_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "slot": {"type": "string", "description": "Rack or shelf slot id, e.g. PR-08-02-1"},
+    "quantity": {"type": "integer", "description": "Units to pick or pack"},
+    "station": {"type": "string", "description": "Pick station zone"},
+    "face": {"type": "string", "description": "Pallet rack cell to count, 'x,y'"},
+    "dock": {"type": "string", "description": "Outbound dock zone"},
+    "lane": {"type": "string", "description": "Sorter lane (dock_4 or dock_5)"},
+    "order_id": {"type": "string", "description": "The order the items are for"},
+    "pack_cell": {"type": "string", "description": "Pack cell zone"},
+    "segment": {"type": "string", "description": "Jammed conveyor cell, 'x,y'"},
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +89,8 @@ TOOLS: List[Dict[str, Any]] = [
                     "operator_id": _opt("string", description="Operator name or id, or 'AUTO'"),
                     "dual_signoff": _opt("boolean", description="Require a second, different operator's sign-off"),
                     "second_operator_id": _opt("string", description="Explicit second signer; omit for AUTO"),
+                    **{key: _opt(JOB_FIELD_SCHEMAS[key]["type"], description=JOB_FIELD_SCHEMAS[key]["description"])
+                       for key in JOB_PARAM_KEYS},
                 },
                 "required": ["type"],
             },

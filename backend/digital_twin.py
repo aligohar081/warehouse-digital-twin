@@ -61,6 +61,74 @@ from .task_planner import TaskPlanner
 from .warehouse import Warehouse
 
 
+#: The fields each task type's form shows, in order (options()["task_types"]).
+#: Each is a key POST /api/tasks takes: "box", "agent" and "operator" name a
+#: box, agent or operator, and the rest are the request's own keys. The robot
+#: is offered for every type, so no list names it. The older types' lists are
+#: the dashboard's own; a new floor job type's are the fields its JobSpec guide
+#: names, then priority.
+TASK_FIELDS: Dict[str, List[str]] = {
+    "PICK_AND_DELIVER": ["box", "source", "destination", "priority"],
+    "MOVE_ROBOT": ["destination", "priority"],
+    "PICK_BOX": ["box", "priority"],
+    "DELIVER_BOX": ["box", "destination", "priority"],
+    "MOVE_BOX": ["box", "source", "destination", "priority"],
+    "CHARGE_ROBOT": ["priority"],
+    "STOP_ROBOT": [],
+    "RESUME_ROBOT": [],
+    "AGENT_INSPECTION": ["agent"],
+    "HUMAN_INSPECTION": ["operator"],
+    "MIXED_MAINTENANCE_MISSION": ["destination", "agent", "operator", "priority"],
+    "AGENT_REPLAN": ["agent"],
+    "AGENT_AUDIT": ["agent"],
+    "OPERATOR_APPROVAL": ["operator"],
+    "OPERATOR_MAINTENANCE_SIGNOFF": ["operator"],
+    "BATCH_DELIVER": ["box_ids", "destination", "priority"],
+    "UNLOAD_TRUCK": ["box", "destination", "priority"],
+    "PUTAWAY_PALLET": ["box", "slot", "priority"],
+    "RETRIEVE_PALLET": ["box", "destination", "priority"],
+    "LOAD_TRUCK": ["box", "dock", "priority"],
+    "TOTE_TO_STATION": ["box", "station", "priority"],
+    "RETURN_TOTE": ["box", "slot", "priority"],
+    "RETURNS_PUTAWAY": ["box", "slot", "priority"],
+    "PICK_ITEMS": ["box", "quantity", "order_id", "pack_cell", "priority"],
+    "PACK_ORDER": ["order_id", "quantity", "pack_cell", "lane", "priority"],
+    "MANUAL_PICK": ["box", "quantity", "order_id", "pack_cell", "operator", "priority"],
+    "CLEAR_JAM": ["segment", "operator", "priority"],
+    "CYCLE_COUNT": ["face", "priority"],
+    "PATROL": ["priority"],
+}
+
+#: What a request for each older task type needs, in one line — the new floor's
+#: job types keep theirs on their JobSpec. The dashboard's task form and the
+#: chat agent's TASK_TYPE_GUIDE both show these.
+TASK_GUIDES: Dict[str, str] = {
+    "PICK_AND_DELIVER": "box+dest",
+    "MOVE_ROBOT": "dest",
+    "PICK_BOX": "box",
+    "DELIVER_BOX": "box+dest",
+    "MOVE_BOX": "box+dest(robot auto-picked)",
+    "CHARGE_ROBOT": "robot_id",
+    "STOP_ROBOT": "robot_id",
+    "RESUME_ROBOT": "robot_id",
+    "AGENT_INSPECTION": "agent_id",
+    "HUMAN_INSPECTION": "operator_id(needs safety_inspection)",
+    "MIXED_MAINTENANCE_MISSION": "dest(agent+robot+operator, needs electrical_safety)",
+    "AGENT_REPLAN": "agent_id(reviews queue, doesn't act)",
+    "AGENT_AUDIT": "agent_id(reviews recent logs/CI)",
+    "OPERATOR_APPROVAL": "operator_id[+robot_id](needs safety_inspection)",
+    "OPERATOR_MAINTENANCE_SIGNOFF": "operator_id[+robot_id](needs electrical_safety, resets wear)",
+    "BATCH_DELIVER": "box_ids(2+)+dest",
+}
+
+
+def task_form(option: Dict[str, Any]) -> Dict[str, Any]:
+    """A task_types entry with its form: the fields to show and the guide."""
+    kind = option["id"]
+    guide = TASK_GUIDES.get(kind) or JOB_SPECS[TaskType(kind)].guide
+    return {**option, "fields": list(TASK_FIELDS[kind]), "guide": guide}
+
+
 class DigitalTwin:
     # Re-exported so collaborators do not need their own enum imports.
     RobotStatus = RobotStatus
@@ -1021,6 +1089,9 @@ class DigitalTwin:
         return out
 
     def options(self) -> Dict[str, Any]:
+        # The new floor's job types need a robot with a floor profile, which
+        # the classic floor never has: only a floor that runs them offers them.
+        jobs = list(JOB_SPECS.items()) if self.layout_name != "classic" else []
         return {
             "robots": [{"id": r.id, "label": r.name} for r in self.robots.values()],
             "boxes": [
@@ -1041,7 +1112,7 @@ class DigitalTwin:
                 for o in self.operators.values()
             ],
             "locations": self.warehouse.location_options(),
-            "task_types": [
+            "task_types": [task_form(option) for option in [
                 {"id": TaskType.PICK_AND_DELIVER.value, "label": "Pick & deliver"},
                 {"id": TaskType.MOVE_ROBOT.value, "label": "Move robot"},
                 {"id": TaskType.PICK_BOX.value, "label": "Pick box"},
@@ -1058,7 +1129,7 @@ class DigitalTwin:
                 {"id": TaskType.OPERATOR_APPROVAL.value, "label": "Operator approval"},
                 {"id": TaskType.OPERATOR_MAINTENANCE_SIGNOFF.value, "label": "Operator maintenance sign-off"},
                 {"id": TaskType.BATCH_DELIVER.value, "label": "Batch deliver (multiple boxes)"},
-            ] + [{"id": kind.value, "label": spec.label} for kind, spec in JOB_SPECS.items()],
+            ] + [{"id": kind.value, "label": spec.label} for kind, spec in jobs]],
             # The task types it actually makes sense to restrict a robot
             # to (i.e. the ones a robot is really dispatched for) — what
             # the dashboard's per-robot capability editor offers as
@@ -1075,7 +1146,7 @@ class DigitalTwin:
                 {"id": TaskType.CHARGE_ROBOT.value, "label": "Charge robot"},
                 {"id": TaskType.MIXED_MAINTENANCE_MISSION.value, "label": "Mixed maintenance mission"},
                 {"id": TaskType.BATCH_DELIVER.value, "label": "Batch deliver (multiple boxes)"},
-            ] + [{"id": kind.value, "label": spec.label} for kind, spec in JOB_SPECS.items() if not spec.human],
+            ] + [{"id": kind.value, "label": spec.label} for kind, spec in jobs if not spec.human],
             "robot_classes": [
                 {"id": key, "label": preset.get("label", key)}
                 for key, preset in ROBOT_CLASS_PRESETS.items()

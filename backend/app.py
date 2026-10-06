@@ -15,10 +15,11 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from .agent_chat import ChatError, run_chat
 from .ci_engine import CIEngine
 from .decision_graph import flatten_record, query_decisions
-from .digital_twin import DigitalTwin
+from .digital_twin import TASK_FIELDS, DigitalTwin
 from .eval_engine import evaluate_events
 from .event_system import Broadcaster
 from .inventory_api import register_inventory_routes
+from .jobs import JOB_PARAM_KEYS, JOB_SPECS
 from .layouts import LAYOUTS
 from .maintenance import maintenance_reason
 from .models import CONFIG, LogCategory, Priority, SimulationStatus, now_iso
@@ -67,6 +68,36 @@ def _float(data: Dict[str, Any], key: str, default: Optional[float] = None) -> O
         return float(value)
     except (TypeError, ValueError):
         raise ApiError(f"'{key}' must be a number", field=key)
+
+
+#: The new floor's job types (jobs.JOB_SPECS), whose own fields _job_request checks.
+JOB_TYPES = frozenset(kind.value for kind in JOB_SPECS)
+
+
+def _job_request(data: Dict[str, Any]) -> Dict[str, Any]:
+    """A task request, with a new floor job type's own fields checked before
+    create_task sees them: an empty one (a form field left blank) is left out,
+    so its default applies; a quantity must be a whole number, at least 1 (a
+    form sends it as text); and a job field the type doesn't take is refused —
+    a stray slot on TOTE_TO_STATION, say, would skip its reach check. Older
+    task types pass through unchanged."""
+    kind = str(data.get("type", "")).strip().upper()
+    if kind not in JOB_TYPES:
+        return data
+    request_data = {key: value for key, value in data.items()
+                    if key not in JOB_PARAM_KEYS or not (value is None or str(value).strip() == "")}
+    fields = TASK_FIELDS[kind]
+    for key in JOB_PARAM_KEYS:
+        if key in request_data and key not in fields:
+            raise ApiError(f"{kind} takes no {key!r} (its fields: {', '.join(fields)})", field=key)
+    if "quantity" in request_data:
+        quantity = request_data["quantity"]
+        if isinstance(quantity, str) and quantity.strip().isdigit():
+            quantity = int(quantity)
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+            raise ApiError("quantity must be a whole number of at least 1", field="quantity")
+        request_data["quantity"] = quantity
+    return request_data
 
 
 def _mission_report_rows(tasks_dir: str) -> list:
@@ -484,7 +515,7 @@ def create_app(
         data = _payload()
         if not data.get("type"):
             raise ApiError("Choose a task type", field="type")
-        task = twin.tasks.create_task(data)
+        task = twin.tasks.create_task(_job_request(data))
         status = 201 if task.status.value != "FAILED" else 422
         return jsonify({"ok": status == 201, "task": task.to_dict(), "error": task.error}), status
 
