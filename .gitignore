@@ -9,3 +9,4 @@ data/inventory.sqlite3*
 evals/.env
 logs/distribution_center/
 data/distribution_center/
+.DS_Store
