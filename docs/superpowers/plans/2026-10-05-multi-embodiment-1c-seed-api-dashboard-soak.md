@@ -91,7 +91,7 @@ Choices this plan makes where the spec is ambiguous, silent or self-contradictor
 | `frontend/fleet.js` | 10 | "On the floor" links |
 | `frontend/tests/*.js` | 9, 10 (create) | `jsc` unit tests for `floor_model.js` |
 | `backend/soak.py` | 11 (create) | The §16 soak runner and CLI: the seeded floor at a fixed seed, tick timing, and the job checks over the run |
-| `README.md`, `RUN.md`, `TRUST_LAYER.md`, `policies.example.yaml` | 12 | The new floor, robot types, shift, faults, operations API, `WAREHOUSE_LAYOUT`, dashboard panels and soak; stale counts and claims corrected; the example policy matches the built-in one |
+| `README.md`, `RUN.md`, `TRUST_LAYER.md`, `policies.example.yaml` | 12 | Rewritten short (README ~165 lines, RUN.md ~100, TRUST_LAYER.md ~130): the new floor, robot types, shift, faults, one API table, `WAREHOUSE_LAYOUT`, dashboard panels and soak, linking ARCHITECTURE.md instead of repeating it; the example policy matches the built-in one |
 | `docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md` | 12 | §2 per-floor folders (ruling 2), §4.3 a save from another floor is refused (ruling 5), §6 walkway crossing decided by cells |
 | `backend/test_*.py` | 1–12 (create); `test_app_layout.py` rewritten in 2 | One new test file per task, plus the `jsc` wrappers |
 
@@ -10508,19 +10508,23 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 Spec §15 asks for the documentation of step 1: the README gets the floor, the robot types, the shift and faults, with the warning that a custom `robot_classes` block must include `ARM` and `HUMANOID`; `TRUST_LAYER.md` lists the new rules and has its stale Tier 2 list corrected. Plan 1b carried two more items here: `policies.example.yaml` lacks the seven risks and `CLEAR_JAM`, and the spec's §6 "Movement" still says zone centres decide walkway crossing. This task writes all of it against the code Tasks 1–11 left, and closes these gaps:
 
-- **The README** gains a section on the distribution-centre floor, the app's default since Task 2 (Plan ruling 1). It covers the floor plan, the eight robot types with their letters (A AMR, F forklift, H hauler, K picker, S scout, D drone, R arm, U humanoid), the people and their rules, goods, the thirteen job types, and the shift, which starts paused (§11.5, Plan ruling 6). It also covers the seven faults and how to inject them (Plan rulings 9 and 20), saving and loading (Plan ruling 5), the soak (§16), and the warning about custom robot classes. The README also gains: `WAREHOUSE_LAYOUT` and the per-floor `data/distribution_center/` and `logs/distribution_center/` folders (Plan ruling 2); every operations route (§14, Task 5); and the new dashboard panels (§12, Tasks 9–10: robot panel, shift panel with **Inject fault**, job forms, phone width).
-- **The classic floor's documentation stays**, under "The classic floor". Every README statement the code now contradicts is corrected: the default floor, the first-start seed, the save and inventory files, the robot-class table, the route tables and the eval check list. So are counts and claims that had already gone stale before this plan:
-  - the task types (29), the checks (20), the log categories (16), the box states (8) and the test count;
-  - "no polling" (the dashboard polls three panels every 5 s, the fleet page every 3 s) and the SSE events;
-  - the missing modules, and a missing example log (`task_118`).
-- **`TRUST_LAYER.md`** gets "The physical trust layer" section (§10.1–§10.6 as built): the eight shared rules and where each runs, the physical waits, the ten evaluation checks (`placement_level_correct` among them), the layout-driven system checks, and the seven faults with what catches each (Plan ruling 11). Three of its four Tier 2 items are built (authorization-changing events, policy-as-code, the decision graph), and the table now says so. The demo tables' path is corrected to `backend/seeds/classic.py`.
+- **`README.md`, `RUN.md` and `TRUST_LAYER.md` are rewritten whole, as short documents**: one **Rewrite** block each, not edits to the long files. Hard caps: the README at most 250 lines, `RUN.md` 130 and `TRUST_LAYER.md` 160. Each fact lives in one place and the other files link to it: `ARCHITECTURE.md` and `CLAUDE.md` already hold the module map, the tick, a task's lifecycle and the contributor rules, and this task leaves them alone. There are no curl or JSON samples except two one-liners in `RUN.md` (starting the shift, injecting a fault), and no number that goes stale, such as a test count.
+- **The README** holds:
+  - what the project is, and a one-line-per-feature overview (trust gate, eval engine, mock CI, fleet and workforce inventory, policies, chat agent, scheduler, reports and the rest);
+  - the quick start: `WAREHOUSE_LAYOUT` (default `distribution_center`; `classic` still works) and the per-floor `data/` and `logs/` folders (Plan ruling 2);
+  - the two floors in brief, with the robot letters (A AMR, F forklift, H hauler, K picker, S scout, D drone, R arm, U humanoid);
+  - the shift, which starts paused (§11.5, Plan ruling 6), and the seven faults with how to inject them (Plan rulings 9 and 20);
+  - the dashboard panels (§12, Tasks 9–10: robot panel, shift panel with **Inject fault**, job forms, phone width) and the soak in one line (§16);
+  - one API table with every route, old and new, including the operations routes (§14, Task 5) and the error mapping;
+  - the warning about custom robot classes, and an index of the other documents.
+- **`TRUST_LAYER.md`** holds a concept-to-code table by tier, with the Tier 2 list corrected (three of four built: authorization-changing events, policy-as-code, the decision graph; the Groq grader's assurance record isn't), and "The physical trust layer" (§10.1–§10.6 as built): the eight rules and where each runs, the physical waits, the ten evaluation checks (`placement_level_correct` among them), the layout-driven system checks, and the seven faults with their risk names and what catches each (Plan ruling 11).
+- **`RUN.md`** is commands only:
+  - prerequisites and setup;
+  - running each floor, with the port note (AirPlay holds 5000), starting the shift and injecting a fault;
+  - the tests: the full suite, one file, one test, by keyword, and the `jsc` JavaScript tests through their pytest wrappers, which skip without `jsc` (Tasks 9–10);
+  - the eval CLI, promptfoo in one paragraph linking `evals/README.md`, the soak (`python -m backend.soak`, Task 11), and a short troubleshooting table.
+- **The long reference sections are not carried over.** The task-type, gate, robot-behaviour, logging, Mock CI and eval walk-throughs, the governance subsections, the per-feature API tables, the layout tree and the future-extensions list each survive as a one-line feature entry, an API row or a link. The old statements the code had outgrown (the task-type, check, log-category and box-state counts, the test count, "no polling", the SSE events, the Python version, the requirements, how task logs are written) go with them, and the new text states none of those numbers.
 - **`policies.example.yaml`** gains the seven risks, `CLEAR_JAM: robot_cell_access`, and the robot classes as the code has them: `ARM`, `HUMANOID`, and every class's new job types. It also gets notes that `apply_policy` replaces whole tables and ignores unknown `config` keys. Copying it today would have stopped the new floor's seed ("Unknown robot_class 'ARM'"); now copying it changes nothing.
-- **`RUN.md`** covers:
-  - running each floor and starting the shift;
-  - the soak's command line (`python -m backend.soak`, Task 11);
-  - the `jsc` JavaScript tests through their pytest wrappers, which skip without `jsc` (Tasks 9–10).
-
-  It also corrects the Python version, the requirements, how task logs are written, and the examples suite's count.
 - **The spec** is amended in place, the way plans 1a and 1b amended theirs: the text states the rule as it now is, and the commit message names each amendment and where it comes from.
   - §2: the per-floor folders (Plan ruling 2).
   - §4.3: a save from another floor is refused, not rebuilt (Plan ruling 5).
@@ -10530,13 +10534,14 @@ A new test file guards the docs against drift, comparing exact identifiers taken
 
 - the example policy loads, sets only real `CONFIG` keys, and holds every fault risk at 0;
 - copying the example changes no policy in effect;
-- the README's API tables list every route `backend/operations_api.py` registers;
+- the README's API table lists every route `backend/operations_api.py` registers;
 - the README names every fault kind and risk;
 - `TRUST_LAYER.md` names every rule, check and risk;
 - `RUN.md` names each floor, the soak command and each `jsc` wrapper.
 
 **Files:**
-- Modify: `README.md`, `TRUST_LAYER.md`, `RUN.md`, `policies.example.yaml`
+- Rewrite: `README.md`, `TRUST_LAYER.md`, `RUN.md`
+- Modify: `policies.example.yaml`
 - Modify: `docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md` (§2 "Construction", §4.3 `load_state`, §6 "Movement")
 - Test: `backend/test_docs_examples.py` (create)
 
@@ -10549,9 +10554,10 @@ A new test file guards the docs against drift, comparing exact identifiers taken
   - throughout, the behaviour of Tasks 1–11 that the docs describe.
 - Produces (no code; a documentation contract the new test pins):
   - `policies.example.yaml` is the built-in policy written out: applying it leaves `effective_policy()` unchanged. It sets only `CONFIG` keys, puts every `FAULT_RISKS` risk at `0.0`, and its `certification_requirements` has `CLEAR_JAM: robot_cell_access`. Its `robot_classes` has `ARM` and `HUMANOID`.
-  - The README lists every operations route as a table row `| METHOD | `path` |`, with a path parameter written `{name}` (`/api/orders/{id}`, `/api/faults/{kind}`). It also names every fault kind and its risk in backticks.
+  - The README's API table has each operations route as a row of its own, `| METHOD | `path` |`, with a path parameter written `{name}` (`/api/orders/{id}`, `/api/faults/{kind}`); the other routes sit in grouped rows. It also names every fault kind and its risk in backticks.
   - `TRUST_LAYER.md` names, in backticks, the eight rules, the ten `EMBODIMENT_CHECKS` and the seven risks.
   - `RUN.md` contains `WAREHOUSE_LAYOUT=<name>` for each layout, `python -m backend.soak` and `backend/<file>` for each `backend/test_*_js.py`.
+  - Sizes: `README.md` at most 250 lines (it is 165), `RUN.md` at most 130 (100), `TRUST_LAYER.md` at most 160 (128).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -10886,1501 +10892,425 @@ with:
 ```
 
 
-- [ ] **Step 4: `TRUST_LAYER.md` — the physical trust layer, and Tier 2 as built**
+- [ ] **Step 4: `TRUST_LAYER.md` — rewritten short: concepts to code, Tier 2 as built, the physical trust layer**
 
-**Replace in** `TRUST_LAYER.md`:
+Replace the whole file (128 lines). The Tier 2 table is checked against the code: `Simulator._check_authorization_changes`, `backend/policy.py` and `backend/decision_graph.py` exist, and `evals/` records no grader model or prompt version. The new test needs every rule, check and risk name in backticks.
 
-```markdown
-*this* project, and exactly what got built.
-```
-
-with:
-
-```markdown
-*this* project, and exactly what got built. The distribution-centre floor
-adds a physical layer on top of the actor checks — what a robot's body can
-do and where people are — described in
-[The physical trust layer](#the-physical-trust-layer-distribution-centre-floor).
-```
-
-**Replace in** `TRUST_LAYER.md`:
-
-```markdown
-### Tier 2 — Medium (not yet built)
-
-| Concept | What it'd look like here |
-|---|---|
-| **Authorization-changing events** | If a robot's simulated firmware or battery drops below policy mid-task, flag or pause the in-progress task |
-| **Governance Layer (policy-as-code)** | A `policies.yaml` (`min_battery`, `restricted_zones`, `required_certifications`, ...) read by both the pre-execution gate and the eval engine, instead of hardcoded thresholds/tables in `models.py` |
-| **Decision Graph (queryable history)** | A small script answering questions like "every task assigned to robot_01 while battery < 20%", or "every MIXED_MAINTENANCE_MISSION Lee signed off on", across all logs, without a real graph database |
-| **Agent Assurance record for the Groq grader itself** | Record which model/prompt version graded each task alongside the verdict (distinct from `Agent`/`APPROVED_AGENT_MODELS` above, which model the *simulated* agents in the warehouse, not the real Groq model doing the grading) |
-```
-
-with:
-
-```markdown
-### Tier 2 — Medium (three of four built)
-
-| Concept in the doc | What it means for this project | Status |
-|---|---|---|
-| **Authorization-changing events** | A robot that becomes ineligible while its task runs is flagged, not stopped: it may already be mid-route, so killing the task would trade one safety problem for another. `Simulator._check_authorization_changes` re-checks every running task's robot against the gate's own rule every `AUTHORIZATION_CHECK_EVERY_TICKS` ticks and emits one `TASK_AUTHORIZATION_CHANGED` warning per task; `entities_valid` grades it a `WARN`. On the distribution-centre floor the same re-check also covers payload, reach and supervision (`TaskManager.physical_recheck`). | ✅ `backend/simulator.py`, `backend/task_manager.py` |
-| **Governance Layer (policy-as-code)** | An optional `policies.yaml` overrides `CONFIG` (battery and maintenance thresholds, the collision, false-success and injected-fault risks, ...), the approved firmware and agent-model baselines, `CERTIFICATION_REQUIREMENTS`, the robot classes and the operator roles — the very tables the pre-execution gate and the eval engine read, so both see one policy. `POST /api/policies/reload` re-reads it live and `GET /api/policies` shows what is in effect. Restricted zones are floor data (`backend/layouts/`), not policy. | ✅ `backend/policy.py`, `policies.example.yaml` |
-| **Decision Graph (queryable history)** | Questions like "every task assigned to Robo-01 while battery < 20%" or "every task Sam was on that failed", answered across all task logs by filtering each log's Mission Authorization Record by robot, agent, operator, task type, verdict and a battery-below threshold — no graph database | ✅ `backend/decision_graph.py` (CLI), `GET /api/decisions` |
-| **Agent Assurance record for the Groq grader itself** | Record which model/prompt version graded each task alongside the verdict (distinct from `Agent`/`APPROVED_AGENT_MODELS` above, which model the *simulated* agents in the warehouse, not the real Groq model doing the grading) | Not built yet |
-```
-
-**Replace in** `TRUST_LAYER.md`:
-
-```markdown
-
-## Where Tier 1 lives in the codebase
-```
-
-with:
+**Rewrite** `TRUST_LAYER.md`:
 
 ````markdown
+# Trust Layer — mapping from "The Trust Layer for the Physical AI"
+
+The reference document ("The Trust Layer for the Physical AI", Cytex /
+AICenturion) describes an enterprise product that checks, before and after a
+job, whether a given combination of AI agent, robot and person can be trusted
+with it. This project is a single-warehouse simulation, so **the depth doesn't
+match**: no real hardware, firmware, employee database or model calling the
+shots. What is built is the document's structural idea at toy scale: three
+actor classes, each with a toy assurance passport, converging in one task
+record that is graded on who was involved and on what happened. This file maps
+each concept to its code. On the distribution-centre floor a physical layer
+sits on top (below). For the module map see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Tier 1 — easy (built, for all three actor classes)
+
+| Concept | Here | Code |
+|---|---|---|
+| Three actor classes | Robot, AI agent and human operator are each first-class | `backend/robot.py`, `agent.py`, `operator.py` |
+| Entities check, per actor | Robot: not `ERROR` or `STOPPED`, approved firmware, not critically low on battery. Agent: not `ERROR`, approved model. Operator: on duty, holds the required certification | `check_entities_valid` in `backend/eval_engine.py` |
+| Robot, Agent and Worker Assurance Passports (toy) | Firmware, model version and certifications checked against approved baselines | `models.APPROVED_FIRMWARE_VERSIONS`, `APPROVED_AGENT_MODELS`, `CERTIFICATION_REQUIREMENTS` |
+| Mission Authorization Record | One artifact naming who and what was involved in a task and whether it was trustworthy | `build_mission_record` and the `extract_*` helpers in `backend/eval_engine.py` |
+| Interaction in the environment | The document's maintenance mission: an agent recommends, a robot really navigates, a human signs off | `TaskType.MIXED_MAINTENANCE_MISSION`; `TaskManager.start_task` and `complete_task` |
+| Pre-execution authorization gate | `TaskManager.validate` refuses a task (`422`) when a named robot, agent or operator is ineligible; `AUTO` selection skips them. The rule lives once and the grade shares it, so the two can't disagree. A critical battery is deliberately not gated: the planner prepends a recharge detour | `backend/eligibility.py`, `backend/task_manager.py` |
+| Per-entity work authorization | A robot's optional `allowed_task_types` allowlist, checked by the same rule at creation and in `AUTO` scoring | `Robot.allowed_task_types`, `DigitalTwin.set_robot_capabilities` |
+| Agent and operator own work | `AGENT_REPLAN`, `AGENT_AUDIT`, `OPERATOR_APPROVAL`, `OPERATOR_MAINTENANCE_SIGNOFF`: instant, gated and graded, each reading live twin state | `TaskManager._run_instant` |
+| Evaluation Factory | A repeatable automated evaluation harness | `evals/` ([evals/README.md](evals/README.md)) |
+| Metrics | Mission success rate, blocked jobs, coverage | `compute_metrics`, `python -m backend.run_evals --stats` |
+
+## Tier 2 — medium (three of four built)
+
+| Concept | What it means here | Status |
+|---|---|---|
+| Authorization-changing events | A robot that becomes ineligible mid-task is flagged, not stopped (it may already be mid-route). `Simulator._check_authorization_changes` re-checks every running task every `AUTHORIZATION_CHECK_EVERY_TICKS` ticks, emits one `TASK_AUTHORIZATION_CHANGED` per task, and `entities_valid` grades it `WARN` | Built: `backend/simulator.py` |
+| Governance layer (policy-as-code) | An optional `policies.yaml` overrides `CONFIG`, the approved baselines, `CERTIFICATION_REQUIREMENTS`, the robot classes and the operator roles: the tables the gate and the eval engine both read. `POST /api/policies/reload` re-reads it live; `GET /api/policies` shows what is in effect | Built: `backend/policy.py`, `policies.example.yaml` |
+| Decision graph (queryable history) | "Every task assigned to Robo-01 while battery < 20 %" answered across all task logs by filtering each log's mission record, with no graph database | Built: `backend/decision_graph.py`, `GET /api/decisions` |
+| Agent assurance record for the Groq grader | Record which model and prompt version graded each task, beside the verdict | Not built: `evals/` records neither |
+
+## Tier 3 — complex or not applicable (not planned)
+
+Real SBOMs and cryptographic attestation, real HRIS integration, an enterprise Physical Work Graph, a Decision Twin (counterfactual re-simulation), change-triggered re-evaluation across dependent missions, a cyber-physical security dimension and a human-factors dimension. Each needs something a single-process simulation doesn't have: real hardware, employees, a network boundary or human behaviour to grade.
 
 ## The physical trust layer (distribution-centre floor)
 
-The reference document asks whether a combination of agent, robot and
-person can be trusted with *this* job. On the classic floor that means the
-actor checks above. The distribution-centre floor (multi-embodiment spec
-§10, `docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md`)
-adds the physical half: can this body lift this load, reach this level, fit
-this aisle, fly over this cell, and work with these people around — checked
-before the job, re-checked during it, and graded from its log afterwards.
-It applies only to robots with a floor profile (`robot.mobility`); classic
-robots, classic logs and every check above behave exactly as before.
+The reference document asks whether this agent, robot and person can be trusted with *this* job. The distribution-centre floor ([spec §10](docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md)) adds the physical half: can this body lift this load, reach this level, fit this aisle, fly over this cell, and work with these people around. It is checked before the job, re-checked during it and graded from its log afterwards. It applies only to robots with a floor profile (`robot.mobility`); classic robots and logs behave exactly as before.
 
-### The shared rules (`backend/eligibility.py`)
+### The eligibility rules (`backend/eligibility.py`)
 
-Eight functions of plain values, each returning `(ok, reason)`, so the gate,
-robot selection, the mid-job re-check and the evaluation can't disagree:
+Eight functions of plain values, each returning `(ok, reason)`, so the gate, robot selection, the mid-job re-check and the evaluation can't disagree.
 
-| Rule | Holds when | Where it runs |
+| Rule | Holds when | Runs in |
 |---|---|---|
-| `payload_ok(weight_kg, max_payload_kg)` | the weight is at most the body's payload | gate and selection (the box's declared weight), the mid-job re-check, `payload_within_limit` (the box's *true* weight) |
-| `box_kind_ok(kind, box_kinds)` | the body handles that kind of box (`PALLET`, `TOTE`, `ITEM`, `CARTON`) | gate and selection |
-| `reach_ok(level, max_shelf_level)` | the slot level is within the body's reach | gate and selection, the mid-job re-check, the `LIFT_TO` and `SCAN` steps, `reach_within_limit` |
-| `clearance_ok(route_cells_clearance, robot_clearance)` | a WIDE robot's route stays on WIDE cells and the two wide walkway crossings | routing (a body is only ever routed over cells it may pass, `Warehouse.passable`), then `clearance_respected` |
-| `no_fly_ok(route_cells_no_fly)` | an air route has no no-fly cell (the docks, the pack cells, the restricted area) | routing, then `no_fly_respected` |
-| `drone_round_trip_ok(battery_wh, est_wh, capacity_wh)` | a drone's battery covers the flight's estimate plus 25 % of its capacity | gate and selection, for drones only — a **hard** gate |
-| `supervision_ok(required, supervisor_on_shift, credential_valid, in_scope)` | someone on shift holds a valid, in-scope credential of the kind the body needs (`humanoid_supervision` for the TS-H1 humanoid) | gate and selection, the mid-job re-check; being *near* it is a runtime wait (below) |
-| `cert_scope_ok(scopes, code, model_code, site)` | a person's credential covers the equipment model and the site involved | the gate, for every certification check on the new floor (`CLEAR_JAM` inside a pack cell needs `robot_cell_access` scoped to the arm's model, FB-CX10) |
+| `payload_ok` | the weight is at most the body's payload | gate and selection (declared weight), re-check, `payload_within_limit` (true weight) |
+| `box_kind_ok` | the body handles that box kind (`PALLET`, `TOTE`, `ITEM`, `CARTON`) | gate and selection |
+| `reach_ok` | the slot level is within the body's reach | gate and selection, re-check, the `LIFT_TO` and `SCAN` steps, `reach_within_limit` |
+| `clearance_ok` | a WIDE robot's route stays on WIDE cells | routing (`Warehouse.passable`), then `clearance_respected` |
+| `no_fly_ok` | an air route avoids every no-fly cell | routing, then `no_fly_respected` |
+| `drone_round_trip_ok` | a drone's battery covers the flight plus a 25 % reserve | gate and selection, drones only; a hard gate |
+| `supervision_ok` | someone on shift holds a valid, in-scope credential of the kind the body needs | gate and selection, re-check; being *near* is a runtime wait |
+| `cert_scope_ok` | a person's credential covers the equipment model and the site | the gate, for every certification check on the floor |
 
-**The battery exception still holds.** A ground robot with a critical
-battery gets a charging detour, not a rejection; only a drone, which can't
-detour mid-flight, is refused for want of energy.
+- **Gate** (`TaskManager.validate`, via `capability_reason`): the body the job needs, the box's kind and declared weight, the slot level, that supervision can be had, a drone's round trip. A job the body can't do is a `422` with the reason.
+- **Selection**: `AUTO` keeps only robots whose body passes the same checks and that have a route under their own profile; a job no robot could do is rejected with the robots' reasons.
+- **During the job**: `physical_recheck` repeats payload, reach and supervision from `_check_authorization_changes`. Like the rest of that re-check it flags and never cancels.
+- **Evaluation**: the checks below grade the log, with the true weight and the level a box really reached.
+- **Battery**: a ground robot with a critical battery gets a charging detour, not a rejection; only a drone, which can't detour mid-flight, is refused.
 
-### Where the rules run
+### Physical waits
 
-- **At creation** — `TaskManager.validate()` checks a named robot's body
-  (`TaskManager.capability_reason`) alongside the actor checks: the kind of
-  body the job needs, the box's kind and declared weight, the slot level,
-  that supervision can be had, and a drone's round trip. A job the body
-  can't do is rejected (`422`) with the reason.
-- **Choosing a robot** — AUTO keeps only the robots whose body passes the
-  same checks and that have a route under their own profile, then scores
-  them as on classic. An AUTO job no robot on the floor could do is
-  rejected with the robots' reasons.
-- **During a job** — `Simulator._check_authorization_changes` also
-  re-checks payload, reach and supervision (`TaskManager.physical_recheck`).
-  Like the rest of that re-check it flags (`TASK_AUTHORIZATION_CHANGED`)
-  and never cancels.
-
-### Physical waits are decisions, not rejections
-
-Some rules depend on where people are at that moment, so they hold the
-robot instead of rejecting the job. The robot goes `WAITING` with a
-`wait_reason`, and the task log records `ROBOT_SAFETY_WAIT` and the matching
-`ROBOT_SAFETY_RESUMED`:
+Rules that depend on where people are hold the robot instead of rejecting the job. It goes `WAITING` with a `wait_reason`, and the log records `ROBOT_SAFETY_WAIT` and `ROBOT_SAFETY_RESUMED`.
 
 | `wait_reason` | When |
 |---|---|
 | `PERSON_IN_AISLE` | a forklift or hauler would drive into a zone with a person in it |
 | `PERSON_IN_CELL` | a person is inside an arm's pack cell |
-| `SUPERVISOR_ABSENT` | the humanoid's supervisor is off shift, or not in its zone or a zone beside it |
-| `PERSON_ON_CROSSING` | a robot is at a walkway crossing (or a drone is about to cross the walkway) while someone walks across it |
+| `SUPERVISOR_ABSENT` | the humanoid's supervisor is off shift, or not in its zone or one beside it |
+| `PERSON_ON_CROSSING` | a robot is at a walkway crossing (or a drone about to cross) while someone walks across |
 | `CONVEYOR_JAMMED` | an arm is downstream of a conveyor jam |
 
-A wait longer than `SAFETY_WAIT_ESCALATE_S` (120 s) emits
-`SAFETY_WAIT_ESCALATED` once, and the dashboard's Shift panel lists it.
+A wait longer than `SAFETY_WAIT_ESCALATE_S` emits `SAFETY_WAIT_ESCALATED` once, and the Shift panel lists it.
 
 ### The ten physical checks (`backend/eval_engine.py`)
 
-`EMBODIMENT_CHECKS`, part of `DEFAULT_CHECKS`. Each reads the task log and
-answers "not applicable" — a `PASS` with `applicable: false` — when the log
-carries none of its data, so every classic log grades exactly as before.
+`EMBODIMENT_CHECKS`, part of `DEFAULT_CHECKS`. Each answers "not applicable" (a `PASS` with `applicable: false`) when the log carries none of its data, so classic logs grade as before. Each has a pass and a fail fixture in `logs/eval_examples/multi_embodiment/`, graded by `backend/test_trust_checks.py`.
 
 | Check | Fails when |
 |---|---|
-| `payload_within_limit` | a pick or lift's load *truly* weighs more than the robot's payload — what a misdeclared pallet does |
-| `reach_within_limit` | a lift, scan or placement is above the robot's reach (for a placement, at the level the box really went to) |
+| `payload_within_limit` | a pick or lift's load truly weighs more than the robot's payload |
+| `reach_within_limit` | a lift, scan or placement is above the robot's reach |
 | `clearance_respected` | a WIDE robot's route crosses a NARROW cell |
 | `no_fly_respected` | a drone's route crosses a no-fly cell |
 | `human_zone_clear` | a forklift or hauler entered a zone, or an arm moved, while a person was there |
 | `supervision_maintained` | the humanoid took a step unsupervised |
 | `count_consistent` | a cycle count reported success with a count that isn't what was really there |
-| `handoff_consistent` | a hand-off the giver reported made, but the receiver never saw |
+| `handoff_consistent` | a hand-off the giver reported made never reached the receiver |
 | `sort_correct` | the sorter dropped a carton on a dock other than its order's lane |
 | `placement_level_correct` | a box went to a different level from the one it was sent to |
 
-Each has a pass and a fail fixture in `logs/eval_examples/multi_embodiment/`
-(`task_200…219`), graded by `backend/test_trust_checks.py`.
-
 ### System checks (`backend/ci_engine.py`)
 
-Mock CI's twelve checks follow the floor's layout. The environment check
-requires the layout's own `required_zones` and checks that the cells each
-class of body uses are connected — narrow ground (AC-TR50), wide ground
-(NW-PF1200) and air (CT-IX2). Robot positions accept a flying drone over
-any flyable cell and an arm on its station. The battery check skips
-mains-powered arms, and collisions compare `(layer, x, y)`, so a drone over
-a ground robot is not one.
+Mock CI follows the floor's layout: the environment check requires the layout's own `required_zones` and that the cells each body class uses (narrow ground, wide ground, air) are connected. A flying drone is accepted over any flyable cell and an arm on its station, mains-powered arms skip the battery check, and collisions compare `(layer, x, y)`, so a drone over a ground robot is not one.
 
 ### Injected faults (`backend/faults.py`)
 
-Seven `CONFIG` risks, all 0.0 by default and set like `FALSE_SUCCESS_RISK`
-(in `policies.yaml`'s `config`; see `policies.example.yaml`).
-`POST /api/faults/<kind>` (or the Shift panel's **Inject fault**) arms single
-occurrences on demand, for a demo, whatever the risk. Each fault does its
-damage silently, and the trust layer catches it afterwards:
+Seven `CONFIG` risks, 0.0 by default. Each fault does its damage silently, and the trust layer catches it afterwards. Fault kinds and how to inject one on demand: [README.md](README.md#faults).
 
-| Risk | Kind | Effect | Caught by |
-|---|---|---|---|
-| `SCAN_MISCOUNT_RISK` | `scan_miscount` | a drone's count reports the true number ± 1–3 | `count_consistent` |
-| `WRONG_LEVEL_RISK` | `wrong_level` | a forklift places a pallet a level up or down but reports the requested level | `placement_level_correct`; the next count of that face also finds the variance |
-| `GRASP_FAIL_RISK` | `grasp_fail` | an arm or the picker misses a grasp; it retries up to twice, and a third miss in a row fails the job | no check of its own: each miss is recorded on the job's GRASP step, and a third fails the job with that reason |
-| `CONVEYOR_JAM_RISK` | `conveyor_jam` | a conveyor cell jams as an item moves on; the line backs up and the arms downstream pause | no check of its own: `CONVEYOR_JAMMED`, then a `CLEAR_JAM` job for a qualified person |
-| `HANDOFF_LOSS_RISK` | `handoff_loss` | an item put onto the conveyor never arrives, though the giver reports it placed | `handoff_consistent` |
-| `MIS_SORT_RISK` | `mis_sort` | the sorter drops a carton on the wrong dock | `sort_correct` |
-| `MISDECLARED_WEIGHT_RISK` | `misdeclared_weight` | an inbound pallet really weighs 1.1–1.6 × what it declares | `payload_within_limit` |
+| Risk | What goes wrong | Caught by |
+|---|---|---|
+| `SCAN_MISCOUNT_RISK` | a drone's count is the true number ± 1–3 | `count_consistent` |
+| `WRONG_LEVEL_RISK` | a forklift puts a pallet a level up or down but reports the requested one | `placement_level_correct`; the next count of that face finds the variance |
+| `GRASP_FAIL_RISK` | an arm or the picker misses a grasp; two retries, and a third miss fails the job | no check of its own: each miss is on the job's GRASP step, and the third fails the job with that reason |
+| `CONVEYOR_JAM_RISK` | a conveyor cell jams as an item moves on and the arms downstream pause | no check of its own: `CONVEYOR_JAMMED`, then a `CLEAR_JAM` job for a qualified person |
+| `HANDOFF_LOSS_RISK` | an item put on the conveyor never arrives, though the giver reports it placed | `handoff_consistent` |
+| `MIS_SORT_RISK` | the sorter drops a carton on the wrong dock | `sort_correct` |
+| `MISDECLARED_WEIGHT_RISK` | an inbound pallet weighs 1.1–1.6 × what it declares | `payload_within_limit` |
 
-`backend/test_fault_matrix.py` runs the seeded floor with each risk alone at
-0.2 and asserts that its check (or, for the two without one, its evidence)
-catches it, and that no other check fails.
+`backend/test_fault_matrix.py` runs the seeded floor with each risk alone at 0.2 and asserts that its check (or, for the two without one, its evidence) catches it and no other check fails.
 
 ### Where it lives
 
-```
-backend/eligibility.py     the eight rules above, beside the actor rules
-backend/embodiment.py      MobilityProfile — a robot's body, read from its catalog model
-backend/task_manager.py    capability_reason (gate and selection), physical_recheck (mid-job)
-backend/people.py          supervision_available / supervision_status, walkway crossings
-backend/simulator.py       the physical waits, ROBOT_STEP events, where each fault does its damage
-backend/eval_engine.py     EMBODIMENT_CHECKS — the ten checks
-backend/ci_engine.py       the layout-driven system checks
-backend/faults.py          FAULT_RISKS, FaultInjector (arm, roll)
-logs/eval_examples/multi_embodiment/   a pass and a fail fixture per check
-```
-
-## Where Tier 1 lives in the codebase
+| File | Role |
+|---|---|
+| `backend/eligibility.py` | the eight rules, beside the actor rules |
+| `backend/embodiment.py` | `MobilityProfile`, a robot's body read from its catalog model |
+| `backend/task_manager.py` | `capability_reason` (gate and selection), `physical_recheck` |
+| `backend/people.py` | supervision queries, walkway crossings |
+| `backend/simulator.py` | the physical waits, `ROBOT_STEP` events, where each fault does its damage |
+| `backend/eval_engine.py`, `ci_engine.py` | the ten checks; the layout-driven system checks |
+| `backend/faults.py` | `FAULT_RISKS`, `FaultInjector` |
 ````
 
-**Replace in** `TRUST_LAYER.md`:
+- [ ] **Step 5: `README.md` — rewritten short: features, quick start, the two floors, the shift, faults, dashboard, one API table**
 
-```markdown
-backend/digital_twin.py    self.agents / self.operators, find_agent/find_operator, add_agent/add_operator,
-                            DEMO_AGENTS / DEMO_OPERATORS (one agent, two operators — one fully
-```
+Replace the whole file (165 lines). Every route the app serves has a place in the API table; the operations routes each have a `| METHOD | `path` |` row of their own, which the test reads.
 
-with:
-
-```markdown
-backend/digital_twin.py    self.agents / self.operators, find_agent/find_operator, add_agent/add_operator
-backend/seeds/classic.py   DEMO_AGENTS / DEMO_OPERATORS (one agent, two operators — one fully
-```
-
-
-- [ ] **Step 5: `README.md` — the distribution-centre floor, the classic floor kept, and the statements the code outgrew**
-
-Apply these blocks in order. Several new texts hold their own code fences, so their blocks are fenced with four backticks.
-
-**Replace in** `README.md`:
-
-```markdown
-You give high-level instructions. The robots work out how to carry them out.
-```
-
-with:
-
-```markdown
-You give high-level instructions. The robots work out how to carry them out.
-
-It runs one of two floors. The default is a 32×20 **distribution centre**:
-15 robots of eight types (AMRs, forklifts, a heavy hauler, a piece picker, a
-security scout, drones, packing arms and a supervised humanoid), ten workers,
-racks of pallets and shelves of totes, a conveyor and a sorter, and a shift
-engine that keeps it all busy — see
-[The distribution-centre floor](#the-distribution-centre-floor). The original
-20×15 floor is still there as `classic` — see
-[The classic floor](#the-classic-floor).
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| Environment | 20×15 typed grid, walls, racking, pick faces, charging, loading, unloading, packing, parking, restricted zone |
-| Robots | Two by default, add more at runtime; ten-state status machine; per-robot statistics |
-| Tasks | Fifteen task types across robots, AI agents and human operators; four priority levels; thirteen-state lifecycle; validation; AUTO robot/agent/operator selection; per-robot task-type restriction |
-| Navigation | A\* with dynamic obstacles, cell reservation, waiting, replanning, deadlock sidestep |
-| Battery | Distance-based drain, handling costs, low/critical events, automatic recharge, battery-aware planning |
-| Logging | Five levels, thirteen categories, structured records, disk persistence, search/filter/export |
-| Mock CI | Twelve validation checks against the live twin, per-check timings, CI logs |
-| Eval Engine | Eight checks graded against a finished task's own JSON log — PASS/WARN/FAIL with plain-language reasons, CLI + HTTP |
-| Realtime | Server-Sent Events; no polling, no page refreshes |
-| Persistence | Save / load / reset the whole twin as JSON |
-| Tests | 253 pytest tests driving the simulation deterministically |
-```
-
-with:
-
-```markdown
-| Environment | Two floors: the 32×20 distribution centre (docks, five-level pallet racks, three-level tote shelves, a pedestrian walkway, pick, returns and pack stations, a conveyor and sorter, a drone pad, a workshop) and the classic 20×15 grid (walls, racking, pick faces, charging, loading, unloading, packing, parking, restricted zone) |
-| Robots | Eight types on the distribution centre (15 robots, each bound to a fleet-inventory asset whose catalog model sets its body), two on classic; add more at runtime; ten-state status machine; per-robot statistics |
-| Tasks | Twenty-nine task types across robots, AI agents and human operators — sixteen on both floors, thirteen more on the distribution centre; four priority levels; thirteen-state lifecycle; validation; AUTO robot/agent/operator selection; per-robot task-type restriction |
-| Jobs & shift | Thirteen more job types on the distribution centre (pallets, totes, picking, packing, counts, patrols, and two jobs people do); a seeded shift engine that turns trucks, orders, counts and returns into job chains across robots, people, the conveyor and the sorter |
-| Faults | Seven injectable faults, each caught by a physical trust-layer check or the evidence it leaves |
-| Navigation | A\* with dynamic obstacles, cell reservation, waiting, replanning, deadlock sidestep |
-| Battery | Distance-based drain, handling costs, low/critical events, automatic recharge, battery-aware planning |
-| Logging | Five levels, sixteen categories, structured records, disk persistence, search/filter/export |
-| Mock CI | Twelve validation checks against the live twin, per-check timings, CI logs |
-| Eval Engine | Ten core checks, plus ten physical checks for the distribution centre, graded against a finished task's own JSON log — PASS/WARN/FAIL with plain-language reasons, CLI + HTTP |
-| Realtime | Server-Sent Events for the live floor, tasks, logs, CI and the chat agent; no page refreshes. The schedules, fleet-load and trends panels poll every 5 s, and the fleet page every 3 s |
-| Persistence | Save / load / reset the whole twin as JSON |
-| Tests | pytest suites driving the simulation deterministically, a fixed-seed soak of the distribution centre, and JavaScriptCore tests for the dashboard's floor model |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-
-### Modules
-```
-
-with:
-
-```markdown
-
-On the distribution centre more units plug into the same loop: the floor's
-layout and seed (`backend/layouts/`, `backend/seeds/`), each robot's body
-from its catalog model (`embodiment.py`, `energy.py`), people (`people.py`),
-goods and stock (`goods.py`), the conveyor and sorter (`equipment.py`), the
-new job types (`jobs.py`, `human_jobs.py`), injected faults (`faults.py`),
-and the shift engine with its orders (`operations/`), served over
-`operations_api.py`. The fleet and workforce inventory (`backend/inventory/`)
-is bound to the floor by `fleet_bridge.py`. The table below lists them all.
-
-### Modules
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| `backend/box.py` | Box entity and its seven-state lifecycle |
-| `backend/task_planner.py` | High-level task → ordered action list; target resolution; battery estimation |
-| `backend/task_manager.py` | Task model, validation (incl. the pre-execution authorization gate), priority queue, AUTO assignment, lifecycle transitions |
-| `backend/eligibility.py` | Shared robot/agent/operator eligibility rule — used by the pre-execution gate and by the eval engine's `entities_valid` grade |
-```
-
-with:
-
-```markdown
-| `backend/box.py` | Box entity and its eight-state lifecycle (`SHIPPED` once it leaves on an outbound truck) |
-| `backend/task_planner.py` | High-level task → ordered action list; target resolution; battery estimation |
-| `backend/task_manager.py` | Task model, validation (incl. the pre-execution authorization gate), priority queue, AUTO assignment, lifecycle transitions |
-| `backend/eligibility.py` | Shared robot/agent/operator eligibility rule — used by the pre-execution gate and by the eval engine's `entities_valid` grade — and the physical rules (payload, box kind, reach, clearance, no-fly, drone energy, supervision, credential scope) the distribution centre's gate and checks share |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| `frontend/app.js` | SSE consumer, canvas floor-plan renderer, all controls |
-```
-
-with:
-
-```markdown
-| `frontend/app.js` | SSE consumer, canvas floor-plan renderer, all controls |
-| `backend/layouts/` | The floors as data: `classic` and `distribution_center` (cells, zones and their attributes, slots, crossings) |
-| `backend/seeds/` | What each floor holds when it boots or resets: the classic demo, and the distribution centre's robots, people and goods |
-| `backend/embodiment.py` | A robot's body (mobility profile), read from its catalog model: movement, clearance, payload, reach, step timings, battery |
-| `backend/people.py` | People on the distribution centre: zone presence, walks between zones, walkway crossings, supervision |
-| `backend/goods.py` | Box kinds and the stock ledger (what the record says and what is really there, per slot) |
-| `backend/equipment.py` | The conveyor, the sorter, jams and a hand-off record for every transfer |
-| `backend/energy.py` | Energy in Wh on the distribution centre |
-| `backend/jobs.py`, `backend/human_jobs.py` | The thirteen new job types: robots' jobs, planned as timed steps, and the jobs people do (`MANUAL_PICK`, `CLEAR_JAM`) |
-| `backend/faults.py` | The seven injected faults: their risks, and single occurrences armed on demand |
-| `backend/operations/` | The shift engine (`shift.py`), order chains (`orders.py`) and people's activities (`activities.py`) |
-| `backend/operations_api.py` | The shift, orders, stock, people, equipment and faults routes |
-| `backend/soak.py` | The fixed-seed soak and its command line |
-| `backend/inventory/`, `backend/fleet_bridge.py` | The fleet and workforce source systems, and the binding of floor robots and people to their records |
-| `frontend/floor_model.js` | Pure helpers the dashboard draws from (cell colours, glyphs and letters, people, the conveyor, the robot and shift panels, the task form), unit-tested under JavaScriptCore |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-On first start the warehouse is seeded with Robo-01, Robo-02, Box-A…Box-E and
-two demo tasks, and the simulation is already running — robots start working the
-moment you open the page.
-```
-
-with:
+**Rewrite** `README.md`:
 
 ````markdown
-`WAREHOUSE_LAYOUT` picks the floor: `distribution_center` (the default) or
-`classic`. `run.sh` passes it on and prints the floor it boots. The app
-refuses an unknown name before it writes anything.
+# Warehouse Digital Twin
 
-```bash
-WAREHOUSE_LAYOUT=classic ./run.sh                          # the classic 20×15 floor
-WAREHOUSE_LAYOUT=distribution_center python -m backend.app # the default, spelled out
-```
+A Flask simulator of a warehouse with a plain-JavaScript dashboard: robots of
+eight body types, people, goods, a conveyor, and a trust layer that checks
+every job before it runs and grades it from its own log afterwards. You give
+high-level instructions ("pick Box-A and deliver it to the loading zone") and
+the robots work out how: they plan, route around each other with A\*, watch
+their batteries and report every step as an event. CPU only: no GPU, ROS 2,
+Gazebo or Isaac Sim required, though `Simulator._tick_robot` is the one place a
+robot moves and `Warehouse.to_dict()` already emits the floor as data, so each
+is a clean seam.
 
-On the **distribution centre** the floor boots with its full seed — 15
-robots, ten workers (eight of them on the floor), 60 pallets and 80 totes —
-and the simulation running, but the **shift starts paused**: nothing
-generates work until you press **Start** on the dashboard's **Shift** panel,
-or
+It runs one of two floors: the 32×20 **distribution centre** (the default) or
+the original 20×15 **classic** floor.
 
-```bash
-curl -X POST http://127.0.0.1:5000/api/shift/start
-```
+## Features
 
-See [The shift](#the-shift).
+- **Trust gate**: every task (even the system's own) is checked for robot, agent and operator eligibility, and on the distribution centre for the body and the people around it, before anything moves. A refusal is a `422` with the reason. See [TRUST_LAYER.md](TRUST_LAYER.md).
+- **Eval engine**: grades a finished task's JSON log, PASS, WARN or FAIL per check with plain-language reasons (`python -m backend.run_evals`, `GET /api/tasks/{id}/eval`). The core checks cover terminal state, path, battery, collision, stuck or deadlock, controller errors, interruption, log sequence, `entities_valid` and `state_transition`; the distribution centre adds physical checks ([TRUST_LAYER.md](TRUST_LAYER.md)). `logs/eval_examples/` holds one example log per failure case, named for what it shows, with the expected verdicts pinned in `backend/test_eval_engine.py`.
+- **Promptfoo suites**: the same grading run through promptfoo, plus a Groq LLM-as-judge suite ([evals/README.md](evals/README.md)).
+- **Mock CI**: consistency checks on the live twin (`POST /api/ci/run`).
+- **Tasks and navigation**: pick, deliver, move, charge, batch, inspection and sign-off tasks, four priorities, `AUTO` robot selection, per-robot task restrictions, A\* with live replanning and deadlock sidestep, battery-aware plans with recharge detours.
+- **Jobs and shift** (distribution centre): pallet, tote, pick, pack, count and patrol jobs (listed in [ARCHITECTURE.md](ARCHITECTURE.md), with their fields in the dashboard's **Create task** form), and a seeded shift engine that turns trucks, orders, counts and returns into chains of them.
+- **Faults**: seven injectable faults, each caught by a check or the evidence it leaves.
+- **Fleet and workforce inventory**: SQLite source systems (robot catalog, assets, work orders, OTA releases; workers, credentials, training) bound to the live robots and operators, with their own page at `/fleet.html`.
+- **Policies**: an optional `policies.yaml` overrides config values, approved baselines, certification requirements, robot classes and operator roles; reload it live.
+- **Governance extras**: robot classes and operator roles (`ROBOT_CLASS_PRESETS` and `OPERATOR_ROLE_PRESETS` in `backend/models.py`, written out in `policies.example.yaml`), operator shifts, two-person sign-off, predictive maintenance, mid-task re-checks, collision and false-success risk.
+- **Decision history**: search every graded task by robot, agent, operator, type, verdict or battery (`GET /api/decisions`, `python -m backend.decision_graph`).
+- **Chat agent**: a Groq tool-use agent that creates, cancels and queries tasks through the same gate (needs `GROQ_API_KEY`); optional live narration of the agent's replan and audit tasks.
+- **Scheduler**: recurring tasks on an interval.
+- **Reports**: graded mission history as CSV or a printable page.
+- **Logging**: structured records with levels and categories, kept in memory and under `logs/` (one JSON file per task), searchable with `GET /api/logs` and exportable.
+- **Realtime dashboard**: Server-Sent Events for the floor, tasks, logs, CI and chat; save, load and reset the whole twin as JSON.
+- **Tests**: pytest suites that drive the simulation tick by tick, and JavaScript unit tests for the dashboard's floor model under macOS's `jsc` ([RUN.md](RUN.md)).
+- **Soak**: `python -m backend.soak` runs a fixed-seed, 20 000-tick shift of the distribution centre and reports collisions, failed checks and tick time ([RUN.md](RUN.md)).
 
-On the **classic** floor the warehouse is seeded with Robo-01, Robo-02,
-Box-A…Box-E and two demo tasks, and the simulation is already running —
-robots start working the moment you open the page.
+## Quick start
 
-Each floor keeps its own files. Classic uses `logs/` and `data/`; the
-distribution centre uses `logs/distribution_center/` and
-`data/distribution_center/` (its own inventory file and state save), so
-switching floors never reseeds the other floor's inventory.
+`./run.sh` creates `.venv`, installs `requirements.txt` and starts the app; open <http://127.0.0.1:5000>. Prerequisites, manual setup, ports and tests are in [RUN.md](RUN.md); `WAREHOUSE_HOST` and `WAREHOUSE_PORT` set the address.
+
+`WAREHOUSE_LAYOUT` picks the floor, and an unknown name is refused before anything is written. Each floor keeps its own files, so switching floors never reseeds the other's inventory:
+
+| Floor | `WAREHOUSE_LAYOUT` | Logs | Data (inventory file, state save) |
+|---|---|---|---|
+| Distribution centre (default) | `distribution_center` | `logs/distribution_center/` | `data/distribution_center/` |
+| Classic | `classic` | `logs/` | `data/` |
+
+`WAREHOUSE_LAYOUT=classic ./run.sh` starts the classic floor.
+
+## The two floors
+
+**Distribution centre.** Goods flow west to east: trucks unload at the west docks, forklifts put pallets in the racks, AMRs bring totes to the pick stations, picked items ride the conveyor to the pack arms, and cartons leave through the sorter. It boots with its full seed (robots of all eight types, ten workers, pallets on racks, totes on shelves) and the simulation running. The floor is data (`backend/layouts/distribution_center.py`); [spec §3](docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md) describes every zone. Each robot is bound to a fleet-inventory asset whose catalog model sets its body: speed, clearance, payload, reach, step timings, battery. Two robots never work, by design: one is held by an open work order, the other reports a recalled release and the gate refuses it every job. People (the workforce inventory's workers) are zone presence; robots obey them as waits, not rejections ([TRUST_LAYER.md](TRUST_LAYER.md)).
+
+| Letter | Type (`robot_class`) | Does |
+|---|---|---|
+| A | AMR (`AMR`) | carries totes between shelves and stations; also the classic jobs |
+| F | Forklift (`FORKLIFT`) | unloads trucks, puts pallets away, retrieves them, loads trucks |
+| H | Heavy hauler (`HEAVY_HAULER`) | unloads light pallets from trucks |
+| K | Picker (`PICKER`) | picks items from a tote onto the conveyor |
+| S | Scout (`SCOUT`) | patrols a loop and reports halted robots |
+| D | Drone (`DRONE`) | counts pallet-rack faces from the air layer |
+| R | Arm (`ARM`) | fixed in a pack cell; packs customer orders |
+| U | Humanoid (`HUMANOID`) | carries totes and puts returns away, only while its supervisor is near |
+
+**Classic.** A 20×15 grid (racking, pick faces, charging, loading, unloading, packing, parking, a restricted area) seeded with Robo-01 and Robo-02, Box-A to Box-E and two demo tasks, already working. Its grid, seed and behaviour are unchanged by the distribution-centre work.
+
+## The shift
+
+The distribution centre's **shift starts paused**, even though the simulation runs from boot: nothing generates work until you press **Start** on the dashboard's Shift panel or call `POST /api/shift/start` ([RUN.md](RUN.md) has the command). **Pause** stops new work; orders in flight carry on. The engine makes trucks, customer orders, pallet orders, cycle counts, patrols, returns and departures (`rates` keys `trucks`, `customer_orders`, `pallet_orders`, `cycle_counts`, `patrols`, `returns`, `departures`, per sim-hour, all scaled by `pace`), draws from its own seeded generator (`seed`, default 42), and creates every job through the same gate as anyone else. An order is a chain of jobs; a failed stage is retried once, then the order is `FAILED` with the reason and the Shift panel lists it. Change `pace`, `seed` or `rates` live with `POST /api/shift/config`.
+
+## Faults
+
+Seven faults can be injected. Each is a `CONFIG` risk, 0.0 by default; set one in `policies.yaml`'s `config` block, and `GET /api/policies` shows the values in effect.
+
+| Kind (`POST /api/faults/{kind}`) | Risk (`CONFIG`) |
+|---|---|
+| `scan_miscount` | `SCAN_MISCOUNT_RISK` |
+| `wrong_level` | `WRONG_LEVEL_RISK` |
+| `grasp_fail` | `GRASP_FAIL_RISK` |
+| `conveyor_jam` | `CONVEYOR_JAM_RISK` |
+| `handoff_loss` | `HANDOFF_LOSS_RISK` |
+| `mis_sort` | `MIS_SORT_RISK` |
+| `misdeclared_weight` | `MISDECLARED_WEIGHT_RISK` |
+
+To inject one occurrence on demand, pick a kind under **Inject fault** on the Shift panel and press **Inject**, or `POST /api/faults/{kind}` with an optional `count` ([RUN.md](RUN.md) has the command). An armed fault fires at its next opportunity whatever the risk; a conveyor jam lands wherever an item next leaves (it takes no cell), and a reset or a load clears faults still armed. What each fault does and what catches it: [TRUST_LAYER.md](TRUST_LAYER.md).
+
+## Dashboard
+
+- **Both floors**: the floor canvas with live routes; tasks, robots (with Stop, Resume, Charge, Reset and per-robot capabilities), boxes, fleet load, statistics and trends; Mock CI, the event timeline and live logs; decision search, recurring tasks, policies and the collision-risk slider; mission reports; simulation controls with an **Emergency stop** that freezes everything and keeps tasks intact.
+- **Distribution centre**: the floor drawn from its own cell-type table, a glyph and the letter above per robot, an amber ring while a robot waits for a safety reason, an **Air layer** switch for drones and the no-fly overlay, people, and the conveyor with jams in red.
+- **Robot panel**: click a robot (or open `/?robot=<id>`) for its model, asset, limits, job, step and wait reason, and a link to its inventory record.
+- **Shift panel**: clock and status, Start and Pause, pace, orders in flight and done, failed orders, safety escalations and **Inject fault**. Hidden on classic.
+- **Job forms**: **Create task** shows only the fields the chosen type needs, with a one-line guide.
+- **Phone width**: at 375 px the floor scales to fit and the panels stack, with no sideways scroll.
+
+The twin is the only source of truth: the frontend renders snapshots and posts commands, and never decides where a robot is.
+
+## API
+
+Errors return `ok: false` with an `error` message and a `field`: `400` validation, `404` unknown id, `409` state conflict (an inventory lifecycle conflict, or a shift or equipment route on the classic floor), `422` a task the gate refused. Every operations route holds the twin's lock.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/`, `/{file}` | the dashboard and its static files |
+| GET | `/api/stream` | Server-Sent Events: `state`, `log`, `event`, `ci`, `agent-chat` |
+| GET | `/api/state`, `/api/warehouse`, `/api/health` | full snapshot with the floor plan and config; floor plan only; liveness |
+| GET | `/api/robots`, `/api/robots/{id}`, `/api/boxes`, `/api/agents`, `/api/operators` | the entities |
+| GET | `/api/tasks`, `/api/tasks/{id}` | tasks (`?status=&limit=`); one task with its events and logs |
+| GET | `/api/logs`, `/api/events`, `/api/logs/export`, `/api/tasks/{id}/logs/export` | logs and events (filters), log export (`?format=txt\|json`) |
+| GET | `/api/statistics`, `/api/statistics/history`, `/api/fleet/load`, `/api/maintenance/alerts` | statistics, trend samples, work per robot, wear alerts |
+| POST | `/api/robots`, `/api/boxes`, `/api/agents`, `/api/operators` | create an entity (`robot_class` and `role` take presets) |
+| POST | `/api/robots/{id}/{capabilities,stop,resume,charge,reset}` | per-robot commands |
+| POST | `/api/operators/{id}/shift` | set or clear an operator's shift window |
+| POST | `/api/tasks` | create a task; it goes through the gate (`422` on refusal) |
+| POST | `/api/tasks/{id}/{cancel,pause,resume}` | task lifecycle |
+| GET | `/api/schedules` | recurring tasks |
+| POST | `/api/schedules`, `/api/schedules/{id}/toggle` | add one; enable or disable |
+| DELETE | `/api/schedules/{id}` | remove one |
+| POST | `/api/simulation/{start,pause,stop,reset,emergency-stop,resume,speed,tick}` | simulation control; `tick` advances one tick |
+| POST | `/api/state/{save,load,reset}` | save, load or reset the twin; a save of another floor is refused (`400`) |
+| GET | `/api/export/{state,tasks}` | whole state or tasks as JSON |
+| POST | `/api/logs/clear` | clear logs, memory and files |
+| POST | `/api/ci/run` | run Mock CI |
+| GET | `/api/ci/status` | last CI run and history |
+| GET | `/api/tasks/{id}/eval` | grade one task's persisted log |
+| POST | `/api/evals/run` | grade every `logs/tasks/*.json` |
+| GET | `/api/decisions` | decision history (`?robot=&agent=&operator=&type=&verdict=&battery_below=`) |
+| GET | `/api/reports/missions.{csv,html}` | mission report |
+| GET | `/api/policies` | the policy in effect |
+| POST | `/api/policies/{reload,llm-narration,collision-risk,false-success-risk}` | reload `policies.yaml`; live, in-memory switches |
+| POST | `/api/agent/chat` | the chat agent (`message`, optional `history`) |
+| GET | `/api/shift` | the shift panel: status, clock, config, counters, throughput, in flight, backlog, failed orders |
+| POST | `/api/shift/start` | start generating work |
+| POST | `/api/shift/pause` | stop generating work; orders in flight carry on |
+| POST | `/api/shift/config` | change `pace`, `seed` or `rates`; a bad value is a `400` and changes nothing |
+| GET | `/api/orders` | orders, newest first (`?status=&kind=&limit=`) |
+| GET | `/api/orders/{id}` | one order with its stages, jobs and attempts |
+| GET | `/api/stock` | ledger locations (recorded, true and counted quantities) and totals (`?sku=`) |
+| GET | `/api/people` | everyone: zone, destination, status |
+| GET | `/api/equipment` | the conveyor, the sorter, the arms' cells, recent hand-offs |
+| POST | `/api/faults/{kind}` | arm `count` occurrences of a fault (default 1) |
+| GET | `/api/fleet/catalog/{models,parts}`, `/api/fleet/releases`, `/api/fleet/releases/{id}/sbom`, `/api/fleet/robots`, `/api/fleet/robots/{asset}`, `/api/fleet/robots/{asset}/history`, `/api/fleet/changes` | fleet manager: catalogs, releases and SBOMs, robot assets and history, change feed |
+| POST | `/api/fleet/releases`, `/api/fleet/releases/{id}/recall`, `/api/fleet/robots`, `/api/fleet/robots/{asset}/{status,decommission,ota,work-orders}`, `/api/fleet/ota/{job}/{verify,rollback}`, `/api/fleet/work-orders/{wo}/{swap,close}`, `/api/fleet/components/{id}/calibrations` | publish or recall a release; commission, change, update and service a robot asset; record a calibration |
+| PATCH | `/api/fleet/robots/{asset}` | correct a robot asset |
+| GET | `/api/workforce/{credential-definitions,changes}`, `/api/workforce/workers`, `/api/workforce/workers/{id}`, `/api/workforce/workers/{id}/history` | workforce system: definitions, change feed, workers and history |
+| POST | `/api/workforce/workers`, `/api/workforce/workers/{id}/{credentials,training,employment-status}`, `/api/workforce/credentials/{id}/{renew,verify,revoke}` | add a worker; record credentials, training and status; renew, verify or revoke a credential |
+| PATCH | `/api/workforce/workers/{id}` | correct a worker |
+
+## Custom robot classes
+
+A `robot_classes` block in `policies.yaml` replaces the whole built-in roster. **It must include `ARM` and `HUMANOID`** (spec §15): the distribution centre's seed creates both, and an unknown class stops it (`Unknown robot_class 'ARM'`), so the app won't start on that floor. Keep each class's distribution-centre job types too, or the gate refuses those jobs. `certification_requirements` and `operator_roles` replace whole tables the same way, and the first must keep `CLEAR_JAM: robot_cell_access`. `policies.example.yaml` holds the built-in values; copying it as it is changes nothing.
+
+## Documentation
+
+| Document | What it holds |
+|---|---|
+| [RUN.md](RUN.md) | prerequisites, setup, running each floor, tests, the eval CLI, promptfoo, the soak, troubleshooting |
+| [TRUST_LAYER.md](TRUST_LAYER.md) | the trust-layer concepts mapped to code, and the physical trust layer |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | the module map, the tick, a task's lifecycle, state and locking |
+| [CLAUDE.md](CLAUDE.md) | the rules contributors work by |
+| [evals/README.md](evals/README.md) | the promptfoo suites, and how to add an example log |
+| [policies.example.yaml](policies.example.yaml) | the built-in policy, written out |
+| [Multi-embodiment spec](docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md) | the binding design of the distribution centre |
+| [Fleet and workforce spec](docs/superpowers/specs/2026-09-30-fleet-workforce-inventory-design.md) | the inventory source systems |
+| [Plans](docs/superpowers/plans/) | the implementation plans: [fleet and workforce](docs/superpowers/plans/2026-09-30-fleet-workforce-inventory.md), [1a floor and motion](docs/superpowers/plans/2026-09-30-multi-embodiment-1a-floor-and-motion.md), [1b jobs, rules and shift](docs/superpowers/plans/2026-10-01-multi-embodiment-1b-jobs-rules-shift.md), [1c seed, API, dashboard and soak](docs/superpowers/plans/2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md) |
 ````
 
-**Replace in** `README.md`:
+- [ ] **Step 6: `RUN.md` — commands only: both floors, the shift, tests with the `jsc` ones, the eval CLI, promptfoo, the soak**
 
-```markdown
-## The warehouse floor
-```
+Replace the whole file (100 lines).
 
-with:
+**Rewrite** `RUN.md`:
 
 ````markdown
-## The distribution-centre floor
+# RUN.md — setup and commands
 
-The app's default floor: a 32×20 grid of 1.5 m cells (48 × 30 m) where goods
-flow west to east. Trucks unload at the west docks, forklifts put the pallets
-away in the racks, AMRs bring totes to the pick stations, picked items ride
-the conveyor to the packing arms, and packed cartons leave through the sorter
-to the east docks. The layout is data (`backend/layouts/distribution_center.py`);
-the design spec,
-`docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md`,
-describes every zone (§3) and everything below.
+Commands for running the app, its tests, the eval CLI, promptfoo and the soak.
+Run them from the project root. What the project is: [README.md](README.md).
 
-### The floor plan
+## 1. Prerequisites
 
-```
-   01234567890123456789012345678901
- 0 ████████████████████████████████
- 1 █················|·ooossssssDDD=
- 2 =DDDsss·▓▓▓▓▓▓▓▓▓|·ooossssssDDD=
- 3 =DDDsss··········|·ooossssssDDD=
- 4 =DDDsss··········|····ssssssDDD=
- 5 =DDDsss·▓▓▓▓▓▓▓▓▓|·············█
- 6 █···sss·▓▓▓▓▓▓▓▓▓|··TTTTT··XXXX█
- 7 =DDDsss··········|··TTTTT··XXXX█
- 8 =DDDsss··········|··TTTTT··XXXX█
- 9 =DDDsss·▓▓▓▓▓▓▓▓▓|·············█
-10 =DDDsss··········|·············█
-11 █················|·············█
-12 █CCCppp·▒▒▒▒▒▒▒▒▒|·TTTTTTZZZDDD=
-13 █CCCppp··········|·TTTTTTZZZDDD=
-14 █CCCppp·▒▒▒▒▒▒▒▒▒|·TTTTTTZZZDDD=
-15 █················|·>>>>>>ZZZ···█
-16 █WWWWWW·▒▒▒▒▒▒▒▒▒|·TTTTTTZZZDDD=
-17 █WWWWWW··········|·TTTTTTZZZDDD=
-18 █WWWWWW·▒▒▒▒▒▒▒▒▒|·TTTTTTZZZDDD=
-19 ████████████████████████████████
-```
-
-`D` dock · `=` dock door · `s` staging · `▓` pallet rack (levels 0–4) ·
-`▒` tote shelf (levels 0–2) · `|` pedestrian walkway · `T` station
-(returns/QC; Pick 1 and Pack 1; Pick 2 and Pack 2) · `>` conveyor ·
-`Z` sorter · `o` drone pad · `C` charging · `p` parking · `W` workshop ·
-`X` restricted (electrical) · `·` aisles and open floor
-
-- Trucks arrive at docks 1 and 2 (west), beside intake staging. Pallets
-  leave through dock 3 (north-east) and cartons through docks 4 and 5,
-  which the sorter feeds.
-- Robots cross the walkway (x = 17) only at its six crossings — (17,1),
-  (17,10), (17,11), (17,13), (17,15) and (17,17) — and never stop on one. A
-  robot at a crossing waits while someone walks across the walkway.
-- Every aisle has a clearance class. Forklifts and the hauler are WIDE: they
-  keep to the WIDE aisles (the main aisle at x = 7, the pallet aisles, the
-  cross aisle, the pallet lane) and the two WIDE crossings, (17,10) and
-  (17,11). NARROW robots may also use the tote aisles and the other
-  crossings.
-- Drones fly on an air layer over the racks and shelves, never over the
-  docks, the pack cells or the restricted area (no-fly), and take off, land
-  and charge on the drone pad. A drone over a ground robot is not a
-  collision.
-
-### Robot types
-
-Every robot is bound to an asset of the fleet inventory (`AST-…`, see
-[Fleet & workforce inventory](#fleet--workforce-inventory)) and gets its body
-— movement, clearance, payload, reach, step timings, battery — from the
-asset's catalog model, so editing a model in the inventory changes how the
-robot behaves. On the dashboard each type has its own glyph and letter:
-
-| Letter | Type (`robot_class`) | Model | On the floor | Its jobs |
-|---|---|---|---|---|
-| A | AMR (`AMR`) | AC-TR50 | TR50-101, TR50-102, TR50-103, TR50-201, TR50-202 | `TOTE_TO_STATION` and `RETURN_TOTE` (shelf levels 0–1); the class is unrestricted, so the older task types too |
-| F | Forklift (`FORKLIFT`) | NW-PF1200 | PF1200-205, PF1200-206 | `UNLOAD_TRUCK`, `PUTAWAY_PALLET`, `RETRIEVE_PALLET`, `LOAD_TRUCK` (up to 1 200 kg, rack levels 0–4) |
-| H | Heavy hauler (`HEAVY_HAULER`) | NW-HH300 | HH300-207 | `UNLOAD_TRUCK` (up to 300 kg) |
-| K | Picker (`PICKER`) | AC-PK30 | PK30-203, at Pick 1 | `PICK_ITEMS` |
-| S | Scout (`SCOUT`) | AC-SC1 | SC1-204 | `PATROL` |
-| D | Drone (`DRONE`) | CT-IX2 | IX2-208, IX2-209 | `CYCLE_COUNT` |
-| R | Arm (`ARM`) | FB-CX10 | CX10-210 in Pack 1, CX10-211 in Pack 2 | `PACK_ORDER` (fixed and mains-powered) |
-| U | Humanoid (`HUMANOID`) | TS-H1 | H1-212, at home in returns/QC | `TOTE_TO_STATION`, `RETURN_TOTE` (levels 0–2), `RETURNS_PUTAWAY` — only while its supervisor is near |
-
-Two robots never work, by design. TR50-103 stands stopped in the workshop:
-its asset has an open corrective work order (a lidar swap), and the
-inventory's lifecycle hold keeps it off the floor's work. TR50-202 reports
-the recalled release 2.2.1, so the trust layer refuses every job it is
-offered, even a move to parking; it stands on the main aisle all shift. That
-is the recall scenario working.
-
-The letters, the carried-box badge and the amber "waiting" ring are drawn
-only for robots with a floor profile: classic robots look as they always
-have.
-
-### People
-
-The ten workers of the workforce inventory are the floor's operators, bound
-by worker id, each on a 06:00–14:00 shift window. A person is modelled as
-zone presence: in one zone, walking between two (and in neither), or off the
-floor.
-
-| Person | Where they work |
-|---|---|
-| Sam, Lee | Pick 2 (manual picks) when it has work, otherwise intake staging |
-| Ana Kowalski, Kai Nakamura | the docks and outbound staging, wherever a truck is |
-| Noor Haddad, Mateo Silva | the workshop, or a conveyor jam, or a robot's open work order. Mateo holds `robot_cell_access`, so he clears jams inside the pack cells |
-| Jordan Blake | supervises the humanoid (`humanoid_supervision`) and follows it |
-| Riley Chen | outside the pack cells: Riley's `robot_cell_access` is revoked |
-| Sasha Ivanova, Morgan Patel | off the floor: on leave, and terminated |
-
-Robots obey the people rules as waits, never as rejections:
-
-- `PERSON_IN_AISLE` — a forklift or the hauler won't drive into a zone with a
-  person in it. Someone standing where one must go steps aside for 30 s.
-- `PERSON_IN_CELL` — an arm pauses while a person is inside its pack cell.
-- `SUPERVISOR_ABSENT` — the humanoid pauses unless an on-shift supervisor
-  with a valid, in-scope `humanoid_supervision` credential is in its zone or
-  a zone beside it.
-- `PERSON_ON_CROSSING` — a robot at a walkway crossing, or a drone about to
-  cross the walkway, waits while someone walks across it.
-
-A wait longer than 120 s raises `SAFETY_WAIT_ESCALATED`, which the Shift
-panel lists. After the first two sim-hours of a shift everyone takes a
-15-minute break in the south-west floor zone every two sim-hours, staggered.
-Jordan's break pauses the humanoid; that is intended.
-
-### Goods
-
-60 pallets sit on the racks (levels 0–4, 150–900 kg) and 80 totes on the
-shelves (levels 0–2, 5–25 kg, one SKU each), over 40 SKUs; every SKU has a
-tote on level 0 or 1, which the AMRs reach. Boxes come in four kinds:
-`PALLET`, `TOTE`, `ITEM` (one unit picked onto the conveyor) and `CARTON` (a
-packed order). The stock ledger keeps, for every slot, what the record says
-(`recorded_qty`) and what is really there (`true_qty`). Cycle counts find
-the difference (`STOCK_VARIANCE_DETECTED`); one of 2 units or fewer is
-reconciled on the spot, and a bigger one is listed among the shift's
-exceptions (`GET /api/shift`).
-
-### Jobs
-
-Thirteen job types beyond the classic sixteen. Each is created like any
-task — the dashboard's **Create task** form (which shows the job's own fields
-and a one-line guide), `POST /api/tasks` or the chat agent — and passes the
-same gate, which also checks the robot's body against the job (see
-`TRUST_LAYER.md`).
-
-| Type | Done by | Its fields (every type also takes `priority`) |
+| Tool | Version | For |
 |---|---|---|
-| `UNLOAD_TRUCK` | a forklift or the hauler | `box` (a pallet on an inbound dock), `destination` (default intake staging) |
-| `PUTAWAY_PALLET` | a forklift | `box` (a staged pallet), `slot` (default the nearest free one in reach) |
-| `RETRIEVE_PALLET` | a forklift | `box` (a pallet in a rack slot), `destination` (default outbound staging) |
-| `LOAD_TRUCK` | a forklift | `box` (a pallet at outbound staging), `dock` (default dock 3); the pallet ships |
-| `TOTE_TO_STATION` | an AMR (levels 0–1) or the humanoid (levels 0–2) | `box` (a tote in its slot), `station` (default Pick 1) |
-| `RETURN_TOTE` | an AMR or the humanoid | `box` (a tote away at a station), `slot` (default its own) |
-| `RETURNS_PUTAWAY` | the humanoid | `box` (a returned tote in returns/QC), `slot` (default the nearest free one) |
-| `PICK_ITEMS` | the picker, at Pick 1 | `box` (a tote on Pick 1's tote drop), `quantity`; optional `order_id`, `pack_cell` |
-| `PACK_ORDER` | an arm | `order_id`, `quantity`; `pack_cell` (default Pack 1), `lane` (default dock 4) |
-| `MANUAL_PICK` | a person, at Pick 2 | `box` (a tote on Pick 2's tote drop), `quantity`; optional `order_id`, `pack_cell`, `operator` |
-| `CLEAR_JAM` | a person | `segment` (the jammed conveyor cell, `x,y`), optional `operator`; inside a pack cell it needs `robot_cell_access` |
-| `CYCLE_COUNT` | a drone | `face` (a pallet rack cell, `x,y`); it counts every level |
-| `PATROL` | the scout | none: it goes round the patrol loop and reports halted robots and failed boxes |
+| Python | 3.14 (what the project's `.venv` runs) | the app, tests, eval CLI and soak |
+| Node.js + npm | `^20.20.0 \|\| >=22.22.0` | promptfoo only |
+| Groq API key | — | the Groq-judged promptfoo suite and the chat agent; free at [console.groq.com/keys](https://console.groq.com/keys) |
+| JavaScriptCore (`jsc`) | built into macOS | the dashboard's JavaScript tests; they skip without it |
+
+## 2. Setup
 
 ```bash
-curl -X POST http://127.0.0.1:5000/api/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"TOTE_TO_STATION","box_id":"TOTE-001","station":"pick_station_1"}'
-```
-
-A robot's job runs as physical steps — driving (`NAVIGATE`), lifting and
-lowering (`LIFT_TO`, `LOWER`), grasping and placing (`GRASP`, `PLACE`,
-`PLACE_ON_CONVEYOR`), a drone's `TAKEOFF`, `SCAN` and `LAND` — each lasting
-as long as the robot's catalog model says, and each logged as a `ROBOT_STEP`
-event. AUTO first keeps only the robots whose body can do the job, then
-scores them as on classic; an AUTO job no robot on the floor could do is
-rejected with the robots' reasons.
-
-### The shift
-
-The shift engine (`backend/operations/`) keeps the floor busy on its own.
-It **starts paused**, even though the simulation runs from boot: press
-**Start** on the **Shift** panel, or call `POST /api/shift/start`. **Pause**
-stops new work; orders already in flight carry on. The shift clock starts at
-06:00 and follows simulated time, and people come on and off duty by it.
-
-| Stream (`rates` key) | Default per sim-hour | What it makes |
-|---|---|---|
-| `trucks` | 3 (every 20 minutes) | an inbound truck of 4–8 pallets at dock 1 or dock 2, in turn |
-| `customer_orders` | 30 | a customer order of 1–4 lines × 1–3 units, for dock 4 or dock 5 |
-| `pallet_orders` | 4 | a full-pallet order |
-| `cycle_counts` | 6 (every 10 minutes) | a count of one rack face, round-robin over the 36 faces |
-| `patrols` | 4 (every 15 minutes) | a patrol by the scout |
-| `returns` | 6 | a returned tote, in returns/QC |
-| `departures` | 2 (every 30 minutes) | the outbound trucks leave docks 3, 4 and 5; what reached them ships |
-
-Every rate is multiplied by `pace` (default 1). The engine draws from its own
-seeded random generator (`seed`, default 42), so the same seed and ticks give
-the same orders and jobs. Change them live: the pace on the Shift panel, any
-of them with `POST /api/shift/config` — `{"pace": 2}`, `{"seed": 7}` or
-`{"rates": {"customer_orders": 60}}`. A new seed restarts the generator; a
-bad value is refused and changes nothing.
-
-An order is a chain of jobs (`GET /api/orders`):
-
-| Kind | Chain |
-|---|---|
-| `CUSTOMER` | for each line: `TOTE_TO_STATION` → `PICK_ITEMS` at Pick 1, or `MANUAL_PICK` at Pick 2 when Pick 1 is busy and Sam or Lee is on the floor → `RETURN_TOTE`; then the conveyor → `PACK_ORDER` → the sorter → its dock |
-| `INBOUND` | `UNLOAD_TRUCK` for each pallet → `PUTAWAY_PALLET` for each |
-| `PALLET` | `RETRIEVE_PALLET` → `LOAD_TRUCK` |
-| `COUNT` | `CYCLE_COUNT` |
-| `RETURN` | `RETURNS_PUTAWAY` |
-
-The engine creates every job through the same gate as anyone else. A failed
-or rejected stage is retried once; after that the order is `FAILED` with the
-reason, and the Shift panel lists it. Patrols are jobs, not orders.
-
-### Faults
-
-Seven faults can be injected, each a `CONFIG` risk that is 0.0 by default:
-
-| Kind | Risk | What happens | What catches it |
-|---|---|---|---|
-| `scan_miscount` | `SCAN_MISCOUNT_RISK` | a drone's count reports the true number ± 1–3 | `count_consistent` |
-| `wrong_level` | `WRONG_LEVEL_RISK` | a forklift places a pallet a level up or down, but reports the requested level | `placement_level_correct`, and the next count of that face |
-| `grasp_fail` | `GRASP_FAIL_RISK` | an arm or the picker misses a grasp; it retries up to twice, and a third miss in a row fails the job | the misses recorded on the job's GRASP step |
-| `conveyor_jam` | `CONVEYOR_JAM_RISK` | a conveyor cell jams as an item moves on; the line backs up and the arms downstream pause | `CONVEYOR_JAMMED`, then a `CLEAR_JAM` job for a qualified person |
-| `handoff_loss` | `HANDOFF_LOSS_RISK` | an item put onto the conveyor never arrives, though the giver reports it placed | `handoff_consistent` |
-| `mis_sort` | `MIS_SORT_RISK` | the sorter drops a carton on the wrong dock | `sort_correct` |
-| `misdeclared_weight` | `MISDECLARED_WEIGHT_RISK` | an inbound pallet really weighs 1.1–1.6 × what it declares | `payload_within_limit` |
-
-Set a risk durably in `policies.yaml`'s `config` block (see
-`policies.example.yaml`); `GET /api/policies` shows the values in effect.
-For a demo, inject one occurrence on demand: pick a kind under **Inject
-fault** on the Shift panel and press **Inject**, or
-
-```bash
-curl -X POST http://127.0.0.1:5000/api/faults/conveyor_jam
-curl -X POST http://127.0.0.1:5000/api/faults/mis_sort \
-  -H 'Content-Type: application/json' -d '{"count": 3}'
-```
-
-An armed fault fires at its next opportunity, whatever the risk. A conveyor
-jam lands on whichever cell an item next leaves, so to watch `CLEAR_JAM` go
-to Mateo rather than Riley (a jam on an arm's working cell, (22,15) or
-(23,15)), inject until one lands there. A reset or a load clears faults
-still armed.
-
-### Saving, loading and resetting
-
-**Save** writes version 2 of the state file into the floor's data folder
-(`data/distribution_center/warehouse_state.json`): everything version 1
-holds, plus the floor's name, the stock ledger, the conveyor and sorter
-(items, jams, hand-off records) and the shift engine with every order, so a
-loaded floor carries on where it was saved. **Load** refuses a save of
-another floor before it changes anything — start the app with the
-`WAREHOUSE_LAYOUT` the message names to load it — and reads a version 1 file
-as a classic save. **Reset** puts the floor back as its seed left it, with
-the shift paused.
-
-### The soak
-
-`python -m backend.soak` runs the design spec's soak (§16): the
-distribution centre with its full seed, shift seed 42, pace 2, 20 000 ticks
-(50 sim-minutes) and every risk at 0. It reports same-layer collisions,
-failures of the ten physical checks over every finished job, orders done per
-kind, robots left in `ERROR`, safety escalations, and the mean and longest
-tick against the 15 ms budget — about 0.6 ms on the development machine.
-`--ticks`, `--seed`, `--pace` and `--risk KIND=CHANCE` (repeatable, e.g.
-`--risk grasp_fail=0.2`) change the run. `backend/test_soak.py` asserts the
-same run; `RUN.md` shows its report.
-
-### Custom robot classes
-
-A `robot_classes` block in `policies.yaml` replaces the whole built-in
-roster. **It must include `ARM` and `HUMANOID`:** the distribution centre's
-seed creates both, and an unknown class stops it
-(`Unknown robot_class 'ARM'`), so the app won't start on that floor. Keep
-each class's new job types as well, or the gate refuses those jobs. See
-[Robot classes](#robot-classes).
-
----
-
-## The classic floor
-
-The original 20×15 floor. Start it with `WAREHOUSE_LAYOUT=classic`.
-````
-
-**Replace in** `README.md`:
-
-```markdown
-| `BATCH_DELIVER` | Deliver several boxes to the same destination as one tracked job — see [Batch delivery](#batch-delivery) | `box_ids` (2+), destination |
-```
-
-with:
-
-```markdown
-| `BATCH_DELIVER` | Deliver several boxes to the same destination as one tracked job — see [Batch delivery](#batch-delivery) | `box_ids` (2+), destination |
-
-The distribution centre adds thirteen job types of its own — see
-[Jobs](#jobs).
-```
-
-**Replace in** `README.md`:
-
-```markdown
-tuning config, which the browser fetches once at boot.
-```
-
-with:
-
-```markdown
-tuning config, which the browser fetches once at boot. Every snapshot also
-names its floor (`layout_name`) and carries the conveyor and sorter
-(`equipment`) and the shift panel (`shift`), both `null` on classic; the
-layout part adds the floor's cell-type table (`cell_types`) and its no-fly
-cells (`no_fly_cells`).
-```
-
-**Replace in** `README.md`:
-
-```markdown
-after a reload.
-```
-
-with:
-
-```markdown
-after a reload. The distribution centre saves into its own
-`data/distribution_center/warehouse_state.json`, and a save of one floor is
-refused on the other — see
-[Saving, loading and resetting](#saving-loading-and-resetting).
-```
-
-**Replace in** `README.md`:
-
-```markdown
-`NAVIGATION`, `COLLISION`, `BATTERY`, `WAREHOUSE`, `USER`, `CI`, `DIGITAL_TWIN`.
-```
-
-with:
-
-```markdown
-`NAVIGATION`, `COLLISION`, `BATTERY`, `WAREHOUSE`, `USER`, `CI`, `DIGITAL_TWIN`,
-`FLEET`, `OPERATIONS`, `SAFETY`.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-`logs/warehouse.log` as readable lines, and `logs/events.json` as JSON Lines.
-On restart the tail of the previous run is re-loaded, so history survives.
-```
-
-with:
-
-```markdown
-`logs/warehouse.log` as readable lines, and `logs/events.json` as JSON Lines.
-On the distribution centre these files, and the per-task logs, live under
-`logs/distribution_center/`.
-On restart the tail of the previous run is re-loaded, so history survives.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-`WAREHOUSE_INITIALIZED`.
-```
-
-with:
-
-```markdown
-`WAREHOUSE_INITIALIZED`.
-
-The distribution centre adds robot steps (`ROBOT_STEP`, `LIFTED`, `LOWERED`,
-`PLACED`, `SCANNED`), safety waits (`ROBOT_SAFETY_WAIT`,
-`ROBOT_SAFETY_RESUMED`, `SAFETY_WAIT_ESCALATED`), equipment and stock
-(`HANDOFF`, `CONVEYOR_JAMMED`, `CONVEYOR_CLEARED`, `STOCK_VARIANCE_DETECTED`),
-orders and the shift (`ORDER_CREATED`, `ORDER_STAGE_ADVANCED`,
-`ORDER_COMPLETED`, `ORDER_FAILED`, `SHIFT_STARTED`, `SHIFT_PAUSED`) and
-people (`PERSON_MOVED`).
-```
-
-**Replace in** `README.md`:
-
-```markdown
-ten checks:
-```
-
-with:
-
-```markdown
-ten core checks (the distribution centre adds ten physical ones, below):
-```
-
-**Replace in** `README.md`:
-
-```markdown
-verdict is the worst of the ten (`FAIL` > `WARN` > `PASS`). A clean
-```
-
-with:
-
-```markdown
-verdict is the worst of its checks (`FAIL` > `WARN` > `PASS`). A clean
-```
-
-**Replace in** `README.md`:
-
-```markdown
-is spelled out.
-```
-
-with:
-
-```markdown
-is spelled out.
-
-**Ten physical checks for the distribution centre.** The engine also runs
-`payload_within_limit`, `reach_within_limit`, `clearance_respected`,
-`no_fly_respected`, `human_zone_clear`, `supervision_maintained`,
-`count_consistent`, `handoff_consistent`, `sort_correct` and
-`placement_level_correct` — `TRUST_LAYER.md` says what each catches. Each is
-"not applicable" (a `PASS` with `applicable: false`) on a log that carries
-none of its data, so a classic log grades exactly as before. A pass and a
-fail fixture for each live in `logs/eval_examples/multi_embodiment/`.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-python -m backend.run_evals logs/tasks/task_006.json
-```
-
-with:
-
-```markdown
-python -m backend.run_evals logs/tasks/task_006.json
-
-# Grade the distribution centre's own task logs, or the physical checks' fixtures
-python -m backend.run_evals logs/distribution_center/tasks
-python -m backend.run_evals logs/eval_examples/multi_embodiment
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| `task_117_false_success_box_never_arrived.json` | Hand-edited from task_109: the event trail is untouched — `BOX_DELIVERED`, `TASK_COMPLETED`, the same success message, so every event-trail check (`terminal_state` included) reports a clean `PASS`. Only the physical `state.state` snapshot on that same `TASK_COMPLETED` record tells the truth: Box-D never left Shelf-A. A confidently-wrong completion — `state_transition` is the one check that reads ground truth instead of the narrative, so it's the only thing that catches it |
-```
-
-with:
-
-```markdown
-| `task_117_false_success_box_never_arrived.json` | Hand-edited from task_109: the event trail is untouched — `BOX_DELIVERED`, `TASK_COMPLETED`, the same success message, so every event-trail check (`terminal_state` included) reports a clean `PASS`. Only the physical `state.state` snapshot on that same `TASK_COMPLETED` record tells the truth: Box-D never left Shelf-A. A confidently-wrong completion — `state_transition` is the one check that reads ground truth instead of the narrative, so it's the only thing that catches it |
-| `task_118_batch_deliver_false_success.json` | The same kind of confident false success on a `BATCH_DELIVER`: the task reports `TASK_COMPLETED`, but one of its boxes (box_002) never reached the destination — again only `state_transition` catches it |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-`backend/models.py::ROBOT_CLASS_PRESETS` — six preset bundles of speed
-```
-
-with:
-
-```markdown
-`backend/models.py::ROBOT_CLASS_PRESETS` — eight preset bundles of speed
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| `FORKLIFT` | 1.2 | pick/deliver/move-box/move-robot/charge |
-| `SCOUT` | 3.0 | move-robot, mixed maintenance mission, charge |
-| `HEAVY_HAULER` | 0.8 | Same as Forklift, plus `BATCH_DELIVER` |
-| `DRONE` | 4.0 | Same as Scout, but faster |
-| `PICKER` | 2.5 | pick/deliver/move-box only (no free-roam `MOVE_ROBOT`) |
-```
-
-with:
-
-```markdown
-| `FORKLIFT` | 1.2 | pick/deliver/move-box/move-robot/charge, plus the pallet jobs `UNLOAD_TRUCK`, `PUTAWAY_PALLET`, `RETRIEVE_PALLET`, `LOAD_TRUCK` |
-| `SCOUT` | 3.0 | move-robot, mixed maintenance mission, charge, `PATROL` |
-| `HEAVY_HAULER` | 0.8 | pick/deliver/move-box/move-robot/charge, `BATCH_DELIVER`, `UNLOAD_TRUCK` |
-| `DRONE` | 4.0 | move-robot, mixed maintenance mission, charge, `CYCLE_COUNT` |
-| `PICKER` | 2.5 | pick/deliver/move-box/charge (no free-roam `MOVE_ROBOT`), `PICK_ITEMS` |
-| `ARM` | 0.7 | charge, `PACK_ORDER` — a fixed pack-cell arm; only a floor with stations can hold one |
-| `HUMANOID` | 0.8 | pick/deliver/move-box/move-robot/charge, `TOTE_TO_STATION`, `RETURN_TOTE`, `RETURNS_PUTAWAY` |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-through the normal endpoints exactly like a hand-configured robot.
-```
-
-with:
-
-```markdown
-through the normal endpoints exactly like a hand-configured robot. On the
-distribution centre a robot's class is its catalog model's embodiment class,
-and its speed comes from the model.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-charge itself and will eventually strand in `ERROR`.
-```
-
-with:
-
-```markdown
-charge itself and will eventually strand in `ERROR`.
-
-**A custom `robot_classes` block in `policies.yaml` replaces this whole
-table, and it must include `ARM` and `HUMANOID`.** The distribution
-centre's seed creates arms and a humanoid; with either class missing it
-stops at `Unknown robot_class 'ARM'` and the app won't start on that floor.
-Keep each class's new job types too, or the gate refuses those jobs.
-`policies.example.yaml` holds the built-in table to start from.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-
-### Decision history search
-```
-
-with:
-
-```markdown
-
-`certification_requirements`, `robot_classes` and `operator_roles` each
-replace the whole built-in table (`apply_policy` in `backend/policy.py`), so
-a custom table must keep every entry it still needs —
-`CLEAR_JAM: robot_cell_access` among the certifications, and `ARM` and
-`HUMANOID` among the robot classes (see [Robot classes](#robot-classes)). Under `config`, only
-keys `CONFIG` already has take effect; that includes the seven fault risks
-(see [Faults](#faults)). The example holds the built-in values, so copying it
-as it is changes nothing.
-
-### Decision history search
-```
-
-**Replace in** `README.md`:
-
-```markdown
-`backend/inventory/` with their own SQLite database (`data/inventory.sqlite3`;
-tests use an in-memory copy) and their own IDs (`AST-000101`, `E-10001`).
-```
-
-with:
-
-```markdown
-`backend/inventory/` with their own SQLite database (one file per floor,
-see **Persistence** below; tests use an in-memory copy) and their own IDs
-(`AST-000101`, `E-10001`).
-```
-
-**Replace in** `README.md`:
-
-```markdown
-**Persistence.** The app keeps the inventory in `data/inventory.sqlite3`
-(git-ignored), so it survives restarts; **Reset** re-seeds it. A schema or
-```
-
-with:
-
-```markdown
-**Persistence.** The app keeps the inventory in its floor's data folder —
-`data/inventory.sqlite3` on classic, `data/distribution_center/inventory.sqlite3`
-on the distribution centre (both git-ignored) — so it survives restarts, and
-switching floors never reseeds the other floor's file; **Reset** re-seeds it. A schema or
-```
-
-**Replace in** `README.md`:
-
-```markdown
-simulation** restores each robot's previous status and its work continues.
-
----
-```
-
-with:
-
-```markdown
-simulation** restores each robot's previous status and its work continues.
-
-On the distribution centre the dashboard also shows:
-
-- **Floor** — drawn from the floor's own cell-type table, with its zones
-  framed. The classic floor looks exactly as before.
-- **Robots** — a glyph and a letter per type (A AMR, F forklift, H hauler,
-  K picker, S scout, D drone, R arm, U humanoid), a badge for the kind of box
-  carried, and an amber ring while a robot waits for a safety reason. An arm
-  shows its station and the cells it reaches, and turns amber while it is
-  paused.
-- **Air layer** — drones draw above everything; the **Air layer** switch
-  shows or hides them and the no-fly overlay.
-- **People** — dots with initials in their zone; someone walking is drawn
-  on the walkway.
-- **Conveyor** — items move along it, and a jammed cell is red.
-- **Robot panel** — click a robot (or open `/?robot=<id>`) for its model,
-  asset and limits (payload, reach, clearance), its job, step and wait
-  reason, and a link to its inventory record. The fleet page's **On the
-  floor** link opens it.
-- **Shift** — the shift clock and status, **Start** and **Pause**, the pace,
-  orders in flight, backlog, done and per hour, failed orders with their
-  reasons, safety escalations, and **Inject fault** (pick a kind, press
-  **Inject**: it arms one occurrence). Hidden on classic.
-- **Create task** — the new job types, each showing only its own fields and
-  a one-line guide.
-- **Phone width** — at 375 px the floor scales to fit and the panels stack,
-  with no sideways scroll.
-
----
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| GET | `/api/state` | Full snapshot including the floor plan and config |
-```
-
-with:
-
-```markdown
-| GET | `/api/state` | Full snapshot including the floor plan and config — and the floor's `layout_name`, `cell_types`, `no_fly_cells`, `equipment` and `shift` |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| GET | `/api/stream` | Server-Sent Events (`state`, `log`, `event`, `ci`) |
-```
-
-with:
-
-```markdown
-| GET | `/api/stream` | Server-Sent Events (`state`, `log`, `event`, `ci`, `agent-chat`; the dashboard listens to all but `event`) |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| POST | `/api/tasks` | `{"type","robot_id","box_id","box_ids","source","destination","priority","agent_id","operator_id","dual_signoff","second_operator_id"}` |
-```
-
-with:
-
-```markdown
-| POST | `/api/tasks` | `{"type","robot_id","box_id","box_ids","source","destination","priority","agent_id","operator_id","dual_signoff","second_operator_id"}` — a distribution-centre job type also takes its own fields (`slot`, `quantity`, `station`, `face`, `dock`, `lane`, `order_id`, `pack_cell`, `segment`; see [Jobs](#jobs)), and one it doesn't take is a `400` |
-```
-
-**Replace in** `README.md`:
-
-```markdown
-| POST | `/api/state/save` | Writes `data/warehouse_state.json` |
-| POST | `/api/state/load` | Restores from that file |
-| POST | `/api/state/reset` | Back to the demo configuration |
-```
-
-with:
-
-```markdown
-| POST | `/api/state/save` | Writes the floor's state file (`data/warehouse_state.json`, or `data/distribution_center/warehouse_state.json`) |
-| POST | `/api/state/load` | Restores from that file; a save of the other floor is a `400` |
-| POST | `/api/state/reset` | Back to the floor's seed |
-
-### Operations (distribution-centre floor)
-
-Every call holds the twin's lock. The classic floor has no shift engine and
-no conveyor, so the shift routes and `/api/equipment` answer `409` there; the
-others answer with empty or demo data.
-
-| Method | Path | Body / query | Returns |
-|---|---|---|---|
-| GET | `/api/shift` | — | The shift panel: status (`RUNNING` or `PAUSED`), clock, config (seed, pace, rates), counters, orders per kind and status, throughput per hour, orders in flight, backlog, and the latest failed orders and exceptions |
-| POST | `/api/shift/start` | — | Starts generating work; answers with the panel |
-| POST | `/api/shift/pause` | — | Stops generating work (orders in flight carry on) |
-| POST | `/api/shift/config` | `{"pace", "seed", "rates": {stream: per_hour}}`, any of them | Changes them; a new seed restarts the shift's random generator. A bad value is a `400` and changes nothing |
-| GET | `/api/orders` | `?status=OPEN\|IN_PROGRESS\|DONE\|FAILED&kind=CUSTOMER\|INBOUND\|PALLET\|COUNT\|RETURN&limit=` (default 100) | Orders, newest first, and the counts per kind and status |
-| GET | `/api/orders/{id}` | — | One order with its stages, their jobs and attempts |
-| GET | `/api/stock` | `?sku=` | Ledger locations (recorded, true and counted quantities, the discrepancy, the slot's kind and level), the totals, and every SKU |
-| GET | `/api/people` | — | Everyone: zone, where they are walking to, status, worker id, employment status |
-| GET | `/api/equipment` | — | The conveyor (items, jams), the sorter, the arms' working cells, and the latest 20 hand-off records |
-| POST | `/api/faults/{kind}` | `{"count": n}` (optional, default 1) | Arms `n` occurrences of that fault (see [Faults](#faults)): `{"ok", "kind", "armed"}` |
-
-An unknown order id or fault kind is a `404`.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-impossible request, `404` for something that does not exist, `422` for a task
-that was created but failed validation.
-```
-
-with:
-
-```markdown
-impossible request, `404` for something that does not exist, `409` for a
-state conflict (an inventory lifecycle conflict, or a shift or equipment call
-on the classic floor), `422` for a task that was created but failed
-validation.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-253 tests (156 in `backend/tests.py`, 68 in
-`backend/test_eval_engine.py`, and 29 in `backend/test_agent_chat.py`),
-roughly one second — including coverage for the chat agent's tools (every
-```
-
-with:
-
-```markdown
-The classic suites — `backend/tests.py`, `backend/test_eval_engine.py` and
-`backend/test_agent_chat.py` — take a couple of seconds, with coverage for
-the chat agent's tools (every
-```
-
-**Replace in** `README.md`:
-
-```markdown
-rule, planning, all eight task types, cancel, pause and resume; priority
-```
-
-with:
-
-```markdown
-rule, planning, every task type, cancel, pause and resume; priority
-```
-
-**Replace in** `README.md`:
-
-```markdown
-the eval engine's eight checks, each verified against small hand-built
-event lists, the bundled example logs in `logs/eval_examples/`, and the
-project's own real logs in `logs/tasks/`.
-```
-
-with:
-
-```markdown
-the eval engine's checks, each verified against small hand-built
-event lists, the bundled example logs in `logs/eval_examples/`, and the
-project's own real logs in `logs/tasks/`.
-
-The distribution centre has a test file per feature (`backend/test_*.py`:
-its layout, motion, people, goods, jobs, shift, seed, save and load, the
-operations API and more). Three kinds are worth knowing by name:
-
-- `backend/test_soak.py` runs the spec's soak — seed 42, pace 2, 20 000
-  ticks, faults off — and asserts no collision, no failed physical check, an
-  order of every kind done, no robot in `ERROR`, no safety escalation and a
-  mean tick within 15 ms. `backend/test_fault_matrix.py` sets each fault's
-  risk to 0.2 in turn and asserts that its check catches it. They are the
-  slowest files in the suite.
-- `backend/test_floor_model_js.py` and `backend/test_panels_js.py` run the
-  dashboard's JavaScript tests (`frontend/tests/*.js`) under macOS's
-  built-in JavaScriptCore (`jsc`), against real `/api/state` snapshots of
-  both floors. They skip where `jsc` isn't installed; no Node is needed.
-- `backend/test_docs_examples.py` keeps this README, `TRUST_LAYER.md`,
-  `RUN.md` and `policies.example.yaml` in step with the code.
-
-To see the summary line, override `pytest.ini`'s `-q`:
-`python -m pytest -o addopts="" -q`.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-Check the header lamp. If it says *stopped* or *paused*, press **Start**. If it
-```
-
-with:
-
-```markdown
-On the distribution centre the shift starts paused: press **Start** on the
-**Shift** panel. Then check the header lamp. If it says *stopped* or
-*paused*, press **Start**. If it
-```
-
-**Replace in** `README.md`:
-
-```markdown
-card: it returns home with a full battery and drops any cargo.
-```
-
-with:
-
-```markdown
-card: it returns home with a full battery and drops any cargo.
-
-**The app won't start on the distribution centre: `Unknown robot_class 'ARM'`.**
-Your `policies.yaml` has a `robot_classes` block without `ARM` or
-`HUMANOID`. It replaces the whole roster — see
-[Robot classes](#robot-classes).
-
-**Loading a save fails: "This save is of the classic floor, and this twin runs
-the distribution_center floor".**
-Each floor loads only its own saves. Start the app with the
-`WAREHOUSE_LAYOUT` the message names.
-```
-
-**Replace in** `README.md`:
-
-```markdown
-│   ├── tests.py            Pytest suite
-│   ├── test_eval_engine.py Pytest suite for the eval engine
-│   └── test_agent_chat.py  Pytest suite for the chat agent's tools
-```
-
-with:
-
-```markdown
-│   ├── layouts/            The floors as data: classic, distribution_center
-│   ├── seeds/              What each floor holds when it boots or resets
-│   ├── embodiment.py       A robot's body, read from its catalog model
-│   ├── people.py           People as zone presence: walks, crossings, supervision
-│   ├── goods.py            Box kinds and the stock ledger
-│   ├── equipment.py        Conveyor, sorter, jams and hand-off records
-│   ├── energy.py           Energy in Wh on the distribution centre
-│   ├── jobs.py             The distribution centre's robot job types
-│   ├── human_jobs.py       Jobs people do: MANUAL_PICK, CLEAR_JAM
-│   ├── faults.py           Injected faults
-│   ├── operations/         The shift engine, order chains, people's activities
-│   ├── operations_api.py   /api/shift, /orders, /stock, /people, /equipment, /faults
-│   ├── soak.py             The fixed-seed soak (python -m backend.soak)
-│   ├── inventory/          The fleet & workforce source systems (SQLite)
-│   ├── fleet_bridge.py     Binds floor robots and people to their inventory records
-│   ├── tests.py            Pytest suite
-│   ├── test_eval_engine.py Pytest suite for the eval engine
-│   ├── test_agent_chat.py  Pytest suite for the chat agent's tools
-│   └── test_*.py           The other suites, one file per feature
-```
-
-**Replace in** `README.md`:
-
-```markdown
-│   └── app.js
-```
-
-with:
-
-```markdown
-│   ├── app.js
-│   ├── floor_model.js      Pure helpers app.js draws from
-│   ├── fleet.html, fleet.js, fleet.css   The fleet & workforce page
-│   └── tests/              JavaScriptCore unit tests for floor_model.js
-```
-
-**Replace in** `README.md`:
-
-```markdown
-│   └── eval_examples/       One example log per failure case, for --demo and the tests
-├── data/
-│   └── warehouse_state.json
-```
-
-with:
-
-```markdown
-│   ├── eval_examples/       One example log per failure case (multi_embodiment/: the physical checks)
-│   └── distribution_center/ The distribution centre's own warehouse.log, events.json and tasks/
-├── data/
-│   ├── warehouse_state.json
-│   ├── inventory.sqlite3
-│   └── distribution_center/ The distribution centre's own state save and inventory file
-```
-
-
-- [ ] **Step 6: `RUN.md` — both floors, the shift, the soak, the `jsc` tests**
-
-**Replace in** `RUN.md`:
-
-```markdown
-| Python | 3.12 (3.10+ should work) | for the app, tests, eval engine |
-| Node.js + npm | v22.23 / npm 10.9 (`^20.20.0 \|\| >=22.22.0` required) | to run promptfoo |
-| Groq API key | — | only needed for the Groq LLM-as-judge suite; free at [console.groq.com/keys](https://console.groq.com/keys) |
-```
-
-with:
-
-```markdown
-| Python | 3.14 (what the project's `.venv` runs) | for the app, tests, eval engine |
-| Node.js + npm | v22.23 / npm 10.9 (`^20.20.0 \|\| >=22.22.0` required) | to run promptfoo |
-| Groq API key | — | only needed for the Groq LLM-as-judge suite; free at [console.groq.com/keys](https://console.groq.com/keys) |
-| JavaScriptCore (`jsc`) | built into macOS | only for the dashboard's JavaScript tests (section 4); they skip without it |
-```
-
-**Replace in** `RUN.md`:
-
-```markdown
-pip install -r requirements.txt  # Flask + pytest
-```
-
-with:
-
-```markdown
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt  # Flask, pytest and PyYAML
 ```
 
-**Replace in** `RUN.md`:
+`./run.sh` does all of that and starts the app. The commands below assume the venv is active.
 
-````markdown
-`WAREHOUSE_LAYOUT` picks the floor: `classic` (the default, 20x15) or
-`distribution_center` (the 32x20 multi-embodiment floor). The new floor
-boots with the shift soak's fleet, goods and crew, its shift already
-running, and keeps its own `logs/distribution_center/` and
-`data/distribution_center/` (its own inventory file), so switching floors
-never reseeds classic's `data/inventory.sqlite3`. The dashboard doesn't
-draw the new floor's cell types, people, conveyor or shift panel yet
-(multi-embodiment spec §12, plan 1c).
+## 3. Run the app
 
 ```bash
-WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5050 python -m backend.app
+WAREHOUSE_PORT=5055 python -m backend.app                                  # the distribution centre (the default)
+WAREHOUSE_LAYOUT=classic WAREHOUSE_PORT=5055 python -m backend.app         # the classic floor
+WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5055 python -m backend.app   # the default, spelled out
 ```
-````
 
-with:
+The dashboard is at `http://127.0.0.1:<port>`; stop with Ctrl+C. `WAREHOUSE_HOST` and `WAREHOUSE_PORT` default to `127.0.0.1` and `5000`. **On macOS the AirPlay Receiver holds port 5000, so use another port.** Each floor's `logs/` and `data/` folders are listed in the [README's quick start](README.md#quick-start).
 
-````markdown
-`WAREHOUSE_LAYOUT` picks the floor: `distribution_center` (the default, the
-32x20 multi-embodiment floor) or `classic` (the original 20x15). An unknown
-name is refused before anything is written. Each floor keeps its own files:
-classic uses `logs/` and `data/` (`data/inventory.sqlite3`,
-`data/warehouse_state.json`), the distribution centre
-`logs/distribution_center/` and `data/distribution_center/` (its own
-inventory file and state save), so switching floors never reseeds the other
-floor's inventory.
+The distribution centre's shift starts paused. Press **Start** on the Shift panel, or:
 
 ```bash
-python -m backend.app                                         # the distribution centre
-WAREHOUSE_LAYOUT=classic python -m backend.app                # the classic floor
-WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5050 python -m backend.app
+curl -X POST http://127.0.0.1:5055/api/shift/start
 ```
 
-The classic floor starts with its demo robots, boxes and two demo tasks,
-already working.
+Inject one fault on demand from the Shift panel's **Inject fault**, or `curl -X POST http://127.0.0.1:5055/api/faults/conveyor_jam`.
 
-The distribution centre boots with its full seed — 15 robots, 10 workers,
-60 pallets, 80 totes — and the simulation running, but its **shift starts
-paused**, so nothing generates work yet. Start it with **Start** on the
-dashboard's Shift panel, or over HTTP (with your port):
+## 4. Tests
 
 ```bash
-curl -X POST http://127.0.0.1:5000/api/shift/start
-curl -X POST http://127.0.0.1:5000/api/shift/config \
-  -H 'Content-Type: application/json' -d '{"pace": 2}'     # twice the default rates
-curl http://127.0.0.1:5000/api/shift                        # clock, status, orders, throughput
-curl -X POST http://127.0.0.1:5000/api/shift/pause
+python -m pytest -o addopts="" -q                                # the full suite, with its summary line
+python -m pytest -o addopts="" -q backend/test_station_jobs.py   # one file
+python -m pytest -o addopts="" -q backend/tests.py::test_name    # one test
+python -m pytest -o addopts="" -q -k "collision or battery"      # by keyword
 ```
 
-Inject a fault for a demo with the Shift panel's **Inject fault**, or
-`curl -X POST http://127.0.0.1:5000/api/faults/conveyor_jam`. README.md's
-"The distribution-centre floor" section describes the robots, the people,
-the jobs, the shift, the faults and every route.
-````
-
-**Replace in** `RUN.md`:
-
-````markdown
-python -m pytest backend/test_eval_engine.py           # just the eval engine's own tests
-```
-````
-
-with:
-
-````markdown
-python -m pytest backend/test_eval_engine.py           # just the eval engine's own tests
-python -m pytest -o addopts="" -q                     # everything, with the summary line
-```
-
-The only failures expected are `test_real_task_006_box_conflict_is_caught`
-and `test_idle_robot_with_a_low_battery_charges_itself` (see section 7).
-
-### The dashboard's JavaScript tests
-
-`frontend/floor_model.js` (the pure helpers the dashboard draws from) is
-unit-tested by `frontend/tests/floor_model_test.js` and
-`frontend/tests/panels_test.js`. They run under macOS's built-in
-JavaScriptCore,
-`/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc`,
-so no Node is needed. Run them through their pytest wrappers, which build
-real `/api/state` snapshots of both floors as fixtures, run `jsc`, and fail
-on any failing assertion; they also check that `app.js` and `fleet.js`
-compile and stay ES5. Where `jsc` isn't installed (Linux, say), the wrappers
-skip.
+`pytest.ini` sets `-q`, so `-o addopts=""` is what lets the summary line print. Two failures are expected (section 8). The dashboard's JavaScript tests, `frontend/tests/*.js`, run under macOS's built-in JavaScriptCore (`/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc`) through pytest wrappers that skip when `jsc` is absent; no Node is needed:
 
 ```bash
-python -m pytest backend/test_floor_model_js.py backend/test_panels_js.py
+python -m pytest -o addopts="" -q backend/test_floor_model_js.py backend/test_panels_js.py
 ```
 
-### The soak (distribution centre)
+## 5. Eval CLI
 
-`python -m backend.soak` runs the design spec's soak (§16): the seeded
-distribution centre, shift seed 42, pace 2, 20 000 ticks (50 sim-minutes),
-every risk at 0. It takes about 12 seconds on the development machine and
-prints a report:
-
-```
-Soak: distribution_center, seed 42, pace 2, 20000 ticks (50.0 sim-minutes)
-Risks: none (faults off)
-Mean tick: 0.577 ms (longest 6.6 ms; budget 15 ms)
-Same-layer collisions: 0
-New checks: 0 failure(s) over 436 finished job(s)
-Orders done: CUSTOMER 26, INBOUND 5, PALLET 7, COUNT 10, RETURN 8
-Robots in ERROR: none
-Safety escalations: none
-Grasp misses: 0
-Jobs that failed: 0
-```
-
-The tick timings vary by machine; everything else comes out the same on
-every run.
+Rule-based grading of task logs, no promptfoo and no API (checks: [TRUST_LAYER.md](TRUST_LAYER.md)).
 
 ```bash
-python -m backend.soak --ticks 6000 --risk grasp_fail=0.2     # a shorter run with one fault
-python -m backend.soak --risk mis_sort=0.2 --risk handoff_loss=0.2
-python -m backend.soak --help
+python -m backend.run_evals                                      # every real logs/tasks/*.json
+python -m backend.run_evals logs/tasks/task_006.json             # one file
+python -m backend.run_evals --demo                               # the curated logs/eval_examples/
+python -m backend.run_evals --stats                              # success rate, assurance coverage, top failing checks
+python -m backend.run_evals --out logs/evals/report.json         # also save the full JSON report
+python -m backend.run_evals --fail-under 5                       # exit 1 if fewer than 5 tasks pass
+python -m backend.run_evals logs/distribution_center/tasks       # the distribution centre's own logs
+python -m backend.run_evals logs/eval_examples/multi_embodiment  # the physical checks' pass and fail fixtures
 ```
 
-`--risk` takes a fault kind (`scan_miscount`, `wrong_level`, `grasp_fail`,
-`conveyor_jam`, `handoff_loss`, `mis_sort`, `misdeclared_weight`) or a
-`CONFIG` risk name (`FALSE_SUCCESS_RISK`, say) and a chance from 0 to 1.
-`backend/test_soak.py` asserts the default run; `backend/test_fault_matrix.py`
-runs each fault at 0.2 and checks that its evaluation check catches it.
+## 6. Promptfoo
+
+Three suites (live logs, curated examples, Groq-judged) live in `evals/`; their commands, the Groq key setup and the model choice are in [evals/README.md](evals/README.md). Install once with `npm install -g promptfoo` and call `promptfoo` directly, since `npx promptfoo` re-resolves over the network and can hang for minutes. Run the Groq suite with `--env-file evals/.env -j 1`: its token budget is small, and promptfoo only auto-loads a `.env` from the directory it runs in.
+
+## 7. Soak
+
+```bash
+python -m backend.soak                                    # seed 42, pace 2, 20 000 ticks, every risk at 0
+python -m backend.soak --ticks 6000 --risk grasp_fail=0.2 # a shorter run with one fault
+python -m backend.soak --help                             # --ticks, --seed, --pace, --risk KIND=CHANCE (repeatable)
+```
+
+It boots the seeded distribution centre, runs the shift and prints a report: same-layer collisions, failures of the physical checks, orders done per kind, robots in `ERROR`, safety escalations, and the mean and longest tick against the 15 ms budget. `--risk` takes a fault kind or a `CONFIG` risk name ([README.md](README.md#faults)) and a chance from 0 to 1. `backend/test_soak.py` asserts the default run and `backend/test_fault_matrix.py` runs each fault at 0.2.
+
+## 8. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `test_real_task_006_box_conflict_is_caught` and `test_idle_robot_with_a_low_battery_charges_itself` fail | Known and allowed. The first reads `logs/tasks/task_006.json`, which each fresh run appends to (ids restart at `task_001`; Clear logs deletes the files); the second is pre-existing simulator behaviour: the robot's battery runs out before it reaches the charger. Any other failure is yours. |
+| The distribution centre's robots stand still | Its shift starts paused: press **Start** on the Shift panel (section 3). |
+| The app stops at start with `Unknown robot_class 'ARM'` | A `robot_classes` block in `policies.yaml` replaces the whole roster and lacks `ARM` or `HUMANOID`; `policies.example.yaml` holds the built-in one. |
+| `POST /api/state/load` says "This save is of the classic floor, and this twin runs the distribution_center floor" | Each floor loads only its own saves: start the app with the `WAREHOUSE_LAYOUT` the message names. |
+| `test_floor_model_js.py` and `test_panels_js.py` are skipped | `jsc` isn't at its macOS path (Linux, say). Expected; run them on a Mac. |
+| `pytest` fails with `ModuleNotFoundError: No module named 'yaml'` inside `launch_testing` | An unrelated ROS pytest plugin is auto-loaded: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p no:cacheprovider`. |
+| A promptfoo command hangs for minutes, or says `Missing GROQ_API_KEY`, `404` or `413` | See section 6 and [evals/README.md](evals/README.md): call `promptfoo` directly, pass `--env-file evals/.env -j 1`, and use a model your key serves. |
+| A task went straight to `FAILED` | Open it on the task board: the reason is on its card and in the log at `ERROR` level (a box already reserved, a destination that doesn't resolve, a robot in an error state, or the gate). |
+| A robot sits in `WAITING` or `ERROR` | `WAITING`: it yields to another robot or waits on a person (the robot panel shows the reason; [TRUST_LAYER.md](TRUST_LAYER.md#physical-waits)). `ERROR`: its battery hit zero or its controller raised; press **Reset** on the robot. |
+| Everything is confused after editing code | `POST /api/state/reset`, or **Reset** in the dashboard, puts the floor back as its seed left it. |
 ````
-
-**Replace in** `RUN.md`:
-
-````markdown
-python -m backend.run_evals --stats                      # mission success rate, assurance coverage, top failing checks
-```
-````
-
-with:
-
-````markdown
-python -m backend.run_evals --stats                      # mission success rate, assurance coverage, top failing checks
-python -m backend.run_evals logs/distribution_center/tasks      # the distribution centre's own task logs
-python -m backend.run_evals logs/eval_examples/multi_embodiment  # the ten physical checks' pass/fail fixtures
-```
-````
-
-**Replace in** `RUN.md`:
-
-```markdown
-Grades the 11 hand-built example logs in `logs/eval_examples/` (one per
-known failure type, plus real simulator runs demonstrating the
-state-transition and entities-valid checks) against their known-correct
-answers.
-```
-
-with:
-
-```markdown
-Grades the example logs `backend/test_eval_engine.py`'s
-`EXPECTED_EXAMPLE_VERDICTS` lists — the 19 `logs/eval_examples/task_1*.json`
-files: hand-built ones, one per known failure type, plus real simulator runs
-demonstrating the state-transition and entities-valid checks — against their
-known-correct answers. The physical checks' fixtures in
-`logs/eval_examples/multi_embodiment/` are not part of this suite;
-`backend/test_trust_checks.py` grades them.
-```
-
-**Replace in** `RUN.md`:
-
-```markdown
-| `test_real_task_006_box_conflict_is_caught` fails | Pre-existing: whatever's currently in `logs/tasks/task_006.json` no longer contains the box-conflict scenario the test expects (real logs get overwritten by task-id reuse on every fresh app run) | Not caused by the state-transition feature — confirmed by neutralizing it and reproducing the same failure. Safe to ignore, or regenerate a real conflict scenario if you want the test green |
-| `test_idle_robot_with_a_low_battery_charges_itself` fails/times out | Pre-existing simulator behavior: the robot's battery runs out before it reaches the charger from its demo spawn point | Same as above — confirmed unrelated to this change by isolating it |
-```
-
-with:
-
-```markdown
-| `test_real_task_006_box_conflict_is_caught` fails | Pre-existing: whatever's currently in `logs/tasks/task_006.json` no longer contains the box-conflict scenario the test expects (every fresh app run numbers its tasks from `task_001` again, and the logger appends the new run's records to the existing file of the same id — Clear logs deletes the files — so the file no longer holds just that scenario) | Not caused by the state-transition feature — confirmed by neutralizing it and reproducing the same failure. Safe to ignore, or regenerate a real conflict scenario if you want the test green |
-| `test_idle_robot_with_a_low_battery_charges_itself` fails/times out | Pre-existing simulator behavior: the robot's battery runs out before it reaches the charger from its demo spawn point | Same as above — confirmed unrelated to this change by isolating it |
-| The distribution centre's robots stand still | Its shift starts paused | Press **Start** on the dashboard's Shift panel, or `curl -X POST http://127.0.0.1:5000/api/shift/start` (section 3) |
-| The app stops at start: `Unknown robot_class 'ARM'` | A `robot_classes` block in `policies.yaml` replaces the whole roster, and yours lacks `ARM` or `HUMANOID` | Add them: `policies.example.yaml` holds the built-in table |
-| `POST /api/state/load` answers "This save is of the classic floor, and this twin runs the distribution_center floor…" | Each floor loads only its own saves | Start the app with the `WAREHOUSE_LAYOUT` the message names |
-| `test_floor_model_js.py` and `test_panels_js.py` are skipped | `jsc` isn't at its macOS path (on Linux, for one) | Expected; run them on a Mac |
-```
-
-**Replace in** `RUN.md`:
-
-```markdown
-│   ├── tests.py                 main pytest suite
-│   └── test_eval_engine.py      pytest suite for eval_engine.py
-├── logs/
-│   ├── tasks/                   real task logs your system has produced
-│   └── eval_examples/           curated example logs, one per known failure case
-```
-
-with:
-
-```markdown
-│   ├── operations_api.py        /api/shift, /orders, /stock, /people, /equipment, /faults
-│   ├── soak.py                  the fixed-seed soak of the distribution centre (section 4)
-│   ├── tests.py                 main pytest suite
-│   ├── test_eval_engine.py      pytest suite for eval_engine.py
-│   ├── test_floor_model_js.py   runs frontend/tests/floor_model_test.js under jsc
-│   └── test_panels_js.py        runs frontend/tests/panels_test.js under jsc
-├── frontend/
-│   ├── floor_model.js           pure helpers the dashboard draws from
-│   └── tests/                   their JavaScriptCore unit tests
-├── logs/
-│   ├── tasks/                   real task logs your system has produced (classic)
-│   ├── distribution_center/     the distribution centre's own logs, tasks/ included
-│   └── eval_examples/           curated example logs, one per known failure case
-├── data/                        classic's inventory file and state save; distribution_center/ holds the new floor's
-```
-
 
 - [ ] **Step 7: The spec — §2, §4.3 and §6 "Movement" as the plan built them**
 
@@ -12426,6 +11356,9 @@ with:
 Run: `.venv/bin/python -m pytest -o addopts="" -q backend/test_docs_examples.py`
 Expected: `6 passed`.
 
+Check the sizes: `wc -l README.md RUN.md TRUST_LAYER.md`
+Expected: 165, 100 and 128 lines (the caps are 250, 130 and 160).
+
 - [ ] **Step 9: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
@@ -12436,21 +11369,21 @@ Expected: `2 failed, 920 passed` (Task 11 left 914). The two failures are the al
 ```bash
 git add README.md TRUST_LAYER.md RUN.md policies.example.yaml docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md backend/test_docs_examples.py
 git commit -m "$(cat <<'MSG'
-docs: the distribution-centre floor in the README, TRUST_LAYER.md, RUN.md and the policy example
+docs: short README, RUN.md and TRUST_LAYER.md for the distribution-centre floor, and the policy example
 
-The README documents the new default floor: its plan, the eight robot
-types and their letters, the people and their rules, goods, the thirteen
-job types, the shift (which starts paused), the seven faults, every
-operations route, WAREHOUSE_LAYOUT and the per-floor folders, the new
-dashboard panels and the soak, and warns that a custom robot_classes
-block must include ARM and HUMANOID. TRUST_LAYER.md gains the physical
-rules, waits, checks, system checks and faults, and its Tier 2 list is
-corrected. policies.example.yaml gains the seven risks, CLEAR_JAM and the
-new classes, so copying it changes nothing. RUN.md covers both floors,
-starting the shift, the soak and the jsc tests. Statements the code had
-already outgrown are corrected too: task-type, check, category and
-box-state counts, the test count, polling, the SSE events, the Python
-version, requirements, how task logs are written, and the examples suite.
+README.md, RUN.md and TRUST_LAYER.md are rewritten whole, each short and
+linking to the others instead of repeating them. The README covers the
+project, a one-line-per-feature overview, the quick start with
+WAREHOUSE_LAYOUT and the per-floor folders, both floors and the eight robot
+letters, the shift (which starts paused), the seven faults, the dashboard
+panels, every route in one table, and the warning that a custom
+robot_classes block must include ARM and HUMANOID. RUN.md holds the
+commands: setup, both floors, starting the shift, the tests (the jsc ones
+included), the eval CLI, promptfoo and the soak. TRUST_LAYER.md maps each
+concept to its code, corrects its Tier 2 list, and describes the physical
+trust layer. The long reference sections are not carried over, and with them
+the counts and claims the code had outgrown. policies.example.yaml gains the
+seven risks, CLEAR_JAM and the new classes, so copying it changes nothing.
 
 Spec amendments: §2, the new floor's own data/ and logs/ folders (Plan 1c
 ruling 2); §4.3, a save from another floor is refused, not rebuilt (Plan
