@@ -189,16 +189,23 @@ class Warehouse:
 
     def cells_jobs_need(self) -> FrozenSet[Cell]:
         """The cells an idle robot shouldn't stand on, because jobs need them:
-        every slot's face cells, every station's tote drop and work cell, and
-        every one-lane cell — a drivable cell whose two neighbours along one
-        axis are both off-limits to ground robots, so a robot stopped there
-        blocks the lane (the tote aisles, the top aisle, the walkway
-        crossings). Worked out once, on first use."""
+        every slot's face cells, every station's tote drop and work cell, every
+        cell of an aisle the layout marks NARROW (a one-lane aisle, side
+        pockets and all: the top aisle's x=18 column is the only way to each
+        pick station's tote drop), every walkway crossing (no robot may stop
+        on one), and every other one-lane cell — a drivable cell whose two
+        neighbours along one axis are both off-limits to ground robots, so a
+        robot stopped there blocks the lane. A NARROW place that isn't an
+        aisle (a station, a dock) is not one: the humanoid lives in
+        returns_qc. Worked out once, on first use."""
         if self._jobs_need is None:
             cells = {face for slot in self.slots.values() for face in slot.faces}
             for zone in self.zones.values():
                 cells.update(tuple(zone.attributes[key]) for key in ("tote_drop", "work_cell")
                              if key in zone.attributes)
+                if zone.cell_type is CellType.EMPTY and zone.attributes.get("clearance") == NARROW:
+                    cells.update(zone.cells)
+            cells.update(self.crossings)
             walkable = self.is_walkable
             for x, y in self.walkable_cells():
                 if (not walkable(x - 1, y) and not walkable(x + 1, y)) or \

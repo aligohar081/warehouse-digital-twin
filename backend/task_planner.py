@@ -74,12 +74,19 @@ class TaskPlanner:
         prefer_free: bool = False,
         profile: Optional[MobilityProfile] = None,
         layer: str = GROUND,
+        avoid: Optional[Set[Cell]] = None,
     ) -> Tuple[Cell, str]:
         """Turn a location specification into a concrete grid cell that a robot
-        with `profile` can use on `layer` (no profile: any drivable cell)."""
+        with `profile` can use on `layer` (no profile: any drivable cell).
+
+        `blocked` cells are walls: never the cell chosen and never a way
+        through. `avoid` cells (other robots' cells, on the new floor) are
+        never the cell chosen either, but a route may pass them: they are
+        traffic, which execution waits out or replans around."""
         warehouse = self.twin.warehouse
         nav = self.twin.navigation
         blocked = set(blocked or ())
+        avoid = set(avoid or ())
 
         if spec is None:
             raise PlanningError("No destination given")
@@ -90,7 +97,7 @@ class TaskPlanner:
             if not warehouse.is_inside(*cell):
                 raise PlanningError(f"Coordinates {cell} are outside the warehouse")
             resolved = cell if warehouse.may_stop(cell, profile, layer) \
-                else warehouse.nearest_walkable(cell, blocked, profile=profile, layer=layer)
+                else warehouse.nearest_walkable(cell, blocked | avoid, profile=profile, layer=layer)
             if resolved is None:
                 raise PlanningError(f"No drivable cell near {cell}")
             return resolved, warehouse.label_for_cell(resolved)
@@ -103,7 +110,8 @@ class TaskPlanner:
                 # A shipped box has left on a truck: its dock cell is free again.
                 occupied = {b.position for b in self.twin.boxes.values() if b.status is not BoxStatus.SHIPPED}
                 prefer = {c for c in zone.cells if c not in occupied}
-            chosen = nav.best_cell_in_zone(zone.cells, origin, blocked=blocked, prefer=prefer,
+            cells = [c for c in zone.cells if c not in avoid]
+            chosen = nav.best_cell_in_zone(cells, origin, blocked=blocked, prefer=prefer,
                                            profile=profile, layer=layer)
             if chosen is None:
                 raise PlanningError(f"{zone.label} is not reachable right now")
@@ -214,9 +222,19 @@ class TaskPlanner:
             robot_id=robot.id,
         )
 
-        blocked = self.twin.other_robot_cells(robot.id)
-        # Every target is resolved for this robot's own body and layer.
-        route = {"profile": robot.mobility, "layer": robot.layer}
+        # Every target is resolved for this robot's own body and layer. On the
+        # new floor the cells other robots stand on are traffic, not walls:
+        # execution waits them out, replans around them or sidesteps, so a
+        # robot in a one-lane aisle doesn't fail a job at plan time. They are
+        # still never chosen as a zone cell to go to (`avoid`). A robot with no
+        # floor profile keeps them as `blocked`, as classic planning always has.
+        others = self.twin.other_robot_cells(robot.id)
+        route: Dict[str, Any] = {"profile": robot.mobility, "layer": robot.layer}
+        if robot.mobility is None:
+            blocked = others
+        else:
+            blocked = set()
+            route["avoid"] = others
         actions: List[Action] = []
         waypoints: List[Cell] = []
         handling_ops = 0
@@ -338,13 +356,9 @@ class TaskPlanner:
             spec = JOB_SPECS.get(task.type)
             if spec is None or spec.plan is None:
                 raise PlanningError(f"{task.type.value} does not need a movement plan")
-            # On the new floor a job's targets (slot faces, station drops,
-            # staging and dock cells) are chosen from the layout alone: a robot
-            # standing in the way right now is traffic, which execution waits
-            # out, replans around or sidesteps. A robot with no floor profile
-            # keeps `blocked`, as classic planning always has.
-            spec_blocked = set() if robot.mobility is not None else blocked
-            actions, waypoints, handling_ops = spec.plan(self, task, robot, spec_blocked)
+            # A job's targets (slot faces, station drops, staging and dock
+            # cells) get the same `blocked`: empty on the new floor (above).
+            actions, waypoints, handling_ops = spec.plan(self, task, robot, blocked)
 
         # ---- battery-aware planning ---------------------------------- #
         # A mains-powered arm has no battery to plan for, and a drone gets a

@@ -27,6 +27,7 @@ from .models import (
     TaskType,
     cell_dict,
     cell_tuple,
+    manhattan,
     now_hms,
     now_iso,
 )
@@ -1648,16 +1649,21 @@ class TaskManager:
         """A new-floor job that ends early (failed or cancelled) leaves nothing
         in its robot's hands, so the robot can charge and take work again. The
         load is the box the job itself took (its PICK or GRASP made it the
-        box's assigned task). A mobile robot sets it down on its own cell, as
-        a reset does: it is STORED there, still recorded in its home slot if it
-        is a tote. An arm puts an order item back on its working conveyor
+        box's assigned task), or the job's own box when the robot already held
+        it (a DELIVER_BOX after a PICK_BOX). A mobile robot sets it down STORED
+        on the nearest cell its body may stop on (Warehouse.may_stop) that no
+        other robot holds: its own cell, unless that is a walkway crossing — no
+        robot may stop there, so no job could fetch the load from it. A tote
+        stays recorded in its home slot. A picker puts a unit back into
+        the tote it took it from; with that tote gone or out of reach, the
+        unit fails. An arm puts an order item back on its working conveyor
         cell, held there for a retry; with that cell taken, the item fails. A
         classic robot keeps holding its box, as it always has."""
         twin = self.twin
         if robot.mobility is None or not robot.carrying_box:
             return
         box = twin.find_box(robot.carrying_box)
-        if box is None or box.assigned_task != task.id:
+        if box is None or not (box.assigned_task == task.id or box.id == task.box_id or box.id in task.box_ids):
             return  # not this job's load (handed to it some other way): left as it is
         robot.carrying_box = None
         box.assigned_robot = box.assigned_task = None
@@ -1672,10 +1678,40 @@ class TaskManager:
                                 f"ended, and its conveyor cell was taken", task_id=task.id, robot_id=robot.id,
                                 box_id=box.id)
             return
-        box.position = robot.position
+        source = next((action.params["unit_from"] for action in task.actions if "unit_from" in action.params), None)
+        if box.kind.value == "ITEM" and source is not None:
+            self._put_unit_back(task, robot, box, twin.find_box(source))
+            return
+        cell = twin.warehouse.nearest_walkable(robot.position, twin.other_robot_cells(robot.id),
+                                               profile=robot.mobility, layer=robot.layer) or robot.position
+        box.position = cell
         box.set_status(twin.BoxStatus.STORED)
-        twin.logger.info(LogCategory.BOX, f"{robot.name} set {box.name} down at ({robot.position[0]},"
-                         f"{robot.position[1]}): {task.id} ended", task_id=task.id, robot_id=robot.id, box_id=box.id)
+        twin.logger.info(LogCategory.BOX, f"{robot.name} set {box.name} down at ({cell[0]},{cell[1]}): "
+                         f"{task.id} ended", task_id=task.id, robot_id=robot.id, box_id=box.id)
+
+    def _put_unit_back(self, task: Task, robot: Any, item: Any, tote: Optional[Any]) -> None:
+        """A picker's unit goes back into the tote it was taken from: the
+        tote's recorded and true quantities and its weights go back up, and
+        the unit is gone. With the tote gone, out of the ledger or out of the
+        picker's reach, the unit fails where the picker stands."""
+        twin = self.twin
+        try:
+            if tote is None:
+                raise ValueError("the tote it came from is gone")
+            if manhattan(tote.position, robot.position) > 1:
+                raise ValueError(f"{tote.name} is out of reach")
+            twin.stock.return_units(tote, item.quantity)
+        except ValueError as exc:
+            item.position = robot.position
+            item.set_status(twin.BoxStatus.FAILED)
+            twin.logger.warning(LogCategory.BOX, f"{item.name} failed: {robot.name} could not put it back when "
+                                f"{task.id} ended ({exc})", task_id=task.id, robot_id=robot.id, box_id=item.id)
+            return
+        tote.declared_weight_kg = round(tote.declared_weight_kg + item.declared_weight_kg, 3)
+        tote.true_weight_kg = round(tote.true_weight_kg + item.true_weight_kg, 3)
+        del twin.boxes[item.id]
+        twin.logger.info(LogCategory.BOX, f"{robot.name} put {item.name} back into {tote.name}: {task.id} ended",
+                         task_id=task.id, robot_id=robot.id, box_id=tote.id)
 
     def fail_task(self, task: Task, error: str) -> None:
         twin = self.twin

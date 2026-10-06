@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .box import Box
 from .models import CONFIG, BoxKind, Cell, manhattan
 
 __all__ = [
@@ -147,6 +148,21 @@ class StockLedger:
         location.true_qty += int(quantity)
         location.counted_qty, location.counted_tick = None, None
         return location
+
+    def return_units(self, tote: Box, units: int) -> None:
+        """Units put back into the tote they were just taken from (a pick that
+        ended before its unit reached the line): the tote's recorded and true
+        quantities both go back up by `units`, and the tote's own quantity
+        with them. The caller gives the tote back the units' weight."""
+        if tote.kind is not BoxKind.TOTE:
+            raise ValueError(f"{tote.name} is a {tote.kind.value}, not a TOTE")
+        if isinstance(units, bool) or not isinstance(units, int) or units < 1:
+            raise ValueError("units must be a whole number of at least 1")
+        slot_id = self.slot_of(tote.id)
+        if slot_id is None:
+            raise ValueError(f"{tote.name} is not in the stock ledger")
+        tote.quantity = self.restock(slot_id, units).recorded_qty
+        tote.touch()
 
     def adjust_true(self, slot_id: str, delta: int) -> StockLocation:
         """A physical change the record never saw (an injected fault)."""
