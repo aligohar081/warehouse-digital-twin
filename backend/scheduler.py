@@ -79,6 +79,15 @@ class Scheduler:
     ) -> ScheduledTask:
         if not payload.get("type"):
             raise ValueError("A scheduled task needs a 'type'")
+        # A schedule's runs are internal, so the gate's stray-field check
+        # would skip them: refuse a stray field once, here, where it is input.
+        from .jobs import JOB_SPECS, job_fields, stray_fields  # deferred: jobs imports the planner
+        kind = str(payload.get("type")).upper().strip()
+        if kind in {spec.value for spec in JOB_SPECS}:
+            stray = stray_fields(kind, payload)
+            if stray:
+                raise ValueError(f"{kind} takes no {stray[0]!r} "
+                                 f"(its fields: {', '.join(job_fields(kind))})")
         if interval_ticks is None:
             if interval_seconds is None:
                 raise ValueError("Provide interval_seconds or interval_ticks")
