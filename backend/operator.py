@@ -131,7 +131,11 @@ class Operator:
         }
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "Operator":
+    def from_dict(data: Dict[str, Any], warehouse: Optional[Any] = None) -> "Operator":
+        """An operator from to_dict(). Where they are must make sense (people.py
+        keeps it so): someone walking is walking from a zone, with an arrival
+        tick; an off-duty person is off the floor; and, given the `warehouse`,
+        both zones exist on it. Anything else raises ValueError."""
         operator = Operator(
             operator_id=data["id"],
             name=data["name"],
@@ -150,6 +154,26 @@ class Operator:
         operator.zone = data.get("zone")
         operator.transit_to = data.get("transit_to")
         operator.transit_until_tick = data.get("transit_until_tick")
-        operator.certification_scopes = dict(data.get("certification_scopes") or {})
+        # A copy all the way down: the restored person never shares a list with the save.
+        operator.certification_scopes = {
+            code: {key: list(values) for key, values in (scope or {}).items()}
+            for code, scope in (data.get("certification_scopes") or {}).items()
+        }
         operator.employment_status = data.get("employment_status")
+        operator._check_place(warehouse)
         return operator
+
+    def _check_place(self, warehouse: Optional[Any]) -> None:
+        name, zone, to, until = self.name, self.zone, self.transit_to, self.transit_until_tick
+        if to is not None and until is None:
+            raise ValueError(f"{name} is walking to {to} with no arrival tick")
+        if until is not None and to is None:
+            raise ValueError(f"{name} has an arrival tick ({until}) but is walking nowhere")
+        if to is not None and zone is None:
+            raise ValueError(f"{name} is walking to {to} but is not on the floor")
+        if zone is not None and self.status == OperatorStatus.OFF_DUTY:
+            raise ValueError(f"{name} is off duty and cannot be on the floor (in {zone})")
+        if warehouse is not None:
+            for key in (zone, to):
+                if key is not None and key not in warehouse.zones:
+                    raise ValueError(f"{name} is in {key!r}, which is not a zone of the {warehouse.layout_name} floor")

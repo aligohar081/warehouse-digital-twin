@@ -202,11 +202,30 @@ class StockLedger:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], warehouse: Optional[Any] = None) -> "StockLedger":
+        """A ledger from to_dict() (a save). Every location goes back in through
+        put(), so a save can't name an unknown slot, fill one slot twice or keep
+        one box in two slots. A field StockLocation doesn't have, a missing one,
+        or a quantity that isn't a whole number of 0 or more raises ValueError."""
+        def count(item: Dict[str, Any], key: str) -> Optional[int]:
+            """A saved quantity or tick: a whole number, 0 or more (None if absent)."""
+            value = item.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise ValueError(f"{item['slot_id']}: {key} must be a whole number, 0 or more, not {value!r}")
+            return value
+
         ledger = cls(warehouse)
+        known = list(StockLocation.__dataclass_fields__)
         for item in data.get("locations", []):
-            location = StockLocation(**item)
-            ledger._locations[location.slot_id] = location
-            ledger._slot_of_box[location.box_id] = location.slot_id
+            unknown = sorted(set(item) - set(known))
+            if unknown:
+                raise ValueError(f"Unknown stock location field(s) {unknown} (known: {known})")
+            missing = [key for key in ("slot_id", "box_id", "recorded_qty", "true_qty") if item.get(key) is None]
+            if missing:
+                raise ValueError(f"A saved stock location is missing {missing}")
+            location = ledger.put(item["slot_id"], item["box_id"], item.get("sku"), count(item, "recorded_qty"))
+            location.true_qty = count(item, "true_qty")
+            location.counted_qty = count(item, "counted_qty")
+            location.counted_tick = count(item, "counted_tick")
         return ledger
 
     def _require(self, slot_id: str) -> StockLocation:

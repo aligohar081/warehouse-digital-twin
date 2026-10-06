@@ -6,9 +6,10 @@ the task planner's job — but it knows how to execute one step of a plan.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+import math
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .embodiment import GROUND, MobilityProfile
+from .embodiment import AIR, GROUND, LAYERS, MobilityProfile
 from .models import (
     APPROVED_FIRMWARE_VERSIONS,
     CONFIG,
@@ -18,6 +19,24 @@ from .models import (
     cell_tuple,
     now_iso,
 )
+
+
+def _saved_layer(data: Dict[str, Any]) -> Tuple[str, float]:
+    """A saved robot's layer and altitude, checked. DigitalTwin.set_robot_layer
+    keeps a robot on the ground at 0 m and one in the air above it, so a save
+    that breaks that is damaged and is refused rather than restored."""
+    name = data.get("name", "A robot")
+    layer = data.get("layer", GROUND)
+    if layer not in LAYERS:
+        raise ValueError(f"{name} is on an unknown layer {layer!r} (known: {list(LAYERS)})")
+    try:
+        altitude = float(data.get("altitude_m", 0.0))
+    except (TypeError, ValueError):
+        raise ValueError(f"{name}'s altitude must be a number of metres, not {data.get('altitude_m')!r}") from None
+    if not math.isfinite(altitude) or (altitude != 0.0 if layer == GROUND else altitude <= 0.0):
+        where = "at 0 m" if layer == GROUND else "above 0 m"
+        raise ValueError(f"{name} is on the {layer} layer, so it must be {where}, not {altitude} m")
+    return layer, altitude
 
 
 class Robot:
@@ -332,8 +351,36 @@ class Robot:
             "updated_at": self.updated_at,
         }
 
+    def to_state(self) -> Dict[str, Any]:
+        """What a save holds (DigitalTwin.save_state, spec §4.3): to_dict, with
+        the battery, altitude and lift height unrounded, plus the bookkeeping a
+        robot needs to carry on exactly where it was — its travel credit, step
+        timer, traffic wait, the status a stop saved and its whole safety wait."""
+        data = self.to_dict()
+        data.update({
+            "battery": self.battery,
+            "battery_consumed": self.battery_consumed,
+            "altitude_m": self.altitude_m,
+            "lift_height_m": self.lift_height_m,
+            "status_before_stop": self.status_before_stop.value if self.status_before_stop else None,
+            "moves_since_drain": self.moves_since_drain,
+            "move_accumulator": self.move_accumulator,
+            "wait_ticks": self.wait_ticks,
+            "action_timer": self.action_timer,
+            "low_battery_warned": self.low_battery_warned,
+            "wait_started_tick": self.wait_started_tick,
+            "wait_task_id": self.wait_task_id,
+            "wait_cell": cell_dict(self.wait_cell),
+            "wait_escalated": self.wait_escalated,
+        })
+        return data
+
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "Robot":
+        """A robot from to_state() — or from to_dict(), which is what a version
+        1 save holds; what that lacks starts as on a new robot. A layer or
+        altitude no robot can have raises ValueError."""
+        layer, altitude = _saved_layer(data)
         robot = Robot(
             robot_id=data["id"],
             name=data["name"],
@@ -353,8 +400,7 @@ class Robot:
         robot.ai_policy_version = data.get("ai_policy_version")
         robot.component_firmware = dict(data.get("component_firmware") or {})
         robot.fleet_hold = data.get("fleet_hold")
-        robot.layer = data.get("layer", GROUND)
-        robot.altitude_m = float(data.get("altitude_m", 0.0))
+        robot.layer, robot.altitude_m = layer, altitude
         robot.activity = data.get("activity")
         robot.lift_height_m = float(data.get("lift_height_m", 0.0))
         robot.home = cell_tuple(data.get("home")) or robot.position
@@ -375,6 +421,23 @@ class Robot:
         robot.charging_sessions = data.get("charging_sessions", 0)
         robot.battery_consumed = data.get("battery_consumed", 0.0)
         robot.replan_count = data.get("replan_count", 0)
+        before = data.get("status_before_stop")
+        robot.status_before_stop = RobotStatus(before) if before else None
+        robot.moves_since_drain = int(data.get("moves_since_drain", 0))
+        robot.move_accumulator = float(data.get("move_accumulator", 0.0))
+        robot.wait_ticks = int(data.get("wait_ticks", 0))
+        robot.action_timer = int(data.get("action_timer", 0))
+        robot.low_battery_warned = bool(data.get("low_battery_warned", False))
+        robot.blocked_by = data.get("blocked_by")
+        robot.last_error = data.get("last_error")
+        robot.ota_installing = bool(data.get("ota_installing", False))
+        # The safety wait it was in (Simulator._safety_wait): a version 1 save
+        # has only the reason, and a wait with no start tick never escalates.
+        robot.wait_reason = data.get("wait_reason")
+        robot.wait_started_tick = data.get("wait_started_tick")
+        robot.wait_task_id = data.get("wait_task_id")
+        robot.wait_cell = cell_tuple(data.get("wait_cell"))
+        robot.wait_escalated = bool(data.get("wait_escalated", False))
         robot.created_at = data.get("created_at", robot.created_at)
         robot.updated_at = data.get("updated_at", robot.updated_at)
         return robot

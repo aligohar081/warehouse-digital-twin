@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 from .embodiment import seconds_to_ticks
-from .models import CONFIG, BoxKind, BoxStatus, Cell, EventType, LogCategory, LogLevel, cell_dict
+from .models import CONFIG, BoxKind, BoxStatus, Cell, EventType, LogCategory, LogLevel, cell_dict, cell_tuple
 
 
 @dataclass
@@ -40,6 +40,11 @@ class LineItem:
         data = asdict(self)
         data["stop_at"] = cell_dict(self.stop_at)
         return data
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "LineItem":
+        return LineItem(data["box_id"], data.get("order_id"), data.get("task_id"), cell_tuple(data.get("stop_at")),
+                        int(data.get("ticks", 0)), data.get("routed_to"))
 
 
 @dataclass
@@ -67,6 +72,12 @@ class Handoff:
             "giver_reported": dict(self.giver_reported), "receiver_observed": dict(self.receiver_observed),
             "task_id": self.task_id,
         }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "Handoff":
+        return Handoff(data["handoff_id"], data["box_id"], data.get("order_id"), data["from"], data["to"],
+                       cell_tuple(data["cell"]), int(data["tick"]), dict(data.get("giver_reported") or {}),
+                       dict(data.get("receiver_observed") or {}), data.get("task_id"))
 
 
 class Conveyor:
@@ -350,6 +361,48 @@ class Equipment:
             self.record(box, "conveyor", "sorter_reject", sorter.entry, {"present": True},
                         {"present": True, "rejected": f"a {box.kind.value} is not a carton"},
                         item.task_id, item.order_id)
+
+    # ---- save and load (DigitalTwin.save_state / load_state, spec §4.3) --- #
+    def to_state(self) -> Dict[str, Any]:
+        """Everything a save needs to restart the line exactly: each item on it
+        (its stop_at and ticks too), the jams, the cartons inside the sorter,
+        the hand-off records and the hand-off sequence. Items and jams keep
+        their order (the jam jobs follow it)."""
+        return {
+            "items": [{"cell": cell_dict(cell), **item.to_dict()} for cell, item in self.conveyor.items.items()],
+            "jams": [{"cell": cell_dict(cell), "since_tick": tick} for cell, tick in self.conveyor.jams.items()],
+            "sorter": [item.to_dict() for item in self.sorter.inside],
+            "handoffs": [handoff.to_dict() for handoff in self.handoffs],
+            "handoff_seq": self._handoff_seq,
+        }
+
+    def load_state(self, data: Dict[str, Any]) -> None:
+        """Replace the line, the sorter and the hand-off log with a to_state()
+        snapshot; nothing that was on them before survives. It is all checked
+        first: an item or jam off the line, two items on one cell, or a stop
+        off the line raises ValueError and changes nothing."""
+        items: Dict[Cell, LineItem] = {}
+        for raw in data.get("items", []):
+            cell = self._saved_cell(raw.get("cell"), "An item")
+            if cell in items:
+                raise ValueError(f"The save puts two items on conveyor cell ({cell[0]},{cell[1]})")
+            items[cell] = LineItem.from_dict(raw)
+            if items[cell].stop_at is not None:
+                self._saved_cell(raw["stop_at"], f"{items[cell].box_id}'s stop")
+        jams = {self._saved_cell(raw.get("cell"), "A jam"): int(raw["since_tick"]) for raw in data.get("jams", [])}
+        inside = [LineItem.from_dict(raw) for raw in data.get("sorter", [])]
+        handoffs = [Handoff.from_dict(raw) for raw in data.get("handoffs", [])]
+        sequence = int(data.get("handoff_seq", 0))
+        self.conveyor.items, self.conveyor.jams, self.sorter.inside = items, jams, inside
+        self.handoffs.clear()
+        self.handoffs.extend(handoffs)
+        self._handoff_seq = sequence
+
+    def _saved_cell(self, raw: Optional[Dict[str, int]], what: str) -> Cell:
+        cell = cell_tuple(raw)
+        if cell is None or cell not in self.conveyor:
+            raise ValueError(f"{what} in the save is at {raw}, which is not a conveyor cell")
+        return cell
 
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -1119,13 +1119,18 @@ class DigitalTwin:
     # ------------------------------------------------------------------ #
     # Persistence
     # ------------------------------------------------------------------ #
+    #: The save format save_state writes (spec §4.3). Version 1 — no layout,
+    #: stock or equipment — is a classic save, and still loads on classic.
+    STATE_VERSION = 2
+
     def serialize(self) -> Dict[str, Any]:
         with self.lock:
             return {
-                "version": 1,
+                "version": self.STATE_VERSION,
+                "layout": self.layout_name,
                 "saved_at": now_iso(),
                 "warehouse": {"width": self.warehouse.width, "height": self.warehouse.height},
-                "robots": [r.to_dict() for r in self.robots.values()],
+                "robots": [r.to_state() for r in self.robots.values()],
                 "boxes": [b.to_dict() for b in self.boxes.values()],
                 "agents": [a.to_dict() for a in self.agents.values()],
                 "operators": [o.to_dict() for o in self.operators.values()],
@@ -1145,6 +1150,9 @@ class DigitalTwin:
                     "agent": self.ids.peek("agent"),
                     "operator": self.ids.peek("operator"),
                 },
+                "stock": self.stock.to_dict(),
+                "equipment": self.equipment.to_state() if self.equipment is not None else None,
+                "floor_seeded": self.floor_seeded,
             }
 
     def save_state(self, path: Optional[str] = None) -> str:
@@ -1161,37 +1169,59 @@ class DigitalTwin:
         return path
 
     def load_state(self, path: Optional[str] = None) -> None:
+        """Restore a save_state file (spec §4.3): version 2, or version 1 (a
+        classic save). A save of another floor is refused with a ValueError
+        (Plan ruling 5): its robots are bound to another inventory profile's
+        assets. The whole file is rebuilt first, so a damaged save changes
+        nothing; then robots, boxes, people, tasks, the stock ledger and the
+        equipment are all replaced — nothing from before the load survives."""
         path = path or self.state_path
         if not os.path.exists(path):
             raise FileNotFoundError(f"No saved state at {path}")
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        version = payload.get("version", 1)
+        if version not in (1, self.STATE_VERSION):
+            raise ValueError(f"Unknown save version {version!r} (this twin reads 1 and {self.STATE_VERSION})")
+        layout = payload.get("layout", "classic") if version == self.STATE_VERSION else "classic"
+        if layout != self.layout_name:
+            raise ValueError(f"This save is of the {layout} floor, and this twin runs the {self.layout_name} "
+                             f"floor: start the app with WAREHOUSE_LAYOUT={layout} to load it")
 
         with self.lock:
+            robots = [Robot.from_dict(data) for data in payload.get("robots", [])]
+            boxes = [Box.from_dict(data) for data in payload.get("boxes", [])]
+            agents = [Agent.from_dict(data) for data in payload.get("agents", [])]
+            operators = [Operator.from_dict(data, self.warehouse) for data in payload.get("operators", [])]
+            tasks = [Task.from_dict(data) for data in payload.get("tasks", [])]
+            stock = StockLedger.from_dict(payload.get("stock") or {}, self.warehouse)
+            equipment = Equipment.for_floor(self)
+            if equipment is not None:
+                equipment.load_state(payload.get("equipment") or {})
+            held = [location.box_id for location in stock.locations()]
+            if equipment is not None:
+                held += [item.box_id for item in [*equipment.conveyor.items.values(), *equipment.sorter.inside]]
+            unknown = sorted(set(held) - {box.id for box in boxes})
+            if unknown:
+                raise ValueError(f"The save's stock or conveyor holds boxes it has no record of: {unknown}")
+
             self.robots.clear()
             self.boxes.clear()
             self.agents.clear()
             self.operators.clear()
             self.tasks.clear()
-            for data in payload.get("robots", []):
-                robot = Robot.from_dict(data)
-                self.robots[robot.id] = robot
-            for data in payload.get("boxes", []):
-                box = Box.from_dict(data)
-                self.boxes[box.id] = box
-            for data in payload.get("agents", []):
-                agent = Agent.from_dict(data)
-                self.agents[agent.id] = agent
-            for data in payload.get("operators", []):
-                operator = Operator.from_dict(data)
-                self.operators[operator.id] = operator
-            sequence = 0
-            for data in payload.get("tasks", []):
-                task = Task.from_dict(data)
-                sequence += 1
+            self.robots.update((robot.id, robot) for robot in robots)
+            self.boxes.update((box.id, box) for box in boxes)
+            self.agents.update((agent.id, agent) for agent in agents)
+            self.operators.update((operator.id, operator) for operator in operators)
+            for sequence, task in enumerate(tasks, start=1):
                 task.sequence = sequence
                 self.tasks.tasks[task.id] = task
-            self.tasks._sequence = sequence
+            self.tasks._sequence = len(tasks)
+            self.stock = stock
+            self.equipment = equipment
+            # A version 1 save says nothing about the seed: the twin's own boot decides.
+            self.floor_seeded = bool(payload.get("floor_seeded", self.floor_seeded))
             self.fleet.rebind_all()
             self.scheduler.load_dict(payload.get("schedules", {}))
             self.statistics.update(payload.get("statistics", {}))
