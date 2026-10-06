@@ -1,119 +1,128 @@
 # Trust Layer — mapping from "The Trust Layer for the Physical AI"
 
-This project's `entities_valid` / `state_transition` checks, the toy robot
-firmware baseline, and the Mission Authorization Record were inspired by a
-reference document — "The Trust Layer for the Physical AI" (Cytex /
-AICenturion) — describing an enterprise product for governing fleets of
-robots, AI agents, and human workers across an organization: continuously
-checking whether a given combination of agent, robot, and person can be
-trusted to do a job, before and after it runs.
+The reference document ("The Trust Layer for the Physical AI", Cytex /
+AICenturion) describes an enterprise product that checks, before and after a
+job, whether a given combination of AI agent, robot and person can be trusted
+with it. This project is a single-warehouse simulation, so **the depth doesn't
+match**: no real hardware, firmware, employee database or model calling the
+shots. What is built is the document's structural idea at toy scale: three
+actor classes, each with a toy assurance passport, converging in one task
+record that is graded on who was involved and on what happened. This file maps
+each concept to its code. On the distribution-centre floor a physical layer
+sits on top (below). For the module map see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-This file records, honestly, how much of that document actually applies to
-*this* project, and exactly what got built.
+## Tier 1 — easy (built, for all three actor classes)
 
-## The honest scope
-
-This document describes an enterprise-scale SaaS product for governing
-fleets of robots, AI agents, and human workers across an entire
-organization, with real firmware SBOMs, real HRIS integration, and real
-model/tool governance. This project is a single-warehouse simulation — so
-the honest thing to say up front: **the depth doesn't match** — there's no
-real hardware, no real AI model calling the shots, no real employee
-database. But the document's core structural idea — three distinct actor
-classes (agent, robot, human), each with its own toy "assurance passport",
-converging into one task record that's graded on both *who was involved*
-and *what actually happened* — is now genuinely implemented, at toy scale,
-for all three actors, not just the robot. What follows is the whole thing
-from the document, broken down honestly by effort, alongside what's
-actually been built.
-
-## The full breakdown, tier by tier
-
-### Tier 1 — Easy (implemented, now for all three actor classes)
-
-| Concept in the doc | What it means for this project | Status |
+| Concept | Here | Code |
 |---|---|---|
-| **Three actor classes** (AI agent, robot, human) | Each is a first-class entity with its own task type, not just robots-and-boxes | ✅ `Robot` (existing), `Agent` (`backend/agent.py`), `Operator` (`backend/operator.py`) |
-| **"Entities check" / qualification validity, per actor** | Robot: not `ERROR`/`STOPPED`, not critically low battery, approved firmware. Agent: not `ERROR`, approved model version. Operator: not off duty, holds the certification the task actually required | ✅ `check_entities_valid` in `backend/eval_engine.py`, generalized to all three |
-| **Robot Assurance Passport** (toy SBOM) | Firmware version checked against an approved baseline | ✅ `Robot.firmware_version` + `models.APPROVED_FIRMWARE_VERSIONS` |
-| **Agent Assurance Passport** (model/tool version) | AI agent's `model_version` checked against an approved baseline | ✅ `Agent.model_version` + `models.APPROVED_AGENT_MODELS` |
-| **Worker Qualification Passport** | Operator's `certifications` checked against what the task type requires | ✅ `Operator.certifications` + `models.CERTIFICATION_REQUIREMENTS` |
-| **"Interaction in the environment"** — the document's own worked maintenance-mission example (agent recommends → robot physically inspects → human signs off) | One task type chaining all three actors, with a real robot navigating the grid via A* | ✅ `TaskType.MIXED_MAINTENANCE_MISSION` — see `TaskManager.start_task()`/`complete_task()` for the agent recommendation / operator sign-off hooks, `TaskPlanner.plan()` for the robot's real navigation |
-| **Mission Authorization Record** | One consolidated artifact naming exactly who/what was involved in a task and whether it was trustworthy — now spanning all three actors | ✅ `extract_task` / `extract_entities` / `extract_state_diff` / `build_mission_record` in `backend/eval_engine.py` |
-| **Evaluation Factory** | A repeatable, automated evaluation harness | ✅ Already existed — `evals/` (three promptfoo suites) |
-| **Metrics** (mission success rate, blocked jobs, coverage %) | Aggregate numbers over graded task logs | ✅ `compute_metrics()` in `backend/eval_engine.py`, `python -m backend.run_evals --stats` |
+| Three actor classes | Robot, AI agent and human operator are each first-class | `backend/robot.py`, `agent.py`, `operator.py` |
+| Entities check, per actor | Robot: not `ERROR` or `STOPPED`, approved firmware, not critically low on battery. Agent: not `ERROR`, approved model. Operator: on duty, holds the required certification | `check_entities_valid` in `backend/eval_engine.py` |
+| Robot, Agent and Worker Assurance Passports (toy) | Firmware, model version and certifications checked against approved baselines | `models.APPROVED_FIRMWARE_VERSIONS`, `APPROVED_AGENT_MODELS`, `CERTIFICATION_REQUIREMENTS` |
+| Mission Authorization Record | One artifact naming who and what was involved in a task and whether it was trustworthy | `build_mission_record` and the `extract_*` helpers in `backend/eval_engine.py` |
+| Interaction in the environment | The document's maintenance mission: an agent recommends, a robot really navigates, a human signs off | `TaskType.MIXED_MAINTENANCE_MISSION`; `TaskManager.start_task` and `complete_task` |
+| Pre-execution authorization gate | `TaskManager.validate` refuses a task (`422`) when a named robot, agent or operator is ineligible; `AUTO` selection skips them. The rule lives once and the grade shares it, so the two can't disagree. A critical battery is deliberately not gated: the planner prepends a recharge detour | `backend/eligibility.py`, `backend/task_manager.py` |
+| Per-entity work authorization | A robot's optional `allowed_task_types` allowlist, checked by the same rule at creation and in `AUTO` scoring | `Robot.allowed_task_types`, `DigitalTwin.set_robot_capabilities` |
+| Agent and operator own work | `AGENT_REPLAN`, `AGENT_AUDIT`, `OPERATOR_APPROVAL`, `OPERATOR_MAINTENANCE_SIGNOFF`: instant, gated and graded, each reading live twin state | `TaskManager._run_instant` |
+| Evaluation Factory | A repeatable automated evaluation harness | `evals/` ([evals/README.md](evals/README.md)) |
+| Metrics | Mission success rate, blocked jobs, coverage | `compute_metrics`, `python -m backend.run_evals --stats` |
 
-### Tier 1 — also implemented
+## Tier 2 — medium (three of four built)
 
-| Concept in the doc | What it means for this project | Status |
+| Concept | What it means here | Status |
 |---|---|---|
-| **Pre-execution authorization gate** | `TaskManager.validate()` now hard-blocks a task at creation (`422`) if an explicitly-requested robot/agent/operator fails eligibility (bad status, unapproved firmware/model, missing certification) — no longer only graded after the fact. `AUTO` selection (`select_robot()`, and the agent/operator `AUTO` branches in `validate()`) skips ineligible candidates the same way it already skips busy ones. The rule lives once, in `backend/eligibility.py`, shared with `eval_engine.check_entities_valid` so the gate and the after-the-fact grade can't disagree. One deliberate exception: a critical battery is *not* part of the hard gate, because the planner already has a real recovery path for it (a prepended recharge detour) — gating it would break that feature; the eval engine still grades battery after the fact. | ✅ `backend/eligibility.py`, `TaskManager.validate()` / `select_robot()` in `backend/task_manager.py` |
-| **Per-entity work authorization (which jobs, not just whether the entity is fit)** | `Robot.allowed_task_types` — an optional per-robot allowlist of task types, checked by the exact same `robot_eligibility()` the eligibility gate already used for status/firmware, both at creation (`422` for an explicitly-named robot outside its own configured list) and by `AUTO` scoring (skips it the same way). `None`/empty means unrestricted — every robot's behaviour before this existed. The doc's own framing is "can this combination of agent/robot/person be trusted with *this* job", not just "is this entity generally fit" — this is that distinction, scoped to robots only for now (agents/operators don't yet have an equivalent per-task-type allowlist). | ✅ `backend/robot.py`, `backend/eligibility.py`, `DigitalTwin.set_robot_capabilities` |
-| **Agent/operator "own work", beyond inspect-and-approve** | `AGENT_REPLAN` (recommends `AUTO` assignment across the pending queue without acting on it), `AGENT_AUDIT` (reports on recent log severity + last Mock CI result), `OPERATOR_APPROVAL` (authorizes a robot back into service — deliberately does *not* re-check that robot's own eligibility), `OPERATOR_MAINTENANCE_SIGNOFF` (reports a named robot's firmware baseline status). All four are `INSTANT` like `AGENT_INSPECTION`/`HUMAN_INSPECTION` — no physical movement, gated/graded the same way — but each reads real, live twin state to produce its recommendation rather than being a bare rubber stamp. | ✅ `TaskType.AGENT_REPLAN` / `AGENT_AUDIT` / `OPERATOR_APPROVAL` / `OPERATOR_MAINTENANCE_SIGNOFF` in `backend/models.py`, `TaskManager._run_instant()` in `backend/task_manager.py` |
+| Authorization-changing events | A robot that becomes ineligible mid-task is flagged, not stopped (it may already be mid-route). `Simulator._check_authorization_changes` re-checks every running task every `AUTHORIZATION_CHECK_EVERY_TICKS` ticks, emits one `TASK_AUTHORIZATION_CHANGED` per task, and `entities_valid` grades it `WARN` | Built: `backend/simulator.py` |
+| Governance layer (policy-as-code) | An optional `policies.yaml` overrides `CONFIG`, the approved baselines, `CERTIFICATION_REQUIREMENTS`, the robot classes and the operator roles: the tables the gate and the eval engine both read. `POST /api/policies/reload` re-reads it live; `GET /api/policies` shows what is in effect | Built: `backend/policy.py`, `policies.example.yaml` |
+| Decision graph (queryable history) | "Every task assigned to Robo-01 while battery < 20 %" answered across all task logs by filtering each log's mission record, with no graph database | Built: `backend/decision_graph.py`, `GET /api/decisions` |
+| Agent assurance record for the Groq grader | Record which model and prompt version graded each task, beside the verdict | Not built: `evals/` records neither |
 
-### Tier 2 — Medium (not yet built)
+## Tier 3 — complex or not applicable (not planned)
 
-| Concept | What it'd look like here |
+Real SBOMs and cryptographic attestation, real HRIS integration, an enterprise Physical Work Graph, a Decision Twin (counterfactual re-simulation), change-triggered re-evaluation across dependent missions, a cyber-physical security dimension and a human-factors dimension. Each needs something a single-process simulation doesn't have: real hardware, employees, a network boundary or human behaviour to grade.
+
+## The physical trust layer (distribution-centre floor)
+
+The reference document asks whether this agent, robot and person can be trusted with *this* job. The distribution-centre floor ([spec §10](docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md)) adds the physical half: can this body lift this load, reach this level, fit this aisle, fly over this cell, and work with these people around. It is checked before the job, re-checked during it and graded from its log afterwards. It applies only to robots with a floor profile (`robot.mobility`); classic robots and logs behave exactly as before.
+
+### The eligibility rules (`backend/eligibility.py`)
+
+Eight functions of plain values, each returning `(ok, reason)`, so the gate, robot selection, the mid-job re-check and the evaluation can't disagree.
+
+| Rule | Holds when | Runs in |
+|---|---|---|
+| `payload_ok` | the weight is at most the body's payload | gate and selection (declared weight), re-check, `payload_within_limit` (true weight) |
+| `box_kind_ok` | the body handles that box kind (`PALLET`, `TOTE`, `ITEM`, `CARTON`) | gate and selection |
+| `reach_ok` | the slot level is within the body's reach | gate and selection, re-check, the `LIFT_TO` and `SCAN` steps, `reach_within_limit` |
+| `clearance_ok` | a WIDE robot's route stays on WIDE cells | routing (`Warehouse.passable`), then `clearance_respected` |
+| `no_fly_ok` | an air route avoids every no-fly cell | routing, then `no_fly_respected` |
+| `drone_round_trip_ok` | a drone's battery covers the flight plus a 25 % reserve | gate and selection, drones only; a hard gate |
+| `supervision_ok` | someone on shift holds a valid, in-scope credential of the kind the body needs | gate and selection, re-check; being *near* is a runtime wait |
+| `cert_scope_ok` | a person's credential covers the equipment model and the site | the gate, for every certification check on the floor |
+
+- **Gate** (`TaskManager.validate`, via `capability_reason`): the body the job needs, the box's kind and declared weight, the slot level, that supervision can be had, a drone's round trip. A job the body can't do is a `422` with the reason.
+- **Selection**: `AUTO` keeps only robots whose body passes the same checks and that have a route under their own profile; a job no robot could do is rejected with the robots' reasons.
+- **During the job**: `physical_recheck` repeats payload, reach and supervision from `_check_authorization_changes`. Like the rest of that re-check it flags and never cancels.
+- **Evaluation**: the checks below grade the log, with the true weight and the level a box really reached.
+- **Battery**: a ground robot with a critical battery gets a charging detour, not a rejection; only a drone, which can't detour mid-flight, is refused.
+
+### Physical waits
+
+Rules that depend on where people are hold the robot instead of rejecting the job. It goes `WAITING` with a `wait_reason`, and the log records `ROBOT_SAFETY_WAIT` and `ROBOT_SAFETY_RESUMED`.
+
+| `wait_reason` | When |
 |---|---|
-| **Authorization-changing events** | If a robot's simulated firmware or battery drops below policy mid-task, flag or pause the in-progress task |
-| **Governance Layer (policy-as-code)** | A `policies.yaml` (`min_battery`, `restricted_zones`, `required_certifications`, ...) read by both the pre-execution gate and the eval engine, instead of hardcoded thresholds/tables in `models.py` |
-| **Decision Graph (queryable history)** | A small script answering questions like "every task assigned to robot_01 while battery < 20%", or "every MIXED_MAINTENANCE_MISSION Lee signed off on", across all logs, without a real graph database |
-| **Agent Assurance record for the Groq grader itself** | Record which model/prompt version graded each task alongside the verdict (distinct from `Agent`/`APPROVED_AGENT_MODELS` above, which model the *simulated* agents in the warehouse, not the real Groq model doing the grading) |
+| `PERSON_IN_AISLE` | a forklift or hauler would drive into a zone with a person in it |
+| `PERSON_IN_CELL` | a person is inside an arm's pack cell |
+| `SUPERVISOR_ABSENT` | the humanoid's supervisor is off shift, or not in its zone or one beside it |
+| `PERSON_ON_CROSSING` | a robot is at a walkway crossing (or a drone about to cross) while someone walks across |
+| `CONVEYOR_JAMMED` | an arm is downstream of a conveyor jam |
 
-### Tier 3 — Complex or not applicable (not planned)
+A wait longer than `SAFETY_WAIT_ESCALATE_S` emits `SAFETY_WAIT_ESCALATED` once, and the Shift panel lists it.
 
-| Concept | Why it doesn't fit |
+### The ten physical checks (`backend/eval_engine.py`)
+
+`EMBODIMENT_CHECKS`, part of `DEFAULT_CHECKS`. Each answers "not applicable" (a `PASS` with `applicable: false`) when the log carries none of its data, so classic logs grade as before. Each has a pass and a fail fixture in `logs/eval_examples/multi_embodiment/`, graded by `backend/test_trust_checks.py`.
+
+| Check | Fails when |
 |---|---|
-| Real SBOM/CycloneDX, vendor advisories, cryptographic attestation | No real hardware or firmware exists — robots are Python objects with a `status` enum |
-| Real HRIS integration, credential issuers | No employees exist in this system, and no external identity system to integrate with |
-| Full Physical Work Graph as an enterprise knowledge graph | Cross-org, multi-tenant graph database with ontology design — wildly out of scope for one warehouse |
-| Decision Twin (counterfactual simulation of alternate routes) | Would need to re-run the simulator with an alternate assignment and diff outcomes — real engineering, not a quick add |
-| Change-triggered evaluation reruns across dependent missions | Needs a dependency graph between tasks/evaluations and an event bus — real distributed-systems complexity for a single-process demo |
-| Cyber-physical security evaluation dimension | Assumes real attackers and real command tampering — no real network/security boundary exists in a single-process simulation |
-| Human-factors evaluation dimension (fatigue, alarm design, instruction clarity) | `Operator` now exists and is checked for *qualification*, but there's no simulated human behavior (workload, response time, error rate) to grade — that would need a much richer human model than a certifications list |
+| `payload_within_limit` | a pick or lift's load truly weighs more than the robot's payload |
+| `reach_within_limit` | a lift, scan or placement is above the robot's reach |
+| `clearance_respected` | a WIDE robot's route crosses a NARROW cell |
+| `no_fly_respected` | a drone's route crosses a no-fly cell |
+| `human_zone_clear` | a forklift or hauler entered a zone, or an arm moved, while a person was there |
+| `supervision_maintained` | the humanoid took a step unsupervised |
+| `count_consistent` | a cycle count reported success with a count that isn't what was really there |
+| `handoff_consistent` | a hand-off the giver reported made never reached the receiver |
+| `sort_correct` | the sorter dropped a carton on a dock other than its order's lane |
+| `placement_level_correct` | a box went to a different level from the one it was sent to |
 
-## Where Tier 1 lives in the codebase
+### System checks (`backend/ci_engine.py`)
 
-```
-backend/models.py         APPROVED_FIRMWARE_VERSIONS / APPROVED_AGENT_MODELS / CERTIFICATION_REQUIREMENTS
-                           — the three toy approved baselines
-                           TaskType.AGENT_INSPECTION / HUMAN_INSPECTION / MIXED_MAINTENANCE_MISSION
-                           AgentStatus, OperatorStatus
-backend/robot.py           Robot.firmware_version
-backend/agent.py           Agent — the AI-agent actor class (model_version, status)
-backend/operator.py        Operator — the human actor class (certifications, status)
-backend/digital_twin.py    self.agents / self.operators, find_agent/find_operator, add_agent/add_operator,
-                            DEMO_AGENTS / DEMO_OPERATORS (one agent, two operators — one fully
-                            certified, one only partially, so AUTO-assignment has a real mix to pick from)
-backend/eligibility.py     robot_eligibility/agent_eligibility/operator_eligibility — the one
-                            shared rule the gate and the grade both call
-backend/task_manager.py    Task.agent_id/operator_id/required_certification
-                            TaskManager.validate() — resolves agent/operator/robot AND now hard-blocks
-                             (422) on ineligibility via backend/eligibility.py, not just existence
-                            TaskManager.select_robot() — AUTO scoring skips ineligible robots too
-                            TaskManager._run_instant() — AGENT_INSPECTION/HUMAN_INSPECTION resolve immediately
-                            TaskManager.start_task()/complete_task() — the MIXED_MAINTENANCE_MISSION
-                             agent-recommends / operator-signs-off hooks
-                            TaskManager.snapshot_state() — captures before/after world state for all
-                             three actors, not just robot/box
-backend/task_planner.py    TaskPlanner.plan() — MIXED_MAINTENANCE_MISSION's robot leg (real navigation)
-backend/app.py             GET/POST /api/agents, GET/POST /api/operators
-backend/eval_engine.py     check_entities_valid (now calls backend/eligibility.py), check_state_transition,
-                           extract_task/extract_entities/extract_state_diff/build_mission_record,
-                           compute_metrics
-backend/run_evals.py       --stats
-backend/tests.py           The pre-execution gate's own tests — explicit ineligible robot/agent/
-                            operator rejected outright, AUTO skips ineligible candidates, and a
-                            critical battery deliberately NOT gated (recharge detour still works)
-evals/promptfooconfig.groq.yaml   the same checks, graded independently by an LLM
-                                    (entities_check / completion_check)
-logs/eval_examples/
-  task_109_state_pick_and_deliver.json           real run — state_transition has a real diff to grade
-  task_110_entities_invalid_firmware.json        real run — robot firmware fails entities_valid
-  task_111_mixed_mission_clean_pass.json         real run — agent + robot + fully-certified operator, all pass
-  task_112_mixed_mission_uncertified_operator.json   real run — robot inspection succeeds, but the
-                                                       operator lacked the required certification
-```
+Mock CI follows the floor's layout: the environment check requires the layout's own `required_zones` and that the cells each body class uses (narrow ground, wide ground, air) are connected. A flying drone is accepted over any flyable cell and an arm on its station, mains-powered arms skip the battery check, and collisions compare `(layer, x, y)`, so a drone over a ground robot is not one.
 
-See `README.md`'s "Eval Engine" section and `evals/README.md` for the full
-detail on each check and suite.
+### Injected faults (`backend/faults.py`)
+
+Seven `CONFIG` risks, 0.0 by default. Each fault does its damage silently, and the trust layer catches it afterwards. Fault kinds and how to inject one on demand: [README.md](README.md#faults).
+
+| Risk | What goes wrong | Caught by |
+|---|---|---|
+| `SCAN_MISCOUNT_RISK` | a drone's count is the true number ± 1–3 | `count_consistent` |
+| `WRONG_LEVEL_RISK` | a forklift puts a pallet a level up or down but reports the requested one | `placement_level_correct`; the next count of that face finds the variance |
+| `GRASP_FAIL_RISK` | an arm or the picker misses a grasp; two retries, and a third miss fails the job | no check of its own: each miss is on the job's GRASP step, and the third fails the job with that reason |
+| `CONVEYOR_JAM_RISK` | a conveyor cell jams as an item moves on and the arms downstream pause | no check of its own: `CONVEYOR_JAMMED`, then a `CLEAR_JAM` job for a qualified person |
+| `HANDOFF_LOSS_RISK` | an item put on the conveyor never arrives, though the giver reports it placed | `handoff_consistent` |
+| `MIS_SORT_RISK` | the sorter drops a carton on the wrong dock | `sort_correct` |
+| `MISDECLARED_WEIGHT_RISK` | an inbound pallet weighs 1.1–1.6 × what it declares | `payload_within_limit` |
+
+`backend/test_fault_matrix.py` runs the seeded floor with each risk alone at 0.2 and asserts that its check (or, for the two without one, its evidence) catches it and no other check fails.
+
+### Where it lives
+
+| File | Role |
+|---|---|
+| `backend/eligibility.py` | the eight rules, beside the actor rules |
+| `backend/embodiment.py` | `MobilityProfile`, a robot's body read from its catalog model |
+| `backend/task_manager.py` | `capability_reason` (gate and selection), `physical_recheck` |
+| `backend/people.py` | supervision queries, walkway crossings |
+| `backend/simulator.py` | the physical waits, `ROBOT_STEP` events, where each fault does its damage |
+| `backend/eval_engine.py`, `ci_engine.py` | the ten checks; the layout-driven system checks |
+| `backend/faults.py` | `FAULT_RISKS`, `FaultInjector` |

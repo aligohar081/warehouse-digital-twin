@@ -1,253 +1,100 @@
-# RUN.md — setup & commands
+# RUN.md — setup and commands
 
-Everything needed to get this project running on a new machine: the app
-itself, its tests, and the three promptfoo eval suites. Run all commands
-from the project root (the folder this file is in) unless stated
-otherwise.
-
----
+Commands for running the app, its tests, the eval CLI, promptfoo and the soak.
+Run them from the project root. What the project is: [README.md](README.md).
 
 ## 1. Prerequisites
 
-| Tool | Version used | Notes |
+| Tool | Version | For |
 |---|---|---|
-| Python | 3.12 (3.10+ should work) | for the app, tests, eval engine |
-| Node.js + npm | v22.23 / npm 10.9 (`^20.20.0 \|\| >=22.22.0` required) | to run promptfoo |
-| Groq API key | — | only needed for the Groq LLM-as-judge suite; free at [console.groq.com/keys](https://console.groq.com/keys) |
+| Python | 3.14 (what the project's `.venv` runs) | the app, tests, eval CLI and soak |
+| Node.js + npm | `^20.20.0 \|\| >=22.22.0` | promptfoo only |
+| Groq API key | — | the Groq-judged promptfoo suite and the chat agent; free at [console.groq.com/keys](https://console.groq.com/keys) |
+| JavaScriptCore (`jsc`) | built into macOS | the dashboard's JavaScript tests; they skip without it |
 
-`npm install -g promptfoo` once, then call it as `promptfoo` directly —
-**avoid `npx promptfoo`**. `npx` re-resolves the package against the npm
-registry over the network on every invocation instead of just using what's
-installed; on a slow or flaky connection this has been observed to hang
-for 10+ minutes before failing with `ERR_SOCKET_TIMEOUT`, which looks
-exactly like a stuck eval but has nothing to do with promptfoo itself. If
-you use `nvm`, make sure the right Node version is active first:
+## 2. Setup
 
 ```bash
-export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use v22.23.1
-promptfoo --version   # confirm it resolves before running an eval
-```
-
----
-
-## 2. Backend setup
-
-```bash
-cd warehouse-digital-twin
-
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt  # Flask + pytest
+pip install -r requirements.txt  # Flask, pytest and PyYAML
 ```
 
-Or just use the one-command launcher, which does all of the above itself:
-
-```bash
-./run.sh
-```
+`./run.sh` does all of that and starts the app. The commands below assume the venv is active.
 
 ## 3. Run the app
 
 ```bash
-source .venv/bin/activate
-python -m backend.app
+WAREHOUSE_PORT=5055 python -m backend.app                                  # the distribution centre (the default)
+WAREHOUSE_LAYOUT=classic WAREHOUSE_PORT=5055 python -m backend.app         # the classic floor
+WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5055 python -m backend.app   # the default, spelled out
 ```
 
-Dashboard: `http://127.0.0.1:5000` (override with `WAREHOUSE_HOST` /
-`WAREHOUSE_PORT` env vars). Stop with Ctrl+C. On macOS the AirPlay
-Receiver holds port 5000, so pick another port (`WAREHOUSE_PORT=5050`).
+The dashboard is at `http://127.0.0.1:<port>`; stop with Ctrl+C. `WAREHOUSE_HOST` and `WAREHOUSE_PORT` default to `127.0.0.1` and `5000`. **On macOS the AirPlay Receiver holds port 5000, so use another port.** Each floor's `logs/` and `data/` folders are listed in the [README's quick start](README.md#quick-start).
 
-`WAREHOUSE_LAYOUT` picks the floor: `classic` (the default, 20x15) or
-`distribution_center` (the 32x20 multi-embodiment floor). The new floor
-boots with the shift soak's fleet, goods and crew and its shift paused,
-so, like classic, it runs only the tasks you assign (the shift's Start
-control comes with plan 1c). It keeps its own `logs/distribution_center/` and
-`data/distribution_center/` (its own inventory file), so switching floors
-never reseeds classic's `data/inventory.sqlite3`. The dashboard doesn't
-draw the new floor's cell types, people, conveyor or shift panel yet
-(multi-embodiment spec §12, plan 1c).
+The distribution centre's shift starts paused. Press **Start** on the Shift panel, or:
 
 ```bash
-WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5050 python -m backend.app
+curl -X POST http://127.0.0.1:5055/api/shift/start
 ```
 
-## 4. Run the test suite (pytest)
+Inject one fault on demand from the Shift panel's **Inject fault**, or `curl -X POST http://127.0.0.1:5055/api/faults/conveyor_jam`.
+
+## 4. Tests
 
 ```bash
-source .venv/bin/activate
-python -m pytest                                      # everything
-python -m pytest -v                                   # verbose
-python -m pytest -k "collision or battery"            # a subset by keyword
-python -m pytest backend/test_eval_engine.py           # just the eval engine's own tests
+python -m pytest -o addopts="" -q                                # the full suite, with its summary line
+python -m pytest -o addopts="" -q backend/test_station_jobs.py   # one file
+python -m pytest -o addopts="" -q backend/tests.py::test_name    # one test
+python -m pytest -o addopts="" -q -k "collision or battery"      # by keyword
 ```
 
-## 5. Eval engine CLI (rule-based grading, no promptfoo, no API)
-
-Grades task logs (`logs/tasks/*.json`) against fixed pass/warn/fail rules
-in `backend/eval_engine.py`.
+`pytest.ini` sets `-q`, so `-o addopts=""` is what lets the summary line print. Two failures are expected (section 8). The dashboard's JavaScript tests, `frontend/tests/*.js`, run under macOS's built-in JavaScriptCore (`/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc`) through pytest wrappers that skip when `jsc` is absent; no Node is needed:
 
 ```bash
-source .venv/bin/activate
-python -m backend.run_evals                            # grade every real logs/tasks/*.json
-python -m backend.run_evals logs/tasks/task_006.json    # grade one file
-python -m backend.run_evals --demo                      # grade the curated logs/eval_examples/
-python -m backend.run_evals --out logs/evals/report.json    # also save full JSON report
-python -m backend.run_evals --fail-under 5               # CI-style: exit 1 if <5 tasks pass
-python -m backend.run_evals --stats                      # mission success rate, assurance coverage, top failing checks
+python -m pytest -o addopts="" -q backend/test_floor_model_js.py backend/test_panels_js.py
 ```
 
----
+## 5. Eval CLI
 
-## 6. Promptfoo suites
-
-Three separate suites live in `evals/`. Full details in
-`evals/README.md`; the short version is below. All commands assume
-`cd warehouse-digital-twin` (project root) unless noted.
-
-### 6a. Live suite — real logs, rule-based, no API key needed
-
-Grades every real `logs/tasks/task_*.json` your system has produced,
-using the same rule-based engine as section 5, through promptfoo.
+Rule-based grading of task logs, no promptfoo and no API (checks: [TRUST_LAYER.md](TRUST_LAYER.md)).
 
 ```bash
-python3 evals/generate_tests.py
-promptfoo eval -c evals/promptfooconfig.yaml
-promptfoo view
+python -m backend.run_evals                                      # every real logs/tasks/*.json
+python -m backend.run_evals logs/tasks/task_006.json             # one file
+python -m backend.run_evals --demo                               # the curated logs/eval_examples/
+python -m backend.run_evals --stats                              # success rate, assurance coverage, top failing checks
+python -m backend.run_evals --out logs/evals/report.json         # also save the full JSON report
+python -m backend.run_evals --fail-under 5                       # exit 1 if fewer than 5 tasks pass
+python -m backend.run_evals logs/distribution_center/tasks       # the distribution centre's own logs
+python -m backend.run_evals logs/eval_examples/multi_embodiment  # the physical checks' pass and fail fixtures
 ```
 
-### 6b. Examples suite — curated fixtures, rule-based, no API key needed
+## 6. Promptfoo
 
-Grades the 11 hand-built example logs in `logs/eval_examples/` (one per
-known failure type, plus real simulator runs demonstrating the
-state-transition and entities-valid checks) against their known-correct
-answers.
+Three suites (live logs, curated examples, Groq-judged) live in `evals/`; their commands, the Groq key setup and the model choice are in [evals/README.md](evals/README.md). Install once with `npm install -g promptfoo` and call `promptfoo` directly, since `npx promptfoo` re-resolves over the network and can hang for minutes. Run the Groq suite with `--env-file evals/.env -j 1`: its token budget is small, and promptfoo only auto-loads a `.env` from the directory it runs in.
+
+## 7. Soak
 
 ```bash
-python3 evals/generate_tests_examples.py
-promptfoo eval -c evals/promptfooconfig.examples.yaml
+python -m backend.soak                                    # seed 42, pace 2, 20 000 ticks, every risk at 0
+python -m backend.soak --ticks 6000 --risk grasp_fail=0.2 # a shorter run with one fault
+python -m backend.soak --help                             # --ticks, --seed, --pace, --risk KIND=CHANCE (repeatable)
 ```
 
-### 6c. Groq suite — real logs, graded by an actual LLM in three steps
+It boots the seeded distribution centre, runs the shift and prints a report: same-layer collisions, failures of the physical checks, orders done per kind, robots in `ERROR`, safety escalations, and the mean and longest tick against the 15 ms budget. `--risk` takes a fault kind or a `CONFIG` risk name ([README.md](README.md#faults)) and a chance from 0 to 1. `backend/test_soak.py` asserts the default run and `backend/test_fault_matrix.py` runs each fault at 0.2.
 
-For each real task log, sends the model four sections of evidence — (1)
-**the task** as created (type, robot, box, source/destination), (2)
-**entities** involved (which robot/box/zones, by id and name), (3) the
-before/after **state diff** (position/status and zone occupancy — the
-primary evidence), (4) the event trail (supporting context) — and has it
-review in three steps, each reported separately in the output:
+## 8. Troubleshooting
 
-1. **Review the task** — read (1) for context.
-2. **Validate the entities** — do (2)'s robot/box/zones actually resolve
-   and correspond to what (1) asked for? → `entities_check: {valid, reason}`
-3. **Check completion** — using (3), did the box end up where the task
-   intended? → `completion_check: {completed, reason}`
-
-Overall `verdict` is PASS only if both steps 2 and 3 pass, then gets
-checked against the rule-based engine's own `check_state_transition`
-result (a disagreement is flagged, not hidden — traceable to *which*
-step it came from, not just "the label differs"). Any section without
-enough data (older logs) degrades to a plain-English note instead of
-erroring.
-
-**One-time setup — add your Groq API key:**
-
-```bash
-cp evals/.env.example evals/.env
-# edit evals/.env, replace the placeholder with a real key from
-# https://console.groq.com/keys
-```
-
-`evals/.env` is gitignored — it never gets committed.
-
-**Run it:**
-
-```bash
-python3 evals/generate_tests_groq.py
-promptfoo eval -c evals/promptfooconfig.groq.yaml --env-file evals/.env -j 1
-promptfoo view
-```
-
-Two flags matter here and are easy to forget:
-- `--env-file evals/.env` — promptfoo only auto-loads `.env` from the
-  directory you run it *in*; since we run from the project root and the
-  key lives in `evals/`, this flag is required.
-- `-j 1` — the Groq model configured (`openai/gpt-oss-20b`, on-demand
-  tier) is capped at **8000 tokens/minute**. The default concurrency (4)
-  throws requests at it faster than that budget allows, which causes
-  requests to queue for minutes and eventually time out. `-j 1` keeps it
-  under the cap.
-
-**Expect it to be slow for the full batch, not just one log.** Even at
-`-j 1`, the shared 8000-tokens/minute budget means consecutive calls
-often wait out most of a minute between each other — 7 real logs took
-about 19 minutes end to end in testing, versus ~3 seconds for a single
-log run in isolation. For a quick demo (e.g. showing a supervisor), grade
-just one log instead of the whole batch:
-
-```bash
-python3 -c "
-import sys; sys.path.insert(0, 'evals')
-from generate_tests_groq import build_tests
-open('evals/tests.groq.generated.yaml', 'w').write(
-    build_tests(['logs/eval_examples/task_109_state_pick_and_deliver.json'])
-)"
-promptfoo eval -c evals/promptfooconfig.groq.yaml --env-file evals/.env -j 1
-promptfoo view
-
-# afterwards, restore the full real-log suite:
-python3 evals/generate_tests_groq.py
-```
-
-**Which model is configured, and why:** `evals/promptfooconfig.groq.yaml`
-currently points at `groq:openai/gpt-oss-20b`. `llama-3.1-8b-instant` was
-tried and confirmed (repeatedly, against the live
-`api.groq.com/openai/v1/models` endpoint, with two different keys) to no
-longer be served by Groq at all — it 404s regardless of which key is
-used. If that ever changes, or your lead's account genuinely has Llama
-access, the model id can be swapped back in that file — see the comment
-directly above the `providers:` block in that file for exactly what to
-change and why.
-
----
-
-## 7. Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `promptfoo eval` (or any promptfoo command) hangs for 10+ minutes doing nothing visible, sometimes ending in `npm ERR! code ERR_SOCKET_TIMEOUT` | You ran `npx promptfoo` and `npx` is stuck re-resolving the package over the network instead of using the installed copy — often because `nvm`'s Node version silently dropped out of `PATH` in that shell | Run `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use v22.23.1` then call `promptfoo` directly (no `npx`) — see section 1 |
-| `Missing GROQ_API_KEY` | `.env` not picked up | Add `--env-file evals/.env` to the command |
-| `API error: 404 ... model_not_found` | The configured model isn't served to this key | Use a model your key actually has — check with `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"` |
-| `API error: 413 Payload Too Large` / requests hang then time out after 5 minutes | Prompt too big for the account's tokens-per-minute limit, or too many concurrent requests | Re-run `python3 evals/generate_tests_groq.py` (keeps prompts trimmed) and always pass `-j 1` |
-| Eval looks "stuck" at some % with no progress for minutes, but is genuinely still running | Same TPM rate limit — requests are queued, not frozen (see the timing note in 6c) | Wait it out, or Ctrl+C and re-run against fewer logs |
-| Any promptfoo run | — | A version-mismatch banner ("current version ... lower than latest") is just a nag, safe to ignore |
-| `python -m pytest` fails with `ModuleNotFoundError: No module named 'yaml'` deep inside `launch_testing`/ROS | An unrelated ROS pytest plugin on this machine gets auto-discovered | Run with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p no:cacheprovider` |
-| `test_real_task_006_box_conflict_is_caught` fails | Pre-existing: whatever's currently in `logs/tasks/task_006.json` no longer contains the box-conflict scenario the test expects (real logs get overwritten by task-id reuse on every fresh app run) | Not caused by the state-transition feature — confirmed by neutralizing it and reproducing the same failure. Safe to ignore, or regenerate a real conflict scenario if you want the test green |
-| `test_idle_robot_with_a_low_battery_charges_itself` fails/times out | Pre-existing simulator behavior: the robot's battery runs out before it reaches the charger from its demo spawn point | Same as above — confirmed unrelated to this change by isolating it |
-
----
-
-## 8. Project layout (relevant parts)
-
-```
-warehouse-digital-twin/
-├── run.sh                       one-command app launcher
-├── requirements.txt
-├── TRUST_LAYER.md                Tier 1/2/3 scope mapping from the "Physical AI Trust Layer" reference doc
-├── backend/
-│   ├── app.py                   Flask API / dashboard
-│   ├── eval_engine.py           rule-based log grader (PASS/WARN/FAIL + reasons)
-│   ├── run_evals.py             CLI for eval_engine.py
-│   ├── task_manager.py          task lifecycle — also snapshots before/after world state per task
-│   ├── tests.py                 main pytest suite
-│   └── test_eval_engine.py      pytest suite for eval_engine.py
-├── logs/
-│   ├── tasks/                   real task logs your system has produced
-│   └── eval_examples/           curated example logs, one per known failure case
-└── evals/                       promptfoo suites (see evals/README.md)
-    ├── promptfooconfig.yaml             live suite (section 6a)
-    ├── promptfooconfig.examples.yaml    examples suite (section 6b)
-    ├── promptfooconfig.groq.yaml        Groq LLM-as-judge suite (section 6c)
-    ├── generate_tests*.py               regenerate each suite's test list
-    ├── .env.example                     copy to .env, add GROQ_API_KEY
-    └── shared/                          providers + assertions used by the suites above
-```
+| Symptom | Cause and fix |
+|---|---|
+| `test_real_task_006_box_conflict_is_caught` and `test_idle_robot_with_a_low_battery_charges_itself` fail | Known and allowed. The first reads `logs/tasks/task_006.json`, which each fresh run appends to (ids restart at `task_001`; Clear logs deletes the files); the second is pre-existing simulator behaviour: the robot's battery runs out before it reaches the charger. Any other failure is yours. |
+| The distribution centre's robots stand still | Its shift starts paused: press **Start** on the Shift panel (section 3). |
+| The app stops at start with `Unknown robot_class 'ARM'` | A `robot_classes` block in `policies.yaml` replaces the whole roster and lacks `ARM` or `HUMANOID`; `policies.example.yaml` holds the built-in one. |
+| `POST /api/state/load` says "This save is of the classic floor, and this twin runs the distribution_center floor" | Each floor loads only its own saves: start the app with the `WAREHOUSE_LAYOUT` the message names. |
+| `test_floor_model_js.py` and `test_panels_js.py` are skipped | `jsc` isn't at its macOS path (Linux, say). Expected; run them on a Mac. |
+| `pytest` fails with `ModuleNotFoundError: No module named 'yaml'` inside `launch_testing` | An unrelated ROS pytest plugin is auto-loaded: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p no:cacheprovider`. |
+| A promptfoo command hangs for minutes, or says `Missing GROQ_API_KEY`, `404` or `413` | See section 6 and [evals/README.md](evals/README.md): call `promptfoo` directly, pass `--env-file evals/.env -j 1`, and use a model your key serves. |
+| A task went straight to `FAILED` | Open it on the task board: the reason is on its card and in the log at `ERROR` level (a box already reserved, a destination that doesn't resolve, a robot in an error state, or the gate). |
+| A robot sits in `WAITING` or `ERROR` | `WAITING`: it yields to another robot or waits on a person (the robot panel shows the reason; [TRUST_LAYER.md](TRUST_LAYER.md#physical-waits)). `ERROR`: its battery hit zero or its controller raised; press **Reset** on the robot. |
+| Everything is confused after editing code | `POST /api/state/reset`, or **Reset** in the dashboard, puts the floor back as its seed left it. |

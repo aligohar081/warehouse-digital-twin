@@ -94,7 +94,7 @@ New and changed units. Each unit has one job, and the twin imports them. Nothing
 
 **Construction.** `DigitalTwin(..., layout="classic")`:
 - `classic` is the default, so every existing test constructs today's twin unchanged.
-- `backend/app.py`'s default twin uses `layout="distribution_center"` with `data/inventory.sqlite3`.
+- `backend/app.py`'s default twin uses `layout="distribution_center"`; `WAREHOUSE_LAYOUT=classic` boots the classic floor instead. Each floor keeps its own folders: the distribution centre's inventory file and state save are in `data/distribution_center/` (`data/distribution_center/inventory.sqlite3`) and its logs in `logs/distribution_center/`, while classic keeps `data/` and `logs/`. Switching floors therefore never reseeds the other floor's inventory file.
 - `DigitalTwin.layout_name` is exposed in `snapshot()`.
 
 **Lock order** is unchanged from A: `twin.lock` → inventory store lock. The telemetry recorder does its file I/O outside `twin.lock`. The tick hands samples to a bounded queue, and one writer thread drains it (§13.6).
@@ -238,7 +238,7 @@ The seed is deterministic and has no demo tasks. The shift engine produces the w
 ### 4.3 Save, load, reset
 
 - **`save_state`** writes version 2: v1 plus `layout`, `shift` (clock, RNG state, config, order table), `stock`, `equipment` (conveyor contents, jams), `people` (zones, transit) and `handoffs`.
-- **`load_state`** accepts v1 (treated as `classic`) and v2. If the saved layout differs from the loaded one, it rebuilds the warehouse, navigation and planner before restoring entities.
+- **`load_state`** accepts v1 (treated as `classic`) and v2. A save whose layout differs from the twin's is refused before anything changes, with a `ValueError` naming both floors; it is not rebuilt. The inventory is per floor (§2), so another floor's robots would have no assets to bind to. To load such a save, start the app on the floor it names.
 - **`reset()`** keeps the current layout and reruns that layout's seed.
 
 ### 4.4 Remote check-ins removed
@@ -332,7 +332,7 @@ Lift adds `m × g × Δh / 3600 / 0.6` Wh, where m is the load plus the carriage
 - `transit_until_tick` and `transit_to` (walking between zones);
 - `certification_scopes`: `{code: {"equipment": [...], "site": [...]}}`, synced from inventory credentials alongside `certifications`.
 
-**Movement.** A move from zone A to zone B takes `manhattan(centre A, centre B) × CELL_SIZE_M ÷ 1.2 m/s`. During the move the person is in neither zone. A move is "in transit on the walkway" only when it crosses the walkway: the two zone centres lie on opposite sides of the walkway strip, or either end is the walkway zone itself. Only such a move triggers crossing waits (§5.3). People are not grid entities and don't block robots, except through the rules below.
+**Movement.** A move from zone A to zone B takes `manhattan(centre A, centre B) × CELL_SIZE_M ÷ 1.2 m/s`. During the move the person is in neither zone. A move is "in transit on the walkway" only when it crosses the walkway: either end is the walkway zone itself, or the two zones' cells are not all on one side of the walkway strip. Sides are decided by the zones' cells, not their centres, so a walk to or from a zone that straddles the strip (`cross_aisle`, `top_aisle`) always counts as crossing it. Only such a move triggers crossing waits (§5.3). People are not grid entities and don't block robots, except through the rules below.
 
 **Who drives movement.** The shift engine moves people (§11.3), and so do human jobs (§9.2). An `OFF_DUTY` operator has `zone = None`. On the new floor, shift status follows the simulated shift clock (§11.4).
 

@@ -7,6 +7,15 @@
 #
 # See GET /api/policies for the values actually in effect right now.
 # Every key below is optional — omit anything you don't want to override.
+#
+# The values below ARE the built-in defaults, so copying this file as it
+# is changes nothing: edit only what you want to change. Two things to
+# know before you do:
+#   - Under `config:` only keys backend/models.py's CONFIG already has take
+#     effect; a misspelt key is silently ignored.
+#   - certification_requirements, robot_classes and operator_roles each
+#     REPLACE the whole built-in table (apply_policy in backend/policy.py),
+#     so a custom table must keep every entry it still needs.
 
 config:
   BATTERY_LOW: 20
@@ -37,6 +46,18 @@ config:
   # by anything in the live event trail — see
   # backend/simulator.py::_act_deliver.
   FALSE_SUCCESS_RISK: 0.0
+  # Injected faults on the distribution-centre floor (backend/faults.py),
+  # each 0.0-1.0, the chance per opportunity, and off by default. Each
+  # does its damage silently and is caught after the fact (TRUST_LAYER.md
+  # says by what). For a single occurrence on demand, use
+  # POST /api/faults/<kind> or the dashboard's Shift panel (Inject fault).
+  SCAN_MISCOUNT_RISK: 0.0        # a drone's count reports the true number +/- 1-3 (count_consistent)
+  WRONG_LEVEL_RISK: 0.0          # a forklift places a pallet a level up or down but reports the requested one (placement_level_correct)
+  GRASP_FAIL_RISK: 0.0           # an arm or the picker misses a grasp; retried up to twice, a third miss fails the job
+  CONVEYOR_JAM_RISK: 0.0         # a conveyor cell jams as an item moves on (CONVEYOR_JAMMED, then a CLEAR_JAM job)
+  HANDOFF_LOSS_RISK: 0.0         # an item put onto the conveyor never arrives, though the giver reports it placed (handoff_consistent)
+  MIS_SORT_RISK: 0.0             # the sorter drops a carton on the wrong dock (sort_correct)
+  MISDECLARED_WEIGHT_RISK: 0.0   # an inbound pallet really weighs 1.1-1.6x what it declares (payload_within_limit)
 
 approved_firmware_versions:
   - "2.1.0"
@@ -47,17 +68,23 @@ approved_agent_models:
   - "groq/gpt-oss-20b"
   - "groq/gpt-oss-120b"
 
+# IMPORTANT: apply_policy REPLACES the whole built-in table with this one,
+# so a custom table must keep every entry it still needs. Leave CLEAR_JAM
+# out and a person clearing a jam inside a fenced pack cell needs no
+# robot_cell_access at all: anyone on shift, Riley included, could be sent in.
 certification_requirements:
   HUMAN_INSPECTION: safety_inspection
   MIXED_MAINTENANCE_MISSION: electrical_safety
   OPERATOR_APPROVAL: safety_inspection
   OPERATOR_MAINTENANCE_SIGNOFF: electrical_safety
+  CLEAR_JAM: robot_cell_access   # inside a pack cell only; scoped to the arm's model
 
-# IMPORTANT: this key REPLACES the entire built-in class roster if
-# present at all — always include CHARGE_ROBOT in every class's
-# allowed_task_types (or leave allowed_task_types null/unrestricted), or
-# that class's robots can never self-charge and will eventually strand
 # in ERROR (see Simulator._auto_charge / DigitalTwin.request_charge).
+# A custom roster must also include ARM and HUMANOID: the
+# distribution-centre floor's seed creates both, and an unknown class
+# stops it ("Unknown robot_class 'ARM'"), so the app won't start on that
+# floor. Keep each class's distribution-centre job types too (UNLOAD_TRUCK,
+# PATROL, PACK_ORDER, ...), or the gate refuses those jobs.
 robot_classes:
   AMR:
     label: "AMR (general purpose)"
@@ -73,6 +100,10 @@ robot_classes:
       - MOVE_BOX
       - MOVE_ROBOT
       - CHARGE_ROBOT
+      - UNLOAD_TRUCK
+      - PUTAWAY_PALLET
+      - RETRIEVE_PALLET
+      - LOAD_TRUCK
   SCOUT:
     label: "Scout (inspection only)"
     speed: 3.0
@@ -80,6 +111,7 @@ robot_classes:
       - MOVE_ROBOT
       - MIXED_MAINTENANCE_MISSION
       - CHARGE_ROBOT
+      - PATROL
   HEAVY_HAULER:
     label: "Heavy Hauler (slow, high-capacity)"
     speed: 0.8
@@ -91,6 +123,7 @@ robot_classes:
       - MOVE_ROBOT
       - CHARGE_ROBOT
       - BATCH_DELIVER
+      - UNLOAD_TRUCK
   DRONE:
     label: "Drone (fast, aerial/overhead)"
     speed: 4.0
@@ -98,6 +131,7 @@ robot_classes:
       - MOVE_ROBOT
       - MIXED_MAINTENANCE_MISSION
       - CHARGE_ROBOT
+      - CYCLE_COUNT
   PICKER:
     label: "Picker (fast, pick & deliver only)"
     speed: 2.5
@@ -107,6 +141,30 @@ robot_classes:
       - DELIVER_BOX
       - MOVE_BOX
       - CHARGE_ROBOT
+      - PICK_ITEMS
+  # The distribution centre's fixed pack-cell arms: mains-powered, so
+  # CHARGE_ROBOT never actually runs, but the rule above still applies.
+  ARM:
+    label: "Arm (fixed pack cell)"
+    speed: 0.7
+    allowed_task_types:
+      - CHARGE_ROBOT
+      - PACK_ORDER
+  # The distribution centre's humanoid: it works only while a supervisor
+  # with humanoid_supervision is near (Jordan on the seeded floor).
+  HUMANOID:
+    label: "Humanoid (supervised, general purpose)"
+    speed: 0.8
+    allowed_task_types:
+      - PICK_AND_DELIVER
+      - PICK_BOX
+      - DELIVER_BOX
+      - MOVE_BOX
+      - MOVE_ROBOT
+      - CHARGE_ROBOT
+      - TOTE_TO_STATION
+      - RETURN_TOTE
+      - RETURNS_PUTAWAY
 
 # Same "replaces the whole roster if present" rule as robot_classes above.
 # No equivalent hard requirement here (there's nothing an operator role
