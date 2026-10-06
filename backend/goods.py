@@ -256,7 +256,9 @@ def store(twin: Any, box: Any, slot_id: str, true_slot_id: Optional[str] = None)
     new to storage is recorded with its SKU and quantity. `true_slot_id` is
     where the box physically went when that differs (a wrong-level placement):
     the record keeps the requested slot, whose true quantity drops to 0, and
-    the box remembers where it really is.
+    the box remembers where it really is and what it really holds
+    (Box.true_quantity), so a variance it carried goes with it. Stored again,
+    a misplaced box's record takes back what it really holds.
 
     A store that cannot happen (an unknown, taken or wrong-kind slot, or an
     unknown `true_slot_id`) raises ValueError before anything changes, so the
@@ -271,6 +273,7 @@ def store(twin: Any, box: Any, slot_id: str, true_slot_id: Optional[str] = None)
         actual = twin.warehouse.slot(true_slot_id)
         if actual is None:
             raise ValueError(f"Unknown slot {true_slot_id!r}")
+    carried = box.true_quantity if box.true_slot else None  # a misplaced box: its record's true quantity is 0
     if current == slot_id:
         location = stock.location(slot_id)
     elif current is not None:
@@ -279,9 +282,12 @@ def store(twin: Any, box: Any, slot_id: str, true_slot_id: Optional[str] = None)
         location.true_qty = previous.true_qty
     else:
         location = stock.put(slot_id, box.id, box.sku, box.quantity, kind=box.kind.value)
+    if carried is not None:
+        location.true_qty = carried
     box.position = slot.cell
-    box.true_slot = None
+    box.true_slot = box.true_quantity = None
     if actual is not None:
+        box.true_quantity = location.true_qty  # capture before adjust_true modifies it
         stock.adjust_true(slot_id, -location.true_qty)
         box.true_slot = true_slot_id
         box.position = actual.cell
@@ -333,10 +339,13 @@ def take_units(twin: Any, tote: Any, count: int = 1) -> Tuple[float, float]:
 
 def physical_qty(twin: Any, slot_id: str) -> int:
     """What is really in `slot_id`: its location's true quantity, plus any
-    misplaced box that physically went there instead of its recorded slot."""
+    misplaced box that physically went there instead of its recorded slot —
+    by what it really holds (Box.true_quantity), so a variance it carried is
+    counted too; by its recorded quantity only when that isn't known."""
     location = twin.stock.location(slot_id)
     quantity = location.true_qty if location is not None else 0
-    return quantity + sum(box.quantity for box in twin.boxes.values() if box.true_slot == slot_id)
+    return quantity + sum(box.quantity if box.true_quantity is None else box.true_quantity
+                          for box in twin.boxes.values() if box.true_slot == slot_id)
 
 
 def free_slots(twin: Any, kind: str, max_level: Optional[int] = None, near: Optional[Cell] = None,

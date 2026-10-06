@@ -36,9 +36,11 @@ fails alone, with the error as its reason; the other orders still advance.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..jobs import tote_is_home
+from .. import people
+from ..eligibility import box_kind_ok, payload_ok, reach_ok, robot_eligibility
+from ..jobs import JOB_SPECS, tote_is_home
 from ..models import (ActionType, BoxKind, BoxStatus, EventType, LogCategory, LogLevel, OperatorStatus, TaskStatus,
                       TaskType)
 
@@ -488,8 +490,14 @@ class OrderBook:
         return None
 
     def _choose_tote(self, sku: str, units: int) -> Optional[Any]:
-        """A tote of `sku` holding `units`, home in its slot and wanted by no
-        job right now; None while every such tote is busy."""
+        """A tote of `sku` holding `units`, home in its slot, wanted by no job
+        right now, and one a robot that can bring it is able to now: a tote
+        the AMRs reach before one only the humanoid reaches (it needs its
+        supervisor, and stops while he walks). None while every such tote is
+        busy, or the only robots that reach it are halted or unsupervised: the
+        line waits, spending no retry, as it does for a busy tote. Only when no
+        robot on the floor could ever reach any of them is the first free one
+        asked for all the same, so the gate rejects it with its reason."""
         twin = self.twin
         stocked = [twin.find_box(location.box_id) for location in twin.stock.locations(sku)
                    if location.recorded_qty >= units]
@@ -498,7 +506,49 @@ class OrderBook:
             raise OrderError(f"no tote holds {units} of {sku}")
         free = [box for box in stocked if tote_is_home(twin, box) and twin.tasks.active_task_for_box(box.id) is None
                 and not self._promised_tote(box.id)]
+        bodies = self._tote_bodies()
+        ranked = [(rank, number, box) for number, box in enumerate(free)
+                  for rank in (self._tote_rank(box, bodies),) if rank is not None]
+        if ranked:
+            return min(ranked, key=lambda entry: entry[:2])[2]
+        if any(self._reaches(box, profile) for box in stocked for profile, _, _ in bodies):
+            return None  # the robots that reach one are halted or unsupervised: wait for them
         return free[0] if free else None
+
+    def _tote_bodies(self) -> List[Tuple[Any, bool, bool]]:
+        """(profile, able now, needs a supervisor) for every robot on the
+        floor whose body can do TOTE_TO_STATION. Able now: fit for the job
+        (not halted, approved firmware, the job allowed) and, for a body that
+        needs a supervisor, one is on shift."""
+        classes = JOB_SPECS[TaskType.TOTE_TO_STATION].classes
+        bodies = []
+        for robot in self.twin.robots.values():
+            profile = robot.mobility
+            if profile is None or profile.embodiment_class not in classes:
+                continue
+            able = robot_eligibility(robot.status.value, robot.firmware_version, battery=None,
+                                     task_type=TaskType.TOTE_TO_STATION.value,
+                                     allowed_task_types=robot.allowed_task_types) is None \
+                and people.supervision_available(self.twin, robot)[0]
+            bodies.append((profile, able, bool(profile.supervision)))
+        return bodies
+
+    def _reaches(self, box: Any, profile: Any) -> bool:
+        """Can this body take `box` from its slot: its kind, its declared
+        weight, and the slot's level (the gate's capability rules)?"""
+        slot = self.twin.warehouse.slot(box.slot)
+        return (box_kind_ok(box.kind.value, profile.box_kinds)[0]
+                and payload_ok(box.declared_weight_kg, profile.max_payload_kg)[0]
+                and reach_ok(slot.level if slot is not None else None, profile.max_shelf_level)[0])
+
+    def _tote_rank(self, box: Any, bodies: List[Tuple[Any, bool, bool]]) -> Optional[int]:
+        """0 if a body that needs no supervisor (an AMR) able now reaches
+        `box`, 1 if only a supervised one (the humanoid) does, None if no body
+        able now reaches it."""
+        supervised = [needs for profile, now, needs in bodies if now and self._reaches(box, profile)]
+        if not supervised:
+            return None
+        return 1 if all(supervised) else 0
 
     def _promised_tote(self, box_id: str) -> bool:
         """True while a live customer line holds `box_id`, from the moment it

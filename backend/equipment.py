@@ -222,9 +222,13 @@ class Equipment:
         return self.record(box, giver, "conveyor", cell, reported, observed, task_id, order_id)
 
     def take(self, cell: Cell, receiver: str, task_id: Optional[str] = None) -> Tuple[Any, Handoff]:
-        """`receiver` (an arm) takes the item on conveyor `cell`."""
+        """`receiver` (an arm) takes the item on conveyor `cell`. An item whose
+        box the twin no longer knows comes off the line all the same, freeing
+        the cell, and the take raises ValueError: there is nothing to hand over."""
         item = self.conveyor.unload(tuple(cell))
         box = self.twin.find_box(item.box_id)
+        if box is None:
+            raise ValueError(f"the item on conveyor cell ({cell[0]},{cell[1]}) is no longer known ({item.box_id})")
         handoff = self.record(box, "conveyor", receiver, cell, {"present": True, "weight_kg": box.declared_weight_kg},
                               {"present": True, "weight_kg": box.true_weight_kg}, task_id or item.task_id,
                               item.order_id)
@@ -327,6 +331,11 @@ class Equipment:
             if item.ticks < transfer:
                 continue
             box = twin.find_box(item.box_id)
+            if box is None:  # removed from the twin while inside: there is nothing left to drop
+                sorter.inside.remove(item)
+                twin.logger.warning(LogCategory.OPERATIONS, f"{item.box_id} is no longer known — dropped from the sorter",
+                                    data={"box_id": item.box_id, "order_id": item.order_id})
+                continue
             lane = box.destination if box.destination in sorter.lanes else sorter.lanes[0]
             if item.routed_to is None:
                 # Decided once per carton, so a full dock doesn't re-roll the

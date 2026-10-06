@@ -97,6 +97,9 @@ class Simulator:
         # announced, so a new-floor robot that can't get round its blocker
         # doesn't announce the same wait again every cycle (_handle_block).
         self._announced: Dict[str, Tuple[str, Cell, str]] = {}
+        # (jammed conveyor cell, the tick it jammed) -> how often the gate has
+        # rejected its CLEAR_JAM since it last had one (human_jobs.ensure_jam_jobs).
+        self._jam_asks: Dict[Tuple[Cell, int], int] = {}
 
     # ------------------------------------------------------------------ #
     # Thread control
@@ -198,9 +201,13 @@ class Simulator:
 
             human_jobs.tick(twin)  # people's jobs, beside the robots
             if twin.equipment is not None:
-                twin.equipment.tick()  # the conveyor and sorter move after robots place items
+                try:
+                    twin.equipment.tick()  # the conveyor and sorter move after robots place items
+                except Exception as exc:  # one bad item on the line must not stop the floor
+                    twin.logger.error(LogCategory.OPERATIONS,
+                                      f"The conveyor and sorter hit an error and skipped the rest of their turn: {exc}")
                 if twin.tick_count % CONFIG["SHIFT_CHECK_EVERY_TICKS"] == 0:
-                    human_jobs.ensure_jam_jobs(twin)  # a jam gets someone to clear it
+                    human_jobs.ensure_jam_jobs(twin, self._jam_asks)  # a jam gets someone to clear it
             self._detect_collisions()
             self._apply_energy(distance_before)
             self._auto_charge()

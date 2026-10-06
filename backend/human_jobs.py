@@ -15,14 +15,20 @@ floor (spec §11.3).
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import goods, people
 from .embodiment import seconds_to_ticks
 from .jobs import parse_cell
-from .models import CONFIG, Action, ActionType, Cell, LogCategory, OperatorStatus, TaskStatus, TaskType, cell_dict
+from .models import (CONFIG, Action, ActionType, Cell, LogCategory, OperatorStatus, Priority, TaskStatus, TaskType,
+                     cell_dict)
 
 HUMAN_JOBS = frozenset({TaskType.MANUAL_PICK, TaskType.CLEAR_JAM})
+
+#: How many times a jam is asked for through the gate while no one qualified
+#: is on the floor: the ask and, as for any rejected job, one retry (spec
+#: §11.2). After that it waits until someone qualified is (ensure_jam_jobs).
+JAM_GATE_ASKS = 2
 
 #: The arm model a jam inside a pack cell needs robot_cell_access scoped to.
 ARM_MODEL = "FB-CX10"
@@ -213,27 +219,57 @@ def _place_one_item(twin: Any, task: Any, operator: Any) -> None:
     task.params["until_tick"] = twin.tick_count + _work_ticks(task)
 
 
-def ensure_jam_jobs(twin: Any) -> List[Any]:
-    """Every jammed segment without a running CLEAR_JAM gets one. When the
-    gate rejects it (no one qualified on the floor) it is tried again here
-    next time, so the jam is cleared as soon as someone qualifies."""
+def someone_can_clear(twin: Any, segment: str) -> Tuple[bool, Optional[str]]:
+    """Would the gate find someone to clear the jam at `segment` now? It runs
+    the gate's own check (TaskManager.validate) on a CLEAR_JAM that is never
+    recorded: no task, event, log file or stat."""
+    from .task_manager import Task  # deferred: task_manager imports this module
+
+    probe = Task("CLEAR_JAM-check", TaskType.CLEAR_JAM, priority=Priority.HIGH, internal=True,
+                 params={"segment": segment})
+    return twin.tasks.validate(probe)
+
+
+def ensure_jam_jobs(twin: Any, rejected: Optional[Dict[Tuple[Cell, int], int]] = None) -> List[Any]:
+    """Every jammed segment without a running CLEAR_JAM gets one. While no
+    one qualified is on the floor the gate rejects it, and each rejection is
+    a FAILED job that records why; after JAM_GATE_ASKS of them (the ask and
+    its one retry) the jam waits, logged once: each check asks silently
+    whether someone qualified is on the floor (someone_can_clear) and asks
+    the gate again only once someone is, so the jam is cleared as soon as
+    someone qualifies without a FAILED job, log file and stat at every check.
+    `rejected` ((cell, tick it jammed) -> the gate's rejections since it last
+    had a job) is the caller's memory across checks: Simulator keeps one, and
+    a new jam on the same cell starts afresh. Without it every check asks
+    the gate."""
     if twin.equipment is None:
         return []
+    asks = rejected if rejected is not None else {}
+    jams = twin.equipment.conveyor.jams
+    for key in [key for key in asks if jams.get(key[0]) != key[1]]:
+        del asks[key]  # that jam is cleared
     covered = {task.params.get("segment") for task in twin.tasks.tasks.values()
                if task.type is TaskType.CLEAR_JAM and not task.is_terminal}
     created = []
-    for cell in list(twin.equipment.conveyor.jams):
-        segment = f"{cell[0]},{cell[1]}"
+    for cell, since in list(jams.items()):
+        segment, key = f"{cell[0]},{cell[1]}", (cell, since)
         if segment in covered:
             continue
         try:
+            if asks.get(key, 0) >= JAM_GATE_ASKS and not someone_can_clear(twin, segment)[0]:
+                continue  # still no one qualified: it waits, and nothing is recorded
             task = twin.tasks.create_task({"type": "CLEAR_JAM", "segment": segment, "priority": "HIGH"}, internal=True)
         except Exception as exc:  # the jam is asked for again next time; the tick goes on
             twin.logger.warning(LogCategory.OPERATIONS, f"Could not ask for the jam at {segment} to be cleared: {exc}",
                                 position=cell_dict(cell))
             continue
         if task.status is TaskStatus.FAILED:
-            twin.logger.warning(LogCategory.OPERATIONS, f"No one can clear the jam at {segment} yet: {task.error}",
+            asks[key] = asks.get(key, 0) + 1
+            waiting = " — waiting until someone qualified is on the floor" if asks[key] == JAM_GATE_ASKS else ""
+            twin.logger.warning(LogCategory.OPERATIONS,
+                                f"No one can clear the jam at {segment} yet: {task.error}{waiting}",
                                 position=cell_dict(cell))
+        else:
+            asks.pop(key, None)
         created.append(task)
     return created

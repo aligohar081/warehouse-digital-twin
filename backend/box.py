@@ -43,9 +43,11 @@ class Box:
         # it in, if any — backend/goods.py keeps this in step with the ledger.
         # A tote keeps its slot while it is away at a station. `true_slot` is
         # set only when the box physically sits in a different slot than the
-        # record says (a wrong-level placement).
+        # record says (a wrong-level placement), and `true_quantity` with it:
+        # what it really holds, since its recorded slot's true quantity is 0.
         self.slot = slot
         self.true_slot: Optional[str] = None
+        self.true_quantity: Optional[int] = None
         self.order_id = order_id
         self.source = source
         self.destination = destination
@@ -92,6 +94,7 @@ class Box:
             "true_weight_kg": self.true_weight_kg,
             "slot": self.slot,
             "true_slot": self.true_slot,
+            "true_quantity": self.true_quantity,
             "order_id": self.order_id,
             "position": cell_dict(self.position),
             "source": self.source,
@@ -123,6 +126,7 @@ class Box:
             order_id=data.get("order_id"),
         )
         box.true_slot = data.get("true_slot")
+        box.true_quantity = data.get("true_quantity")
         box.assigned_robot = data.get("assigned_robot")
         box.assigned_task = data.get("assigned_task")
         box.pick_count = data.get("pick_count", 0)
