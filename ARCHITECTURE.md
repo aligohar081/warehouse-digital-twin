@@ -82,7 +82,7 @@ A Python 3.14 / Flask simulator of a warehouse, with a plain-JavaScript dashboar
 
 1. `tick_count += 1`; `simulation_time += TICK_DT`.
 2. `twin.scheduler.tick()`: recurring tasks come due.
-3. `twin.shift.tick()` (in try/except; an error is logged and skipped): when the shift is RUNNING, generate due work (trucks, customer orders, ...); every `SHIFT_CHECK_EVERY_TICKS` (20) move people; always `orders.advance()`. A shift is PAUSED until `start()` (the app starts it when it seeds the new floor); `start()` raises on classic.
+3. `twin.shift.tick()` (in try/except; an error is logged and skipped): when the shift is RUNNING, generate due work (trucks, customer orders, ...); every `SHIFT_CHECK_EVERY_TICKS` (20) move people; always `orders.advance()`. A shift is PAUSED until `start()`; the app seeds the new floor and leaves it paused (and a reset pauses it), so the floor runs only assigned tasks; `start()` raises on classic.
 4. `people.update_transits(twin)`: finished walks land before robots decide.
 5. `twin.tasks.dispatch()`: queued (`PLANNING`) tasks get a robot and a plan.
 6. For each robot in `_execution_order()` (higher task priority first, then id): `_tick_robot(robot)`. An exception marks the robot ERROR and fails its task.

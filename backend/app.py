@@ -77,10 +77,10 @@ def _mission_report_rows(tasks_dir: str) -> list:
 
 def _seed_floor(twin: DigitalTwin) -> None:
     """Classic seeds itself (load_demo). The new floor gets its stopgap seed and
-    a running shift, since the dashboard has no shift controls yet (plan 1c)."""
+    its shift stays paused (spec §11.5), so, like classic, the floor runs only
+    the tasks someone assigns until the shift is started."""
     if twin.layout_name == "distribution_center":
         distribution_center.seed(twin)
-        twin.shift.start()
 
 
 def build_twin(layout: str = "classic", base_dir: str = BASE_DIR) -> DigitalTwin:

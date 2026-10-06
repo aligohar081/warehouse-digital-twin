@@ -3,8 +3,8 @@
 Classic stays the default and keeps logs/ and data/. Any other floor gets its
 own logs/<layout>/ and data/<layout>/, so switching floors never reseeds
 classic's inventory file. The distribution-centre floor boots populated with
-the fleet and crew the shift soak runs, and its shift is running, at boot and
-after either reset.
+the fleet and crew the shift soak runs, and its shift is paused, at boot and
+after either reset, so it runs only the tasks someone assigns.
 """
 import pytest
 
@@ -25,14 +25,14 @@ def test_classic_keeps_its_folders_and_demo(tmp_path):
     assert twin.shift.status == ShiftEngine.PAUSED
 
 
-def test_the_new_floor_boots_populated_with_its_shift_running(tmp_path):
+def test_the_new_floor_boots_populated_with_its_shift_paused(tmp_path):
     twin = build_twin("distribution_center", str(tmp_path))
     assert twin.layout_name == "distribution_center"
     assert len(twin.robots) == FLEET_SIZE
     assert all(robot.asset_id for robot in twin.robots.values())
     assert len(twin.operators) == CREW_SIZE
     assert {box.kind for box in twin.boxes.values()} == {"TOTE", "PALLET"}
-    assert twin.shift.status == ShiftEngine.RUNNING
+    assert twin.shift.status == ShiftEngine.PAUSED
 
 
 def test_the_new_floor_never_touches_classic_files(tmp_path):
@@ -57,7 +57,7 @@ def test_an_unknown_layout_is_refused_before_anything_is_written(tmp_path):
 
 
 @pytest.mark.parametrize("route", ["/api/simulation/reset", "/api/state/reset"])
-def test_a_reset_puts_the_new_floor_back_and_restarts_its_shift(tmp_path, monkeypatch, route):
+def test_a_reset_puts_the_new_floor_back_with_its_shift_paused(tmp_path, monkeypatch, route):
     monkeypatch.setattr(app_module, "BASE_DIR", str(tmp_path))
     app, twin, _sim, _ci = create_app(layout="distribution_center", autostart=False, run_thread=False)
     app.config["TESTING"] = True
@@ -65,7 +65,7 @@ def test_a_reset_puts_the_new_floor_back_and_restarts_its_shift(tmp_path, monkey
     assert response.status_code == 200
     assert len(twin.robots) == FLEET_SIZE
     assert len(twin.operators) == CREW_SIZE
-    assert twin.shift.status == ShiftEngine.RUNNING
+    assert twin.shift.status == ShiftEngine.PAUSED
 
 
 def test_main_boots_the_floor_named_by_WAREHOUSE_LAYOUT(monkeypatch):
