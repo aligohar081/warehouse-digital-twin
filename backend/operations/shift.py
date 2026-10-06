@@ -86,6 +86,77 @@ class ShiftEngine:
     def _on_event(self, event: Dict[str, Any]) -> None:
         self.orders.on_event(event)
 
+    # ---- save and load (DigitalTwin.save_state / load_state, spec §4.3) --- #
+    def to_state(self) -> Dict[str, Any]:
+        """Everything a save needs to carry the shift on exactly: its status,
+        config and RNG state, when each stream is next due (and when it was
+        paused), the truck and rack-face rotations, who is stepping aside
+        until when, the counters, and every order."""
+        version, internal, gauss = self.rng.getstate()
+        return {
+            "status": self.status, "seed": self.seed, "pace": self.pace, "rates": dict(self.rates),
+            "rng": [version, list(internal), gauss],
+            "next_due": dict(self._next_due), "paused_at": self._paused_at,
+            "truck_count": self._truck_count, "face_index": self._face_index,
+            "yield_until": dict(self.yield_until), "counters": dict(self.counters),
+            "orders": self.orders.to_state(),
+        }
+
+    def load_state(self, data: Dict[str, Any]) -> None:
+        """Restore a to_state() snapshot into this engine — the one twin.events
+        calls (it subscribed once, at construction), so a load never adds a
+        second listener. It is all checked first: a damaged snapshot raises
+        ValueError and leaves the engine as it was."""
+        status = data.get("status")
+        if status not in (self.RUNNING, self.PAUSED):
+            raise ValueError(f"Unknown shift status {status!r} (known: {[self.RUNNING, self.PAUSED]})")
+        seed = data.get("seed")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"The shift seed must be a whole number, not {seed!r}")
+        pace = self._saved_number(data.get("pace"), "pace")
+        if pace <= 0:
+            raise ValueError("pace must be a finite number greater than zero")
+        rates = dict(DEFAULT_RATES)
+        for stream, rate in (data.get("rates") or {}).items():
+            if stream not in DEFAULT_RATES:
+                raise ValueError(f"Unknown rate {stream!r} (known: {sorted(DEFAULT_RATES)})")
+            rates[stream] = self._saved_number(rate, stream)
+        next_due = {}
+        for stream, due in (data.get("next_due") or {}).items():
+            if stream not in DEFAULT_RATES:
+                raise ValueError(f"Unknown stream {stream!r} in the shift's next due times")
+            next_due[stream] = self._saved_number(due, stream)
+        if status == self.RUNNING and set(next_due) != set(DEFAULT_RATES):
+            raise ValueError("A running shift needs a next due time for every stream")
+        paused_at = data.get("paused_at")
+        paused_at = None if paused_at is None else self._saved_number(paused_at, "paused_at")
+        rng = random.Random()
+        try:
+            version, internal, gauss = data["rng"]
+            rng.setstate((version, tuple(internal), gauss))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("The shift's random number state is missing or damaged") from None
+        counts = {key: data.get(key, 0) for key in ("truck_count", "face_index")}
+        counters = {**{stream: 0 for stream in DEFAULT_RATES}, "skipped_orders": 0, **(data.get("counters") or {})}
+        for key, value in [*counts.items(), *counters.items()]:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"The shift's {key} must be a whole number, 0 or more, not {value!r}")
+        yield_until = {str(key): self._saved_number(until, f"{key}'s step-aside")
+                       for key, until in (data.get("yield_until") or {}).items()}
+        orders = OrderBook(self.twin)
+        orders.load_state(data.get("orders") or {})
+        self.status, self.seed, self.pace, self.rates, self.rng = status, seed, pace, rates, rng
+        self._next_due, self._paused_at = next_due, paused_at
+        self._truck_count, self._face_index = counts["truck_count"], counts["face_index"]
+        self.yield_until, self.counters, self.orders = yield_until, counters, orders
+
+    @staticmethod
+    def _saved_number(value: Any, what: str) -> float:
+        """A number from a saved shift: finite, and never negative."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"The shift's {what} must be a finite number, 0 or more, not {value!r}")
+        return float(value)
+
     # ---- controls (plan 1c's /api/shift calls these) --------------------- #
     def start(self) -> None:
         if self.twin.layout_name == "classic":

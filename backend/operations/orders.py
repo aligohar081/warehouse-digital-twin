@@ -58,6 +58,17 @@ class OrderError(Exception):
     """A stage can't be built: the reason fails or retries it."""
 
 
+def _saved_fields(cls: Any, data: Dict[str, Any], required: List[str], what: str) -> None:
+    """A saved order or stage names only fields `cls` has, and every required one."""
+    known = list(cls.__dataclass_fields__)
+    unknown = sorted(set(data) - set(known))
+    if unknown:
+        raise ValueError(f"Unknown {what} field(s) {unknown} (known: {known})")
+    missing = [key for key in required if key not in data]
+    if missing:
+        raise ValueError(f"A saved {what} is missing {missing}")
+
+
 @dataclass
 class Stage:
     name: str
@@ -73,6 +84,15 @@ class Stage:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "Stage":
+        """A stage from to_dict() (a save); an unknown field or status raises ValueError."""
+        _saved_fields(Stage, data, ["name", "task_type"], "stage")
+        stage = Stage(**{**data, "payload": dict(data.get("payload") or {}), "after": list(data.get("after") or [])})
+        if stage.status not in (WAITING, ACTIVE, DONE, FAILED):
+            raise ValueError(f"Stage {stage.name!r} has an unknown status {stage.status!r}")
+        return stage
 
 
 @dataclass
@@ -101,6 +121,24 @@ class Order:
         data["stages"] = [stage.to_dict() for stage in self.stages]
         return data
 
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "Order":
+        """An order from to_dict() (a save), its stages with it. An unknown
+        field, kind or status, or a stage that follows one the order doesn't
+        have, raises ValueError."""
+        _saved_fields(Order, data, ["order_id", "kind"], "order")
+        order = Order(**{**data, "lines": [dict(line) for line in data.get("lines") or []],
+                         "stages": [Stage.from_dict(stage) for stage in data.get("stages") or []],
+                         "lost": list(data.get("lost") or [])})
+        if order.kind not in ORDER_KINDS:
+            raise ValueError(f"{order.order_id} has an unknown kind {order.kind!r} (known: {list(ORDER_KINDS)})")
+        if order.status not in (OPEN, IN_PROGRESS, DONE, FAILED):
+            raise ValueError(f"{order.order_id} has an unknown status {order.status!r}")
+        for stage in order.stages:
+            if any(not isinstance(index, int) or not 0 <= index < len(order.stages) for index in stage.after):
+                raise ValueError(f"{order.order_id}: {stage.name} follows a stage the order doesn't have")
+        return order
+
 
 class OrderBook:
     """Every order of one twin, advanced once a tick by the shift engine."""
@@ -109,6 +147,28 @@ class OrderBook:
         self.twin = twin
         self.orders: Dict[str, Order] = {}
         self._seq = 0
+
+    # ---- save and load (ShiftEngine.to_state / load_state) --------------- #
+    def to_state(self) -> Dict[str, Any]:
+        """Every order in the order it was created (advance() goes through them
+        in that order), and the id sequence."""
+        return {"orders": [order.to_dict() for order in self.orders.values()], "seq": self._seq}
+
+    def load_state(self, data: Dict[str, Any]) -> None:
+        """Replace every order with a to_state() snapshot. It is all checked
+        first: a damaged order, an id twice or a sequence behind its orders
+        raises ValueError and changes nothing."""
+        orders: Dict[str, Order] = {}
+        for raw in data.get("orders", []):
+            order = Order.from_dict(raw)
+            if order.order_id in orders:
+                raise ValueError(f"The save has {order.order_id} twice")
+            orders[order.order_id] = order
+        seq = data.get("seq", 0)
+        numbers = [int(key.rsplit("-", 1)[-1]) for key in orders if key.rsplit("-", 1)[-1].isdigit()]
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq < max(numbers, default=0):
+            raise ValueError(f"The order sequence {seq!r} must be a whole number, at least {max(numbers, default=0)}")
+        self.orders, self._seq = orders, seq
 
     # ---- creating orders ------------------------------------------------- #
     def _new(self, kind: str, stages: List[Stage], **fields: Any) -> Order:

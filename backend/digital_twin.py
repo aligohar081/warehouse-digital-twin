@@ -1120,7 +1120,7 @@ class DigitalTwin:
     # Persistence
     # ------------------------------------------------------------------ #
     #: The save format save_state writes (spec §4.3). Version 1 — no layout,
-    #: stock or equipment — is a classic save, and still loads on classic.
+    #: stock, equipment or shift — is a classic save, and still loads on classic.
     STATE_VERSION = 2
 
     def serialize(self) -> Dict[str, Any]:
@@ -1152,6 +1152,7 @@ class DigitalTwin:
                 },
                 "stock": self.stock.to_dict(),
                 "equipment": self.equipment.to_state() if self.equipment is not None else None,
+                "shift": self.shift.to_state(),
                 "floor_seeded": self.floor_seeded,
             }
 
@@ -1204,6 +1205,13 @@ class DigitalTwin:
             unknown = sorted(set(held) - {box.id for box in boxes})
             if unknown:
                 raise ValueError(f"The save's stock or conveyor holds boxes it has no record of: {unknown}")
+            # Last of the checks, as it is all-or-nothing itself: into the twin's
+            # own engine, which listens to twin.events. A version 1 save has no
+            # shift, so the floor gets a fresh, paused one — none of the old orders.
+            if payload.get("shift") is not None:
+                self.shift.load_state(payload["shift"])
+            else:
+                self.shift.reset()
 
             self.robots.clear()
             self.boxes.clear()
