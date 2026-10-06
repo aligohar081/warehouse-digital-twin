@@ -22,6 +22,7 @@ from .inventory_api import register_inventory_routes
 from .layouts import LAYOUTS
 from .maintenance import maintenance_reason
 from .models import CONFIG, LogCategory, Priority, SimulationStatus, now_iso
+from .operations_api import register_operations_routes
 from .policy import DEFAULT_POLICY_PATH, effective_policy, load_policies
 from .simulator import Simulator
 
@@ -151,6 +152,7 @@ def create_app(
         return wrapper
 
     register_inventory_routes(app, twin, ApiError)
+    register_operations_routes(app, twin, broadcaster, ApiError)
 
     # ------------------------------------------------------------------ #
     # Static dashboard

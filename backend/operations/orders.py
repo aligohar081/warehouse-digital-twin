@@ -58,6 +58,12 @@ class OrderError(Exception):
     """A stage can't be built: the reason fails or retries it."""
 
 
+def order_number(order_id: str) -> int:
+    """ORD-0042 -> 42, so orders sort by number, not by their id's text."""
+    digits = order_id.rsplit("-", 1)[-1]
+    return int(digits) if digits.isdigit() else -1
+
+
 def _saved_fields(cls: Any, data: Dict[str, Any], required: List[str], what: str) -> None:
     """A saved order or stage names only fields `cls` has, and every required one."""
     known = list(cls.__dataclass_fields__)
@@ -557,8 +563,16 @@ class OrderBook:
         return True
 
     # ---- reads ----------------------------------------------------------- #
+    def get(self, order_id: str) -> Dict[str, Any]:
+        """One order, with its stages; KeyError if there is no such order."""
+        order = self.orders.get(order_id)
+        if order is None:
+            raise KeyError(f"Order '{order_id}' does not exist")
+        return order.to_dict()
+
     def list(self, status: Optional[str] = None, kind: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        orders = sorted(self.orders.values(), key=lambda o: o.order_id, reverse=True)
+        """The newest orders first, by order number (ORD-10000 after ORD-9999)."""
+        orders = sorted(self.orders.values(), key=lambda o: order_number(o.order_id), reverse=True)
         orders = [o for o in orders if (status is None or o.status == status.upper())
                   and (kind is None or o.kind == kind.upper())]
         return [o.to_dict() for o in orders[:limit]]

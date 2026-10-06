@@ -12,16 +12,17 @@ stops it, while orders already in flight carry on. Resuming after a pause
 carries on from where it stopped: every stream's next due time moves on by the
 time spent paused, so nothing that fell due meanwhile fires in a burst. The
 shift clock runs from SHIFT_START_HOUR with the simulation time. Its HTTP
-controls are plan 1c's.
+controls and panel are backend/operations_api.py's.
 """
 from __future__ import annotations
 
 import math
 import random
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 from ..models import CONFIG, BoxKind, BoxStatus, EventType, LogCategory
-from .orders import OrderBook
+from .orders import FAILED, IN_PROGRESS, OPEN, OrderBook, order_number
 
 #: Generated orders and jobs per simulated hour, before × pace (spec §11.1).
 DEFAULT_RATES: Dict[str, float] = {
@@ -44,6 +45,27 @@ OUTBOUND_DOCKS = ("dock_3", "dock_4", "dock_5")
 CARTON_LANES = ("dock_4", "dock_5")
 #: The SKUs inbound pallets and returns carry when the floor stocks none yet.
 DEFAULT_SKUS = tuple(f"SKU-{number:03d}" for number in range(1, 41))
+#: How many failed orders and exceptions the shift panel lists (the latest).
+PANEL_LIST_LIMIT = 20
+#: The events the shift panel lists as exceptions (spec §10.3, §11.5): a
+#: safety wait escalated, an order failed, a stock variance too big to
+#: reconcile on the spot.
+EXCEPTION_EVENTS = (EventType.SAFETY_WAIT_ESCALATED.value, EventType.ORDER_FAILED.value,
+                    EventType.STOCK_VARIANCE_DETECTED.value)
+
+
+def _finite(value: Any, what: str) -> float:
+    """`value` as a finite float, else ValueError naming `what` — for a bool, a
+    non-number, NaN, an infinity, or an int too big for a float."""
+    if isinstance(value, bool):
+        raise ValueError(f"{what} must be a number, not {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{what} must be a finite number, not {value!r}") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{what} must be a finite number, not {value!r}")
+    return number
 
 
 def shift_hour(simulation_time: float) -> int:
@@ -82,9 +104,21 @@ class ShiftEngine:
         self.yield_until: Dict[str, float] = {}
         self.counters: Dict[str, int] = {stream: 0 for stream in DEFAULT_RATES}
         self.counters["skipped_orders"] = 0
+        # The latest exceptions for the shift panel, kept as they happen (the
+        # in-memory event buffer forgets them on a long shift).
+        self.exceptions: Deque[Dict[str, Any]] = deque(maxlen=PANEL_LIST_LIMIT)
 
     def _on_event(self, event: Dict[str, Any]) -> None:
         self.orders.on_event(event)
+        self._note_exception(event)
+
+    def _note_exception(self, event: Dict[str, Any]) -> None:
+        kind = event.get("event")
+        if kind not in EXCEPTION_EVENTS:
+            return
+        if kind == EventType.STOCK_VARIANCE_DETECTED.value and (event.get("data") or {}).get("auto_reconciled"):
+            return  # corrected on the spot: nothing for anyone to do
+        self.exceptions.append({"type": kind, "message": event.get("message"), "tick": self.twin.tick_count})
 
     # ---- save and load (DigitalTwin.save_state / load_state, spec §4.3) --- #
     def to_state(self) -> Dict[str, Any]:
@@ -149,6 +183,7 @@ class ShiftEngine:
         self._next_due, self._paused_at = next_due, paused_at
         self._truck_count, self._face_index = counts["truck_count"], counts["face_index"]
         self.yield_until, self.counters, self.orders = yield_until, counters, orders
+        self.exceptions.clear()  # the panel's exceptions belong to the shift before the load
 
     @staticmethod
     def _saved_number(value: Any, what: str) -> float:
@@ -185,20 +220,28 @@ class ShiftEngine:
 
     def configure(self, pace: Optional[float] = None, seed: Optional[int] = None,
                   rates: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-        """Change the pace, the seed (which resets the RNG) or any rate."""
+        """Change the pace, the seed (which resets the RNG) or any rate. Every
+        value is checked before anything changes, so a bad one changes nothing."""
+        new_pace = None
         if pace is not None:
-            if isinstance(pace, bool) or not math.isfinite(float(pace)) or float(pace) <= 0:
+            new_pace = _finite(pace, "pace")
+            if new_pace <= 0:
                 raise ValueError("pace must be a finite number greater than zero")
-            self.pace = float(pace)
+        if rates is not None and not isinstance(rates, dict):
+            raise ValueError("rates must map a stream to its rate per hour")
+        new_rates: Dict[str, float] = {}
         for stream, rate in (rates or {}).items():
             if stream not in DEFAULT_RATES:
                 raise ValueError(f"Unknown rate {stream!r} (known: {sorted(DEFAULT_RATES)})")
-            if isinstance(rate, bool) or not math.isfinite(float(rate)) or float(rate) < 0:
+            new_rates[stream] = _finite(rate, stream)
+            if new_rates[stream] < 0:
                 raise ValueError(f"{stream} must be a finite number, zero or more per hour")
-            self.rates[stream] = float(rate)
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+            raise ValueError("seed must be a whole number")
+        if new_pace is not None:
+            self.pace = new_pace
+        self.rates.update(new_rates)
         if seed is not None:
-            if isinstance(seed, bool) or not isinstance(seed, int):
-                raise ValueError("seed must be a whole number")
             self.seed = seed
             self.rng = random.Random(seed)
         return self.config()
@@ -216,6 +259,20 @@ class ShiftEngine:
         return {"status": self.status, "clock": self.clock(), "config": self.config(),
                 "counters": dict(self.counters), "orders": counts,
                 "throughput_per_hour": round(done / hours, 1)}
+
+    def panel(self) -> Dict[str, Any]:
+        """The shift panel (GET /api/shift, snapshot["shift"]): status_dict()
+        plus how many orders are in flight and waiting, and the latest failed
+        orders and exceptions, newest first."""
+        panel = self.status_dict()
+        panel["in_flight"] = sum(kind[IN_PROGRESS] for kind in panel["orders"].values())
+        panel["backlog"] = sum(kind[OPEN] for kind in panel["orders"].values())
+        failed = sorted((order for order in self.orders.orders.values() if order.status == FAILED),
+                        key=lambda order: (order.completed_at or 0.0, order_number(order.order_id)), reverse=True)
+        panel["failed_orders"] = [{"order_id": order.order_id, "kind": order.kind, "reason": order.failure_reason}
+                                  for order in failed[:PANEL_LIST_LIMIT]]
+        panel["exceptions"] = [dict(entry) for entry in reversed(self.exceptions)]
+        return panel
 
     # ---- the tick -------------------------------------------------------- #
     def tick(self) -> None:

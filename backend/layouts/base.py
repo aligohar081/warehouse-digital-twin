@@ -12,6 +12,44 @@ from ..models import Cell, CellType, WALKABLE_CELLS
 WIDE = "WIDE"
 NARROW = "NARROW"
 
+#: How the dashboard draws each cell type (spec §12): (type, label, colour
+#: role, shown in the legend), in legend order. Classic's types come first, in
+#: the order and with the labels its legend has always had, so the classic
+#: floor draws exactly as before; the dashboard maps a colour role to a colour.
+#: The floor (EMPTY) and walls are drawn but not listed in the legend.
+CELL_TYPE_STYLES: Tuple[Tuple[CellType, str, str, bool], ...] = (
+    (CellType.SHELF, "Racking", "shelf", True),
+    (CellType.STORAGE, "Pick face", "storage", True),
+    (CellType.CHARGING, "Charging", "charging", True),
+    (CellType.LOADING, "Loading", "loading", True),
+    (CellType.UNLOADING, "Unloading", "unloading", True),
+    (CellType.PACKING, "Packing", "packing", True),
+    (CellType.PARKING, "Parking", "parking", True),
+    (CellType.RESTRICTED, "Restricted", "restricted", True),
+    (CellType.DOCK, "Dock", "dock", True),
+    (CellType.DOCK_DOOR, "Dock door", "dockDoor", True),
+    (CellType.STAGING, "Staging", "staging", True),
+    (CellType.PALLET_RACK, "Pallet rack", "palletRack", True),
+    (CellType.TOTE_SHELF, "Tote shelf", "toteShelf", True),
+    (CellType.WALKWAY, "Walkway", "walkway", True),
+    (CellType.STATION, "Station", "station", True),
+    (CellType.CONVEYOR, "Conveyor", "conveyor", True),
+    (CellType.SORTER, "Sorter", "sorter", True),
+    (CellType.WORKSHOP, "Workshop", "workshop", True),
+    (CellType.DRONE_PAD, "Drone pad", "dronePad", True),
+    (CellType.EMPTY, "Floor", "floor", False),
+    (CellType.WALL, "Wall", "wall", False),
+)
+
+
+def cell_type_table(grid: Sequence[Sequence[CellType]]) -> List[Dict[str, Any]]:
+    """The styles of the cell types `grid` uses, in legend order: one
+    {"type", "label", "role", "legend"} row per type (the snapshot's
+    `cell_types`)."""
+    present = {cell_type for row in grid for cell_type in row}
+    return [{"type": cell_type.value, "label": label, "role": role, "legend": legend}
+            for cell_type, label, role, legend in CELL_TYPE_STYLES if cell_type in present]
+
 
 def _plain(value: Any) -> Any:
     """`value` with every (x, y) cell turned into {"x", "y"}, for JSON."""
@@ -109,6 +147,10 @@ class Layout:
 
     def is_inside(self, x: int, y: int) -> bool:
         return 0 <= x < self.width and 0 <= y < self.height
+
+    def cell_type_table(self) -> List[Dict[str, Any]]:
+        """How the dashboard draws the cell types this floor uses (CELL_TYPE_STYLES)."""
+        return cell_type_table(self.grid)
 
     def _fill(self, cells: Iterable[Cell], cell_type: CellType) -> None:
         for x, y in cells:

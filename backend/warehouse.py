@@ -11,7 +11,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Set
 
 from .embodiment import AIR, GROUND, LAYERS, MobilityProfile
 from .layouts import build_layout
-from .layouts.base import NARROW, WIDE, Slot, Zone
+from .layouts.base import NARROW, WIDE, Slot, Zone, cell_type_table
 from .models import Cell, CellType, manhattan
 
 #: Cell types no robot ever occupies or flies through.
@@ -261,6 +261,15 @@ class Warehouse:
             "zones": [zone.to_dict() for zone in self.zones.values()],
             "walkable_types": sorted(t.value for t in self.walkable_types),
         }
+
+    def cell_type_table(self) -> List[Dict[str, Any]]:
+        """How the dashboard draws each cell type this floor uses: label,
+        colour role and legend row, in legend order (layouts.base.CELL_TYPE_STYLES)."""
+        return cell_type_table(self.grid)
+
+    def no_fly_cells(self) -> List[Cell]:
+        """Every cell of a no-fly zone, row by row (empty on classic)."""
+        return sorted(self._no_fly, key=lambda cell: (cell[1], cell[0]))
 
     #: Zone types that are never a task's source or destination: places robots
     #: can't stop in, or equipment and storage that are served, not visited.

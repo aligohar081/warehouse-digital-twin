@@ -411,3 +411,21 @@ class Equipment:
             "arm_cells": {key: cell_dict(cell) for key, cell in self.arm_cells.items()},
             "handoffs": len(self.handoffs),
         }
+
+    def view(self) -> Dict[str, Any]:
+        """What the dashboard draws (snapshot["equipment"], GET /api/equipment):
+        to_dict() plus each item on the line — its cell, box, kind and order —
+        and each jammed cell, both upstream first."""
+        conveyor = self.conveyor
+        data = self.to_dict()
+        items = []
+        for x, y in conveyor.cells:
+            item = conveyor.items.get((x, y))
+            if item is None:
+                continue
+            box = self.twin.find_box(item.box_id)
+            items.append({"x": x, "y": y, "box_id": item.box_id, "kind": box.kind.value if box is not None else None,
+                          "order_id": item.order_id})
+        data["item_cells"] = items
+        data["jammed_cells"] = [{"x": x, "y": y} for x, y in conveyor.cells if (x, y) in conveyor.jams]
+        return data

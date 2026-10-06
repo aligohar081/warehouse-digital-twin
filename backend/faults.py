@@ -12,7 +12,7 @@ fault then does lives there (the SCAN step, the conveyor, the sorter, ...).
 from __future__ import annotations
 
 import random
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .models import CONFIG
 
@@ -28,9 +28,15 @@ FAULT_RISKS: Dict[str, str] = {
 }
 
 
-def _kind(kind: str) -> str:
+def fault_kind(kind: Any) -> Optional[str]:
+    """The fault kind `kind` names (any case, '-' or '_'), or None if it names none."""
     key = str(kind or "").strip().lower().replace("-", "_")
-    if key not in FAULT_RISKS:
+    return key if key in FAULT_RISKS else None
+
+
+def _kind(kind: str) -> str:
+    key = fault_kind(kind)
+    if key is None:
         raise ValueError(f"Unknown fault kind {kind!r} (known: {sorted(FAULT_RISKS)})")
     return key
 
@@ -45,9 +51,10 @@ class FaultInjector:
         """Queue `count` occurrences of `kind` for its next opportunities.
         Returns how many are now armed."""
         key = _kind(kind)
-        if int(count) < 1:
-            raise ValueError("count must be at least 1")
-        self._armed[key] = self._armed.get(key, 0) + int(count)
+        # A whole number only: int() would turn 2.5 into 2 and "3" into 3.
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("count must be a whole number, at least 1")
+        self._armed[key] = self._armed.get(key, 0) + count
         return self._armed[key]
 
     def armed(self) -> Dict[str, int]:

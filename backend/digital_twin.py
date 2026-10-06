@@ -1104,9 +1104,14 @@ class DigitalTwin:
                 "ci": self.ci_result,
                 "options": self.options(),
                 "timestamp": now_iso(),
+                # The floor's live operations (spec §12); None on a floor without them (classic).
+                "equipment": self.equipment.view() if self.equipment is not None else None,
+                "shift": self.shift.panel() if self.layout_name != "classic" else None,
             }
             if include_layout:
                 state["warehouse"] = self.warehouse.to_dict()
+                state["cell_types"] = self.warehouse.cell_type_table()
+                state["no_fly_cells"] = [cell_dict(cell) for cell in self.warehouse.no_fly_cells()]
                 state["config"] = {
                     key: CONFIG[key]
                     for key in (
@@ -1229,6 +1234,8 @@ class DigitalTwin:
             self.tasks._sequence = len(tasks)
             self.stock = stock
             self.equipment = equipment
+            # Plan ruling 19: a fault armed against the floor before the load mustn't fire on this one.
+            self.faults.clear()
             # A version 1 save says nothing about the seed: the twin's own boot decides.
             self.floor_seeded = bool(payload.get("floor_seeded", self.floor_seeded))
             self.fleet.rebind_all()
