@@ -38,7 +38,7 @@ from .eligibility import (
 )
 from .embodiment import AIR, GROUND
 from .energy import charger_zone, energy_wh
-from .jobs import JOB_PARAM_KEYS, JOB_SPECS, job_levels
+from .jobs import JOB_PARAM_KEYS, JOB_SPECS, job_fields, job_levels, stray_fields
 from .jobs import BOX_HANDLING_TYPES, no_profile_reason
 from .llm import narrate
 from .task_planner import PlanningError
@@ -434,6 +434,15 @@ class TaskManager:
             task_type = TaskType(raw_type)
         except ValueError:
             raise ValueError(f"Unknown task type '{payload.get('type')}'")
+
+        # A floor job takes only the fields its form names: a stray one (a slot
+        # on a tote job) would skip a rule the real field is checked by. The
+        # simulator's own requests are not input, and name their own fields.
+        if task_type in JOB_SPECS and not internal:
+            stray = stray_fields(task_type, payload)
+            if stray:
+                raise ValueError(f"{task_type.value} takes no {stray[0]!r} "
+                                 f"(its fields: {', '.join(job_fields(task_type))})")
 
         priority_raw = str(payload.get("priority", "NORMAL")).upper().strip()
         try:

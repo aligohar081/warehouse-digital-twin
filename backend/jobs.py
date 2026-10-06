@@ -66,9 +66,38 @@ def task_box(twin: Any, task: Any) -> Any:
     return box
 
 
+#: Fields a job reads that its form does not show: the pick jobs run at the
+#: station the order's pick station names (the shift engine and the station
+#: tests pass it), though a person's form picks no station for them.
+PICK_EXTRA_FIELDS: Dict[str, List[str]] = {"PICK_ITEMS": ["station"], "MANUAL_PICK": ["station"]}
+
+
+def job_fields(kind: Any) -> List[str]:
+    """The fields a floor job's request takes (digital_twin.TASK_FIELDS)."""
+    from .digital_twin import TASK_FIELDS  # deferred: digital_twin imports this module
+    return TASK_FIELDS[getattr(kind, "value", kind)]
+
+
+def stray_fields(kind: Any, payload: Dict[str, Any]) -> List[str]:
+    """The job fields `payload` carries that floor job `kind` does not take,
+    a blank one aside (a form field left empty)."""
+    fields = job_fields(kind) + PICK_EXTRA_FIELDS.get(getattr(kind, "value", kind), [])
+    return [key for key in JOB_PARAM_KEYS if key not in fields
+            and payload.get(key) is not None and str(payload[key]).strip() != ""]
+
+
+def _slot_param(task: Any) -> Optional[str]:
+    """The task's `slot` parameter — for a floor job that takes one. Any
+    other job ignores it: the plan lifts at the tote's own slot, so reading a
+    stray `slot` would check the reach rule against the wrong shelf."""
+    if task.type in JOB_SPECS and "slot" not in job_fields(task.type):
+        return None
+    return task.params.get("slot")
+
+
 def task_slot(twin: Any, task: Any, box: Optional[Any] = None) -> Optional[Any]:
     """The slot a job lifts to or from: its `slot` parameter, else its box's."""
-    slot_id = task.params.get("slot") or (box.slot if box is not None else None)
+    slot_id = _slot_param(task) or (box.slot if box is not None else None)
     if not slot_id:
         return None
     slot = twin.warehouse.slot(slot_id)
@@ -89,7 +118,7 @@ def job_levels(twin: Any, task: Any) -> List[int]:
         boxes = [twin.find_box(box_id) for box_id in ids if box_id]
         slots = [twin.warehouse.slot(box.slot) for box in boxes if box is not None and box.slot]
         return [slot.level for slot in slots if slot is not None]
-    slot_id = task.params.get("slot")
+    slot_id = _slot_param(task)
     if not slot_id and spec.carries_box and task.box_id:
         box = twin.find_box(task.box_id)
         slot_id = box.slot if box is not None else None
@@ -453,11 +482,14 @@ JOB_SPECS[TaskType.RETURNS_PUTAWAY] = JobSpec(
 # people do there (backend/human_jobs.py runs those)
 # --------------------------------------------------------------------------- #
 def _quantity(task: Any) -> Optional[str]:
+    raw = task.params.get("quantity")
+    if isinstance(raw, float):  # 2.5 is not truncated to 2: the API refuses it too
+        return "quantity must be a whole number of at least 1"
     try:
-        quantity = int(task.params.get("quantity"))
+        quantity = int(raw)
     except (TypeError, ValueError):
         return f"{task.type.value} needs a quantity"
-    if isinstance(task.params.get("quantity"), bool) or quantity < 1:
+    if isinstance(raw, bool) or quantity < 1:
         return "quantity must be a whole number of at least 1"
     task.params["quantity"] = quantity
     return None

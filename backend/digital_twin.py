@@ -1245,6 +1245,27 @@ class DigitalTwin:
         )
         return path
 
+    @staticmethod
+    def _saved_number(value: Any, what: str) -> float:
+        """A finite number out of a save, else ValueError."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value \
+                or value in (float("inf"), float("-inf")):
+            raise ValueError(f"The save's {what} must be a finite number, not {value!r}")
+        return value
+
+    @staticmethod
+    def _parse_schedules(data: Any) -> Any:
+        """A save's schedules, parsed into a dict and a sequence without
+        touching the scheduler, so load_state can assign them last."""
+        from .scheduler import ScheduledTask  # deferred, as the Scheduler import is
+        if not isinstance(data, dict):
+            raise ValueError("The save's schedules must be an object")
+        parsed = {}
+        for raw in data.get("schedules", []):
+            schedule = ScheduledTask.from_dict(raw)
+            parsed[schedule.id] = schedule
+        return parsed, data.get("sequence", len(parsed))
+
     def load_state(self, path: Optional[str] = None) -> None:
         """Restore a save_state file (spec §4.3): version 2, or version 1 (a
         classic save). A save of another floor is refused with a ValueError
@@ -1258,6 +1279,8 @@ class DigitalTwin:
             raise FileNotFoundError(f"No saved state at {path}")
         with open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        if not isinstance(payload, dict):
+            raise ValueError("The save is not a JSON object")
         version = payload.get("version", 1)
         if version not in (1, self.STATE_VERSION):
             raise ValueError(f"Unknown save version {version!r} (this twin reads 1 and {self.STATE_VERSION})")
@@ -1267,28 +1290,56 @@ class DigitalTwin:
                              f"floor: start the app with WAREHOUSE_LAYOUT={layout} to load it")
 
         with self.lock:
-            robots = [Robot.from_dict(data) for data in payload.get("robots", [])]
-            boxes = [Box.from_dict(data) for data in payload.get("boxes", [])]
-            agents = [Agent.from_dict(data) for data in payload.get("agents", [])]
-            operators = [Operator.from_dict(data, self.warehouse) for data in payload.get("operators", [])]
-            tasks = [Task.from_dict(data) for data in payload.get("tasks", [])]
-            stock = StockLedger.from_dict(payload.get("stock") or {}, self.warehouse)
-            equipment = Equipment.for_floor(self)
-            if equipment is not None:
-                equipment.load_state(payload.get("equipment") or {})
-            held = [location.box_id for location in stock.locations()]
-            if equipment is not None:
-                held += [item.box_id for item in [*equipment.conveyor.items.values(), *equipment.sorter.inside]]
-            unknown = sorted(set(held) - {box.id for box in boxes})
-            if unknown:
-                raise ValueError(f"The save's stock or conveyor holds boxes it has no record of: {unknown}")
-            # Last of the checks, as it is all-or-nothing itself: into the twin's
-            # own engine, which listens to twin.events. A version 1 save has no
-            # shift, so the floor gets a fresh, paused one — none of the old orders.
-            if payload.get("shift") is not None:
-                self.shift.load_state(payload["shift"])
-            else:
-                self.shift.reset()
+            # Everything is parsed and checked into locals first; the twin is
+            # touched only after the last check has passed. A section of the
+            # wrong shape (a list where an object belongs) is a damaged save:
+            # ValueError, not a TypeError that reaches the caller as a 500.
+            try:
+                robots = [Robot.from_dict(data) for data in payload.get("robots", [])]
+                boxes = [Box.from_dict(data) for data in payload.get("boxes", [])]
+                agents = [Agent.from_dict(data) for data in payload.get("agents", [])]
+                operators = [Operator.from_dict(data, self.warehouse) for data in payload.get("operators", [])]
+                tasks = [Task.from_dict(data) for data in payload.get("tasks", [])]
+                stock = StockLedger.from_dict(payload.get("stock") or {}, self.warehouse)
+                equipment = Equipment.for_floor(self)
+                if equipment is not None:
+                    equipment.load_state(payload.get("equipment") or {})
+                held = [location.box_id for location in stock.locations()]
+                if equipment is not None:
+                    held += [item.box_id for item in [*equipment.conveyor.items.values(), *equipment.sorter.inside]]
+                unknown = sorted(set(held) - {box.id for box in boxes})
+                if unknown:
+                    raise ValueError(f"The save's stock or conveyor holds boxes it has no record of: {unknown}")
+                saved_schedules, saved_sequence = self._parse_schedules(payload.get("schedules", {}))
+                statistics = payload.get("statistics", {})
+                if not isinstance(statistics, dict):
+                    raise ValueError("The save's statistics must be an object")
+                simulation = payload.get("simulation", {})
+                if not isinstance(simulation, dict):
+                    raise ValueError("The save's simulation must be an object")
+                status = SimulationStatus(simulation.get("status", "STOPPED"))
+                speed = self._saved_number(simulation.get("speed", 1.0), "simulation speed")
+                tick_count = simulation.get("tick", 0)
+                if isinstance(tick_count, bool) or not isinstance(tick_count, int) or tick_count < 0:
+                    raise ValueError(f"The save's tick must be a whole number, 0 or more, not {tick_count!r}")
+                simulation_time = self._saved_number(simulation.get("time", 0.0), "simulation time")
+                saved_counters = payload.get("counters", {})
+                if not isinstance(saved_counters, dict):
+                    raise ValueError("The save's counters must be an object")
+                counters = {}
+                for prefix, value in saved_counters.items():
+                    counters[str(prefix)] = int(value or 0)
+                    if counters[str(prefix)] < 0:
+                        raise ValueError(f"The save's {prefix} counter must be 0 or more")
+                # Last of the checks, as it is all-or-nothing itself: into the twin's
+                # own engine, which listens to twin.events. A version 1 save has no
+                # shift, so the floor gets a fresh, paused one — none of the old orders.
+                if payload.get("shift") is not None:
+                    self.shift.load_state(payload["shift"])
+                else:
+                    self.shift.reset()
+            except (TypeError, AttributeError, KeyError, OverflowError) as exc:
+                raise ValueError(f"The save is damaged: {type(exc).__name__}: {exc}") from None
 
             self.robots.clear()
             self.boxes.clear()
@@ -1310,16 +1361,15 @@ class DigitalTwin:
             # A version 1 save says nothing about the seed: the twin's own boot decides.
             self.floor_seeded = bool(payload.get("floor_seeded", self.floor_seeded))
             self.fleet.rebind_all()
-            self.scheduler.load_dict(payload.get("schedules", {}))
-            self.statistics.update(payload.get("statistics", {}))
-            simulation = payload.get("simulation", {})
-            self.simulation_status = SimulationStatus(simulation.get("status", "STOPPED"))
-            self.simulation_speed = simulation.get("speed", 1.0)
-            self.tick_count = simulation.get("tick", 0)
-            self.simulation_time = simulation.get("time", 0.0)
-            counters = payload.get("counters", {})
+            self.scheduler.schedules = saved_schedules
+            self.scheduler._sequence = saved_sequence
+            self.statistics.update(statistics)
+            self.simulation_status = status
+            self.simulation_speed = speed
+            self.tick_count = tick_count
+            self.simulation_time = simulation_time
             for prefix, value in counters.items():
-                self.ids.reserve(prefix, int(value or 0))
+                self.ids.reserve(prefix, value)
 
         self.events.emit(
             EventType.STATE_LOADED,
