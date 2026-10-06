@@ -297,7 +297,9 @@
       if (!from || !from.cells || !from.cells.length) return;
       if (person.transit_to) {
         var to = byKey[person.transit_to] || from;
-        var a = toCell(from.center), b = toCell(to.center);
+        // A zone without a centre on record falls back to its first cell.
+        var a = toCell(from.center) || toCell(from.cells[0]);
+        var b = toCell(to.center) || (to.cells && to.cells.length ? toCell(to.cells[0]) : null) || a;
         var middle = { x: Math.round((a.x + b.x) / 2), y: Math.round((a.y + b.y) / 2) };
         var spot = middle, best = null;
         walkway.forEach(function (cell) {

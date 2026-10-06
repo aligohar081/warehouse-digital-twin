@@ -1535,7 +1535,13 @@
       state.layout = snapshot.warehouse;
       state.cellTypes = snapshot.cell_types || [];
       state.noFly = FM.noFlyCells(snapshot.no_fly_cells);
-      layoutChanged();
+      // Every SSE state event carries the layout; rebuild the fills and the
+      // legend only when it is a different one, not on every tick.
+      var layoutKey = snapshot.layout_name + "|" + JSON.stringify(state.cellTypes);
+      if (changed || layoutKey !== render.layoutKey) {
+        render.layoutKey = layoutKey;
+        layoutChanged();
+      }
       if (changed) resizeCanvas();
     }
     if (snapshot.config) state.config = snapshot.config;
