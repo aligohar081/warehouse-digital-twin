@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Work on branch `feature/multi-embodiment-1c` (cut from `master` at `67af707`). Commit at the end of every task. Never merge, rebase or push.
-- Test command, from the repo root: `.venv/bin/python -m pytest -o addopts="" -q`. Baseline before Task 1: `2 failed, 768 passed`.
+- Test command, from the repo root: `.venv/bin/python -m pytest -o addopts="" -q`. Baseline before Task 1: `2 failed, 771 passed`.
 - The only failures ever allowed are the two pre-existing ones: `backend/test_eval_engine.py::test_real_task_006_box_conflict_is_caught` and `backend/tests.py::test_idle_robot_with_a_low_battery_charges_itself`.
 - Dependencies: Flask, PyYAML, pytest and the standard library only. No new dependencies. No Node. JavaScript unit tests run with `/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc` through a pytest wrapper that skips when that binary is absent.
 - Do not edit any existing test file, including the test files earlier tasks of this plan create — with one exception (Plan ruling 3): Task 2 rewrites `backend/test_app_layout.py`. New tests go in the new files each task names.
@@ -31,7 +31,7 @@ Choices this plan makes where the spec is ambiguous, silent or self-contradictor
 
 1. **The app's default floor is `distribution_center`** (§2, §1's first goal). `WAREHOUSE_LAYOUT=classic` still boots the classic floor.
 2. **Per-floor data folders stay.** The new floor keeps `data/distribution_center/` (its inventory file and state save) and `logs/distribution_center/`; classic keeps `data/` and `logs/`. §2 names `data/inventory.sqlite3` for the new floor; separate folders mean switching floors never reseeds the other floor's inventory file, which also retires plan 1a's "timestamped backups" item.
-3. **`backend/test_app_layout.py` is rewritten by Task 2.** It pinned the pre-plan stopgap (a 12-robot floor, a running shift, a classic default) that §2, §4.2 and §11.5 replace. Its still-true assertions (separate folders, an unknown layout refused before anything is written, a second boot reuses the file) are kept.
+3. **`backend/test_app_layout.py` is rewritten by Task 2.** It pinned the pre-plan stopgap (a 12-robot floor and a classic default) that §2, §4.2 and §11.5 replace. Its still-true assertions (separate folders, an unknown layout refused before anything is written, a second boot reuses the file) are kept.
 4. **`DigitalTwin(layout="distribution_center")` still boots empty.** Plan 1b's test files build their own floors through the public API and can't be edited. The seed runs through `DigitalTwin.seed_floor()` (the app calls it); `reset()` reruns the seed only on a twin that was seeded.
 5. **A save from another floor is refused** (`ValueError` naming both floors) instead of rebuilding the floor (§4.3). The inventory profile is per floor, so a classic save's robots have no assets to bind to on the new floor. A v1 save is a classic save.
 6. **The shift starts paused** (§11.5, spec ruling 10) from Task 2 on. `POST /api/shift/start` (Task 5) and the shift panel's Start (Task 10) start it.
@@ -790,7 +790,7 @@ Expected: `16 passed`.
 - [ ] **Step 7: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 784 passed` (the two allowed failures).
+Expected: `2 failed, 787 passed` (the two allowed failures).
 
 - [ ] **Step 8: Commit**
 
@@ -805,7 +805,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 2: The new-floor seed, reset and app boot
 
-Since commit `96a015d` the app has booted the new floor on a stopgap: twelve hand-placed robots, six totes, three pallets, and a shift the app started itself. This task replaces it with spec §4.2's seed and makes the new floor the app's default (§2 "Construction", Plan ruling 1). `backend/seeds/` holds both seeds. The classic one is `DigitalTwin.load_demo`'s tables and body moved verbatim; `load_demo` keeps its signature and delegates. The distribution-centre seed puts on the floor:
+Since commit `96a015d` the app has booted the new floor on a stopgap: twelve hand-placed robots, six totes and three pallets (its shift paused since `bb1fb42`; before that the app started it itself). This task replaces it with spec §4.2's seed and makes the new floor the app's default (§2 "Construction", Plan ruling 1). `backend/seeds/` holds both seeds. The classic one is `DigitalTwin.load_demo`'s tables and body moved verbatim; `load_demo` keeps its signature and delegates. The distribution-centre seed puts on the floor:
 - every asset of the inventory's `distribution_center` profile that isn't decommissioned (15 robots, named after their model family and asset number);
 - the 10 workers, on a 06:00–14:00 shift window, because duty follows the shift clock and the clock starts at 06:00 (plan 1b's carry);
 - 60 pallets and 80 totes over 40 SKUs. Every SKU has a tote an AMR can reach holding enough for any customer-order line (plan 1b's other carry);
@@ -1097,7 +1097,7 @@ def test_the_seeded_floor_keeps_completing_customer_orders(floor, fault_free):
     assert not [robot.name for robot in floor.robots.values() if robot.status is RobotStatus.ERROR]
 ```
 
-Plan ruling 3 rewrites the app-boot test. It pinned the stopgap: a 12-robot floor, a running shift and a classic default. Its still-true checks stay: separate folders, an unknown layout refused before anything is written, and a second boot reusing the inventory file.
+Plan ruling 3 rewrites the app-boot test. It pinned the stopgap: a 12-robot floor and a classic default. Its still-true checks stay: separate folders, an unknown layout refused before anything is written, and a second boot reusing the inventory file.
 
 **Rewrite** `backend/test_app_layout.py`:
 
@@ -1147,7 +1147,7 @@ def test_the_new_floor_boots_with_its_seed_and_its_shift_paused(tmp_path):
     assert len(twin.operators) == CREW_SIZE and all(operator.worker_id for operator in twin.operators.values())
     assert goods(twin) == GOODS
     assert [agent.name for agent in twin.agents.values()] == ["Ada"]
-    # The stopgap boot started the shift; now it waits for POST /api/shift/start.
+    # Nothing runs until someone starts the shift (POST /api/shift/start, Task 5).
     assert twin.shift.status == ShiftEngine.PAUSED and not twin.tasks.tasks
 
 
@@ -1793,10 +1793,10 @@ DEFAULT_LAYOUT = "distribution_center"
 ```python
 def _seed_floor(twin: DigitalTwin) -> None:
     """Classic seeds itself (load_demo). The new floor gets its stopgap seed and
-    a running shift, since the dashboard has no shift controls yet (plan 1c)."""
+    its shift stays paused (spec §11.5), so, like classic, the floor runs only
+    the tasks someone assigns until the shift is started."""
     if twin.layout_name == "distribution_center":
         distribution_center.seed(twin)
-        twin.shift.start()
 
 
 def build_twin(layout: str = "classic", base_dir: str = BASE_DIR) -> DigitalTwin:
@@ -1932,7 +1932,7 @@ Expected: `25 passed`.
 - [ ] **Step 9: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 800 passed` (Task 1's 784 plus 16: 14 tests in `test_floor_seed.py`, and `test_app_layout.py` goes from 9 tests to 11; the two failures are the allowed ones).
+Expected: `2 failed, 803 passed` (Task 1's 787 plus 16: 14 tests in `test_floor_seed.py`, and `test_app_layout.py` goes from 9 tests to 11; the two failures are the allowed ones).
 
 - [ ] **Step 10: Commit**
 
@@ -2965,7 +2965,7 @@ Expected: `12 passed`.
 - [ ] **Step 9: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 812 passed` (Task 2's count plus this task's 12 tests; the two failures are the allowed ones).
+Expected: `2 failed, 815 passed` (Task 2's count plus this task's 12 tests; the two failures are the allowed ones).
 
 - [ ] **Step 10: Commit**
 
@@ -3564,7 +3564,7 @@ Expected: `20 passed`.
 - [ ] **Step 7: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 820 passed` (Task 3's count plus this task's 8 tests; the two failures are the allowed ones).
+Expected: `2 failed, 823 passed` (Task 3's count plus this task's 8 tests; the two failures are the allowed ones).
 
 - [ ] **Step 8: Commit**
 
@@ -4703,7 +4703,7 @@ Expected: `23 passed`.
 - [ ] **Step 11: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 843 passed` (Task 4's count plus this task's 23 tests; the two failures are the allowed ones).
+Expected: `2 failed, 846 passed` (Task 4's count plus this task's 23 tests; the two failures are the allowed ones).
 
 - [ ] **Step 12: Commit**
 
@@ -5267,7 +5267,7 @@ Expected: `18 passed`.
 - [ ] **Step 7: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 861 passed` (Task 5's count plus this task's 18 tests; the two failures are the allowed ones).
+Expected: `2 failed, 864 passed` (Task 5's count plus this task's 18 tests; the two failures are the allowed ones).
 
 - [ ] **Step 8: Commit**
 
@@ -6034,7 +6034,7 @@ Expected: `1 passed`. (Measured on that test's floor, 16 000 ticks at pace 2: 16
 - [ ] **Step 10: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 872 passed` (Task 6's count plus this task's 11 tests; the two failures are the allowed ones).
+Expected: `2 failed, 875 passed` (Task 6's count plus this task's 11 tests; the two failures are the allowed ones).
 
 - [ ] **Step 11: Commit**
 
@@ -6795,7 +6795,7 @@ Expected: `1 passed`. (Measured on that test's floor, 16 000 ticks at pace 2, wi
 - [ ] **Step 10: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 886 passed` (Task 7's count plus this task's 14 tests; the two failures are the allowed ones).
+Expected: `2 failed, 889 passed` (Task 7's count plus this task's 14 tests; the two failures are the allowed ones).
 
 - [ ] **Step 11: Commit**
 
@@ -8341,7 +8341,7 @@ Expected: `5 passed` (the JS file itself reports `24 passed, 0 failed`).
 - [ ] **Step 7: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 891 passed` (Task 8's count plus this task's 5 tests; the two failures are the allowed ones).
+Expected: `2 failed, 894 passed` (Task 8's count plus this task's 5 tests; the two failures are the allowed ones).
 
 - [ ] **Step 8: Commit**
 
@@ -9861,7 +9861,7 @@ Expected: `8 passed` (`panels_test.js` reports `22 passed, 0 failed`).
 - [ ] **Step 8: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 894 passed` (Task 9's count plus this task's 3 tests; the two failures are the allowed ones).
+Expected: `2 failed, 897 passed` (Task 9's count plus this task's 3 tests; the two failures are the allowed ones).
 
 - [ ] **Step 9: Commit**
 
@@ -10484,7 +10484,7 @@ And `.venv/bin/python -m backend.soak --ticks 6000 --risk misdeclared_weight=0.2
 - [ ] **Step 6: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 914 passed` (Task 10's count plus this task's 20 tests; the two failures are the allowed ones). The suite takes about 35 s longer than before this task (23 s → 58 s on the dev machine).
+Expected: `2 failed, 917 passed` (Task 10's count plus this task's 20 tests; the two failures are the allowed ones). The suite takes about 35 s longer than before this task (23 s → 58 s on the dev machine).
 
 - [ ] **Step 7: Commit**
 
@@ -11362,7 +11362,7 @@ Expected: 165, 100 and 128 lines (the caps are 250, 130 and 160).
 - [ ] **Step 9: Run the full suite**
 
 Run: `.venv/bin/python -m pytest -o addopts="" -q`
-Expected: `2 failed, 920 passed` (Task 11 left 914). The two failures are the allowed ones.
+Expected: `2 failed, 923 passed` (Task 11 left 917). The two failures are the allowed ones.
 
 - [ ] **Step 10: Commit**
 

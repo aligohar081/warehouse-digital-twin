@@ -193,7 +193,7 @@ Not present at HEAD: any route for shift, orders, stock, equipment or faults. `P
 
 Pytest, no threads: tests build a twin and call `Simulator.tick()` directly.
 
-- Location and names: `backend/tests.py` (main suite) and 50 `backend/test_*.py` files; 696 `def test_` lines at HEAD (more once parametrised). `pytest.ini`: `testpaths = backend`, `python_files = tests.py test_*.py`, `addopts = -q`. There is no `conftest.py`; each file defines its own fixtures (usually `twin` and `sim`).
+- Location and names: `backend/tests.py` (main suite) and 51 `backend/test_*.py` files; 698 `def test_` lines at HEAD (more once parametrised). `pytest.ini`: `testpaths = backend`, `python_files = tests.py test_*.py`, `addopts = -q`. There is no `conftest.py`; each file defines its own fixtures (usually `twin` and `sim`).
 - Suite command: `.venv/bin/python -m pytest -o addopts="" -q`.
 - Classic fixtures use `DigitalTwin(log_dir=..., data_dir=..., persist_logs=False, demo=True, demo_tasks=False)`. New-floor tests pass `layout="distribution_center"` to the same constructor, then add robots, boxes and operators through the public API (`add_robot(name=, asset_id=, position=)`, `add_box(kind=, slot=, ...)`, `add_operator(name=, worker_id=)`); the twin boots empty. `Warehouse(layout="distribution_center")` is used for layout-only tests.
 - Guards that pin the classic floor: `test_layout_classic_golden.py` (grid cell by cell), `test_inventory_seed_golden.py` (fleet and workforce seed fingerprint), `test_layouts.py` (registry and default layout).

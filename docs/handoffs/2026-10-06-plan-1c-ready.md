@@ -5,7 +5,8 @@
 
 ## State
 
-- Plan 1c: `docs/superpowers/plans/2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md` (12 tasks, 28 Plan rulings, Measured section at the end). Written in `3e99df8`; Task 12 rewritten in `39d14c4` so README, RUN.md and TRUST_LAYER.md come out short (about 165, 100 and 130 lines). Verified at `39d14c4`: all 227 edit blocks apply to HEAD, and the suite on the result is `2 failed, 920 passed` (the allowed two). Baseline before Task 1: `2 failed, 768 passed`.
+- Plan 1c: `docs/superpowers/plans/2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md` (12 tasks, 28 Plan rulings, Measured section at the end). Written in `3e99df8`; Task 12 rewritten in `39d14c4` so README, RUN.md and TRUST_LAYER.md come out short (about 165, 100 and 130 lines). Amended for `bb1fb42` (below): Task 2's `_seed_floor` block and every suite count (+3). Verified on `bb1fb42`: all 227 edit blocks apply, and the suite on the result is `2 failed, 923 passed` (the allowed two). Baseline before Task 1: `2 failed, 771 passed`.
+- `bb1fb42` — the new floor boots with its shift paused (and a reset pauses it), so it runs only the tasks the user assigns, as classic does; the user asked for this ahead of plan 1c. Until Tasks 5 and 10 land, nothing can start the shift. `test_app_layout.py`'s two running-shift assertions were flipped with the user's OK; new tests in `backend/test_app_shift_paused.py`.
 - `bf86fe2` — `CLAUDE.md`, `ARCHITECTURE.md`, `.claude/settings.json` (`autoCompactWindow: 200000`).
 - `3466cac` — removed the superseded handoffs, plan 1b's probe scripts and tracked `.DS_Store` files.
 - `docs/handoffs/2026-10-04-plan-1c-inputs/` stays until plan 1c lands: the plan cites its README for plan 1b's deferred minors.
