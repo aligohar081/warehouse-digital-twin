@@ -1761,7 +1761,20 @@ class Simulator:
             self._advance(task)
 
     def _continue_idle_charge(self, robot: Any) -> None:
+        before = robot.battery
         self._recharge(robot)
+        if robot.battery >= 100.0 and self._docked(robot):
+            # A drone stays on its pad's charge while it waits there: going IDLE
+            # would drain it at once and start a new session every other tick.
+            robot.low_battery_warned = False
+            if before < 100.0:
+                self.twin.events.emit(
+                    EventType.ROBOT_CHARGED,
+                    f"{robot.name} fully charged (it stays on charge on its pad)",
+                    category=LogCategory.BATTERY,
+                    robot_id=robot.id,
+                )
+            return
         if robot.battery >= 100.0:
             robot.low_battery_warned = False
             robot.set_status(RobotStatus.IDLE)
@@ -1823,19 +1836,28 @@ class Simulator:
                 task_id=task.id if task else None,
             )
 
+    def _docked(self, robot: Any) -> bool:
+        """A drone on the ground on its pad: it can charge there."""
+        return robot.mobility is not None and robot.mobility.is_air and self._on_charger(robot)
+
     def _auto_charge(self) -> None:
         """Idle robots with a low battery take themselves to the charger — a
-        drone to its pad. A mains-powered arm never needs to. A drone left idle
-        in the air (its job failed or was cancelled mid-flight) flies home
-        whatever its battery, so its next flight can take off. On the new floor
-        a robot asks at most every SHIFT_CHECK_EVERY_TICKS, so a charger it
-        can't reach right now doesn't get one failing request per tick."""
+        drone to its pad. A drone idle on its pad charges there whenever it
+        isn't full (dock charging), so it is ready for the next count's energy
+        gate; charging with no job, it can still be sent on one. A
+        mains-powered arm never needs to charge. A drone left idle in the air
+        (its job failed or was cancelled mid-flight) flies home whatever its
+        battery, so its next flight can take off. On the new floor a robot
+        asks at most every SHIFT_CHECK_EVERY_TICKS, so a charger it can't
+        reach right now doesn't get one failing request per tick."""
         twin = self.twin
         for robot in list(twin.robots.values()):
             if robot.is_halted or robot.current_task or robot.carrying_box or robot.mains_powered:
                 continue
             adrift = robot.mobility is not None and robot.mobility.is_air and robot.layer == AIR
-            if robot.status == RobotStatus.CHARGING or (robot.battery > CONFIG["BATTERY_LOW"] and not adrift):
+            topping_up = self._docked(robot) and robot.battery < 100.0
+            if robot.status == RobotStatus.CHARGING or (robot.battery > CONFIG["BATTERY_LOW"] and not adrift
+                                                        and not topping_up):
                 continue
             if self._on_charger(robot):
                 robot.charging_sessions += 1

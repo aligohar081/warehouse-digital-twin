@@ -1251,10 +1251,12 @@ class TaskManager:
         reasons: List[str] = []
         spec = JOB_SPECS.get(task.type)
         classes = spec.classes if spec is not None else frozenset()
-        # The bodies the job is for come first, so their reasons (a drone's
-        # energy, say) aren't the ones cut off by the "and N more" below.
+        # The bodies the job is for come first, and every one of them is named
+        # in full, so their reasons (a drone's energy, say) are never the ones
+        # cut off by the "and N more" below.
         robots = sorted(twin.robots.values(), key=lambda robot: not (
             robot.mobility is not None and robot.mobility.embodiment_class in classes))
+        own = sum(1 for robot in robots if robot.mobility is not None and robot.mobility.embodiment_class in classes)
         for robot in robots:
             reason = self.capability_reason(robot, task)
             if robot.mobility is None and reason is None:
@@ -1272,7 +1274,8 @@ class TaskManager:
             reasons.append(f"{robot.name} {reason}")
         if not reasons:
             return None
-        shown = "; ".join(reasons[:3]) + (f" (and {len(reasons) - 3} more)" if len(reasons) > 3 else "")
+        keep = max(3, own)
+        shown = "; ".join(reasons[:keep]) + (f" (and {len(reasons) - keep} more)" if len(reasons) > keep else "")
         return f"No robot can do this {task.type.value}: {shown}"
 
     def _resolves(self, spec: str, robot: Any, task: Task) -> bool:

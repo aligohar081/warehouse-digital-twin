@@ -2,7 +2,7 @@
 maintenance history a CMMS keeps for every robot."""
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .errors import Conflict, NotFound
 
@@ -11,6 +11,11 @@ CALIBRATION_RESULTS = ("PASS", "FAIL")
 
 
 class ServicingMixin:
+    def open_work_orders(self) -> List[Dict[str, Any]]:
+        """Every work order still open, on any asset, oldest first: one read
+        for the floor's technicians (a robot's own are in get_robot)."""
+        return self.store.select("work_order", "status = 'OPEN'", order="opened_at, rowid")
+
     def open_work_order(self, asset_id: str, wo_type: str, description: str,
                         technician_id: Optional[str] = None, actor: Any = None) -> Dict[str, Any]:
         wo_type = str(wo_type or "").upper()

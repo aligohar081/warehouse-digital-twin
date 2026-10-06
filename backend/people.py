@@ -178,14 +178,29 @@ def zones_touch(warehouse: Any, a: str, b: str) -> bool:
                for x, y in cells_a for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))
 
 
+def zones_around(warehouse: Any, cell: Cell) -> List[Any]:
+    """The zones `cell` is in, for "who is near it". A cell no zone covers (a
+    strip between two zones) counts as in the zones of the cells beside it,
+    so a robot crossing it is still near someone."""
+    zones = warehouse.zones_of_cell(cell)
+    if zones:
+        return zones
+    beside = {}
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        for zone in warehouse.zones_of_cell((cell[0] + dx, cell[1] + dy)):
+            beside.setdefault(zone.key, zone)
+    return list(beside.values())
+
+
 def supervisor_nearby(twin: Any, robot_cell: Cell, supervisor: Any) -> bool:
     """The proximity half of the humanoid supervision rule (spec §6): the
-    supervisor stands in a zone that holds `robot_cell`, or one sharing an
-    edge with such a zone. Off the floor or in transit is never nearby."""
+    supervisor stands in a zone that holds `robot_cell` (zones_around: the
+    zones beside a cell no zone covers), or one sharing an edge with such a
+    zone. Off the floor or in transit is never nearby."""
     if supervisor.zone is None or supervisor.in_transit:
         return False
     return any(zones_touch(twin.warehouse, zone.key, supervisor.zone)
-               for zone in twin.warehouse.zones_of_cell(robot_cell))
+               for zone in zones_around(twin.warehouse, robot_cell))
 
 
 # --------------------------------------------------------------------------- #
