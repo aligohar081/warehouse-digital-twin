@@ -22,8 +22,8 @@ A Python (Flask) simulator of a warehouse with a plain-JavaScript dashboard: rob
 .venv/bin/python -m pytest -o addopts="" -q backend/test_station_jobs.py      # one file
 .venv/bin/python -m pytest -o addopts="" -q backend/tests.py::test_name       # one test
 .venv/bin/python -m pytest -o addopts="" -q -k "collision or battery"         # by keyword
-WAREHOUSE_PORT=5055 .venv/bin/python -m backend.app                            # run the app (classic floor)
-WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5070 .venv/bin/python -m backend.app   # the new floor (its shift starts paused)
+WAREHOUSE_PORT=5070 .venv/bin/python -m backend.app                            # run the app (distribution_center, the default; its shift starts paused)
+WAREHOUSE_LAYOUT=classic WAREHOUSE_PORT=5055 .venv/bin/python -m backend.app   # the classic floor
 .venv/bin/python -m backend.run_evals [--demo | --stats | logs/tasks/task_006.json]        # rule-based grading CLI
 ```
 
@@ -50,11 +50,11 @@ WAREHOUSE_LAYOUT=distribution_center WAREHOUSE_PORT=5070 .venv/bin/python -m bac
 
 ## Where to look
 
-- How the code fits together → `ARCHITECTURE.md`: §2 repo map, §3 tick, §4 task lifecycle, §5 trust layer, §6 state, §7 API and frontend, §8 tests, §9 invariants, §10 plan 1c (not yet built).
-- Setup, running, troubleshooting → `RUN.md`: §2 setup, §3 run, §4 tests, §5 eval CLI, §6 promptfoo, §7 troubleshooting.
+- How the code fits together → `ARCHITECTURE.md`: §2 repo map, §3 tick, §4 task lifecycle, §5 trust layer, §6 state, §7 API and frontend, §8 tests, §9 invariants.
+- Setup, running, troubleshooting → `RUN.md`: §2 setup, §3 run, §4 tests, §5 eval CLI, §6 promptfoo, §7 soak, §8 troubleshooting.
 - Trust-layer concepts → `TRUST_LAYER.md`; promptfoo suites → `evals/README.md`.
 - Design authority → `docs/superpowers/specs/2026-09-30-multi-embodiment-operations-design.md` (inventory: `2026-09-30-fleet-workforce-inventory-design.md` beside it).
-- Current plan → `docs/superpowers/plans/2026-10-05-multi-embodiment-1c-seed-api-dashboard-soak.md`; plans run with the superpowers subagent-driven-development skill.
+- Plans → `docs/superpowers/plans/` (the latest, 1c, is finished; no plan is in progress); plans run with the superpowers subagent-driven-development skill.
 - Status and next steps → the newest file in `docs/handoffs/` (read only that one).
 
 ## Context rules (keep context minimal)
