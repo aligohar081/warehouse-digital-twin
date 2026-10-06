@@ -134,7 +134,7 @@ class ShiftEngine:
         try:
             version, internal, gauss = data["rng"]
             rng.setstate((version, tuple(internal), gauss))
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             raise ValueError("The shift's random number state is missing or damaged") from None
         counts = {key: data.get(key, 0) for key in ("truck_count", "face_index")}
         counters = {**{stream: 0 for stream in DEFAULT_RATES}, "skipped_orders": 0, **(data.get("counters") or {})}

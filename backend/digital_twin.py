@@ -1174,8 +1174,9 @@ class DigitalTwin:
         classic save). A save of another floor is refused with a ValueError
         (Plan ruling 5): its robots are bound to another inventory profile's
         assets. The whole file is rebuilt first, so a damaged save changes
-        nothing; then robots, boxes, people, tasks, the stock ledger and the
-        equipment are all replaced — nothing from before the load survives."""
+        nothing; then robots, boxes, people, tasks, the stock ledger, the
+        equipment, and the shift and its orders are all replaced — nothing from
+        before the load survives."""
         path = path or self.state_path
         if not os.path.exists(path):
             raise FileNotFoundError(f"No saved state at {path}")

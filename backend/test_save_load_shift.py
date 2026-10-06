@@ -178,12 +178,15 @@ def test_a_damaged_shift_save_is_refused_and_changes_nothing(tmp_path):
         good = json.load(handle)
     before = without_saved_at(twin.serialize())
     shift = good["shift"]
+    bad_rng_internal = list(shift["rng"][1])
+    bad_rng_internal[0] = -1  # out-of-range integer for RNG state
     for damaged, message in (({**shift, "status": "LUNCH"}, "Unknown shift status 'LUNCH'"),
                              ({**shift, "seed": "42"}, "seed must be a whole number"),
                              ({**shift, "pace": 0}, "pace must be a finite number greater than zero"),
                              ({**shift, "rates": {"meteors": 1.0}}, "Unknown rate 'meteors'"),
                              ({**shift, "next_due": {"trucks": 30.0}}, "needs a next due time for every stream"),
                              ({**shift, "rng": [3, [1, 2], None]}, "random number state is missing or damaged"),
+                             ({**shift, "rng": [3, bad_rng_internal, 0.0]}, "random number state is missing or damaged"),
                              ({**shift, "truck_count": -1}, "truck_count must be a whole number"),
                              ({**shift, "orders": {"orders": [{"order_id": "ORD-0001"}]}}, "missing \\['kind'\\]")):
         with open(path, "w", encoding="utf-8") as handle:
