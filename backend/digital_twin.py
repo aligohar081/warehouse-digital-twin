@@ -54,49 +54,11 @@ from .navigation import NavigationEngine
 from .operations import ShiftEngine
 from .operator import Operator
 from .robot import Robot
+from .seeds import SEEDS
+from .seeds import classic as classic_seed
 from .task_manager import Task, TaskManager
 from .task_planner import TaskPlanner
 from .warehouse import Warehouse
-
-#: One demo agent and two demo operators — one fully certified, one only
-#: partially, so HUMAN_INSPECTION / MIXED_MAINTENANCE_MISSION have a
-#: realistic mix of eligible and ineligible operators to pick from when
-#: assigned "AUTO", the same way DEMO_ROBOTS/DEMO_BOXES seed a realistic
-#: starting warehouse.
-DEMO_AGENTS = [
-    ("Ada", "groq/gpt-oss-20b"),
-]
-
-DEMO_OPERATORS = [
-    ("Sam", ["safety_inspection", "electrical_safety"]),
-    ("Lee", ["safety_inspection"]),
-]
-
-DEMO_ROBOTS = [
-    ("Robo-01", (3, 8)),
-    ("Robo-02", (16, 8)),
-]
-
-#: The inventory records (backend/inventory/demo_seed.py) the demo robots
-#: and operators are bound to — separate maps so the tuples above stay
-#: exactly as they were.
-DEMO_ASSET_IDS = {"Robo-01": "AST-000101", "Robo-02": "AST-000102"}
-DEMO_WORKER_IDS = {"Sam": "E-10001", "Lee": "E-10002"}
-
-DEMO_BOXES = [
-    ("Box-A", (3, 5), 12.5, "shelf_a", "loading_zone"),
-    ("Box-B", (9, 5), 8.0, "shelf_b", "packing_area"),
-    ("Box-C", (15, 5), 20.0, "shelf_c", "unloading_zone"),
-    ("Box-D", (5, 5), 4.5, "shelf_a", "packing_area"),
-    ("Box-E", (11, 5), 15.0, "shelf_b", "loading_zone"),
-]
-
-DEMO_TASKS = [
-    {"type": "PICK_AND_DELIVER", "robot": "Robo-01", "box": "Box-A",
-     "source": "shelf_a", "destination": "loading_zone", "priority": "HIGH"},
-    {"type": "PICK_AND_DELIVER", "robot": "Robo-02", "box": "Box-B",
-     "source": "shelf_b", "destination": "packing_area", "priority": "NORMAL"},
-]
 
 
 class DigitalTwin:
@@ -194,8 +156,11 @@ class DigitalTwin:
                                         profile=self.layout_name)
         self.fleet = FleetBridge(self, self.inventory)
 
-        # The classic demo seed only fits the classic floor; the
-        # distribution-centre floor has no twin seed yet and boots empty.
+        # Whether this floor's seed (backend/seeds) is on it, so a reset puts it
+        # back. Classic boots with its demo, as it always has. Any other floor
+        # boots empty — tests build their own floors on it — until
+        # seed_floor() runs (the app's build_twin calls it).
+        self.floor_seeded = False
         if demo and self.layout_name == "classic":
             self.load_demo(create_tasks=demo_tasks)
 
@@ -203,36 +168,18 @@ class DigitalTwin:
     # Demo / bootstrap
     # ------------------------------------------------------------------ #
     def load_demo(self, create_tasks: bool = True) -> None:
-        for name, position in DEMO_ROBOTS:
-            try:
-                self.add_robot(name=name, position=position, asset_id=DEMO_ASSET_IDS.get(name))
-            except ValueError as exc:
-                # A persisted inventory may have retired the demo's asset; the
-                # twin must still boot, so take over an orphaned floor asset of
-                # the same model (a previous boot's replacement) or commission
-                # a fresh one — never grow the inventory on every boot.
-                demo_asset = DEMO_ASSET_IDS.get(name)
-                model = (self.inventory.get_robot(demo_asset)["model_code"]
-                         if self.inventory.has_asset(demo_asset) else CLASS_DEFAULT_MODELS["AMR"])
-                spare = self.fleet.spare_floor_asset(model, exclude=DEMO_ASSET_IDS.values())
-                self.logger.warning(
-                    LogCategory.FLEET,
-                    f"{name}: demo asset {demo_asset} is unusable ({exc}) — "
-                    + (f"taking over spare asset {spare}" if spare else "commissioning a new one"))
-                self.add_robot(name=name, position=position, asset_id=spare)
-        for name, position, weight, source, destination in DEMO_BOXES:
-            self.add_box(name=name, position=position, weight=weight,
-                         source=source, destination=destination)
-        for name, model_version in DEMO_AGENTS:
-            self.add_agent(name=name, model_version=model_version)
-        for name, certifications in DEMO_OPERATORS:
-            self.add_operator(name=name, certifications=certifications, worker_id=DEMO_WORKER_IDS.get(name))
-        if create_tasks:
-            for payload in DEMO_TASKS:
-                try:
-                    self.tasks.create_task(payload)
-                except ValueError as exc:
-                    self.logger.error(LogCategory.TASK, f"Demo task rejected: {exc}")
+        """The classic demo (backend/seeds/classic.py), with its tasks if asked."""
+        classic_seed.seed(self, create_tasks=create_tasks)
+        self.floor_seeded = True
+
+    def seed_floor(self) -> None:
+        """Put this floor's seed (backend/seeds, spec §4.2) on the empty twin,
+        and remember it, so reset() puts it back."""
+        with self.lock:
+            if self.robots:
+                raise ValueError(f"The {self.layout_name} floor already has robots; seed an empty twin")
+            SEEDS[self.layout_name](self)
+            self.floor_seeded = True
 
     # ------------------------------------------------------------------ #
     # Lookups
@@ -364,7 +311,7 @@ class DigitalTwin:
             model = self._model_for(normalized_class, model_code, asset_id)
             body = self.fleet.model_profile(model) if model else None
             mobility = body if self.layout_name != "classic" else None
-            spawn = self._spawn_cell(position, body, mobility)
+            spawn = self._spawn_cell(position, body, mobility, asset_id)
 
             if speed is not None:
                 effective_speed = speed
@@ -398,17 +345,21 @@ class DigitalTwin:
         return CLASS_DEFAULT_MODELS.get(robot_class)
 
     def _spawn_cell(self, position: Optional[Cell], body: Optional[MobilityProfile],
-                    mobility: Optional[MobilityProfile]) -> Cell:
+                    mobility: Optional[MobilityProfile], asset_id: Optional[str] = None) -> Cell:
         """Where a new robot starts. Fixed equipment goes on a free station
-        cell of its own; anything else on the requested (or default) cell, or
-        the nearest free cell its floor profile may use."""
+        cell of its own — its asset's home zone's station when that is free;
+        anything else on the requested (or default) cell, or the nearest free
+        cell its floor profile may stop on (never a walkway crossing)."""
         occupied = set(self.robot_cells(GROUND))  # every robot starts on the ground
         if body is not None and body.is_fixed:
             stations = self.warehouse.fixed_stations
             if not stations:
                 raise ValueError(f"A {body.embodiment_class} is fixed equipment and the "
                                  f"{self.layout_name} floor has no station for it")
-            cell = tuple(position) if position else next((c for c in stations if c not in occupied), None)
+            home_zone = (self.inventory.get_robot(asset_id)["home_zone"]
+                         if asset_id and self.inventory.has_asset(asset_id) else None)
+            free = sorted((c for c in stations if c not in occupied), key=lambda c: stations[c] != home_zone)
+            cell = tuple(position) if position else next(iter(free), None)
             if cell is None:
                 raise ValueError("Every fixed station is already taken")
             if cell not in stations:
@@ -418,7 +369,7 @@ class DigitalTwin:
             return cell
         home = "drone_pad" if mobility is not None and mobility.is_air else "parking_area"
         candidate = position or self.warehouse.resolve_zone(home).cells[0]
-        if self.warehouse.passable(candidate, mobility) and candidate not in occupied:
+        if self.warehouse.may_stop(candidate, mobility) and candidate not in occupied:
             return candidate
         spawn = self.warehouse.nearest_walkable(candidate, occupied, profile=mobility)
         if spawn is None:
@@ -946,8 +897,13 @@ class DigitalTwin:
             category=LogCategory.SYSTEM,
             level=LogLevel.WARNING,
         )
+        # The floor comes back as its seed left it: classic as its demo, as it
+        # always has; another floor only if it was seeded (an empty test floor
+        # stays empty).
         if self.layout_name == "classic":
             self.load_demo(create_tasks=demo_tasks)
+        elif self.floor_seeded:
+            self.seed_floor()
 
     def synchronize(self) -> None:
         self.last_sync = now_iso()

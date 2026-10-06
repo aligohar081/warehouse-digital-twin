@@ -58,6 +58,9 @@ class FleetBridge:
         self._battery_base: Dict[str, Dict[str, float]] = {}
         # Catalog models don't change at runtime, so each body is read once.
         self._profiles: Dict[str, MobilityProfile] = {}
+        # The seed profile the inventory was seeded under (files from before
+        # profiles are classic); a reseed keeps it.
+        self.profile: str = service.store.get_meta("seed_profile") or "classic"
         service.subscribe(self._on_change)
 
     # ---- mutations ------------------------------------------------------ #
@@ -373,8 +376,11 @@ class FleetBridge:
                 self._apply_lifecycle(robot, self.service.lifecycle_status(robot.asset_id))
                 self._report_robot(robot)
         # Only the other sites check in on their own; an unbound floor asset has nothing
-        # reporting for it, so its report goes stale (and the fleet shows it).
-        self.service.touch_remote_reports(exclude=bound, exclude_sites=(FLOOR_SITE,))
+        # reporting for it, so its report goes stale (and the fleet shows it). The
+        # distribution-centre inventory has no other site — every active asset is on
+        # this floor and bound (spec §4.4) — so nothing else checks in there.
+        if self.profile != "distribution_center":
+            self.service.touch_remote_reports(exclude=bound, exclude_sites=(FLOOR_SITE,))
 
     def _report_robot(self, robot: Any) -> None:
         if robot.status == RobotStatus.ERROR:

@@ -23,11 +23,12 @@ from .layouts import LAYOUTS
 from .maintenance import maintenance_reason
 from .models import CONFIG, LogCategory, Priority, SimulationStatus, now_iso
 from .policy import DEFAULT_POLICY_PATH, effective_policy, load_policies
-from .seeds import distribution_center
 from .simulator import Simulator
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
+#: The floor the app boots when WAREHOUSE_LAYOUT doesn't name one.
+DEFAULT_LAYOUT = "distribution_center"
 
 
 class ApiError(Exception):
@@ -75,18 +76,11 @@ def _mission_report_rows(tasks_dir: str) -> list:
     return [flatten_record(r) for r in query_decisions(tasks_dir=tasks_dir)]
 
 
-def _seed_floor(twin: DigitalTwin) -> None:
-    """Classic seeds itself (load_demo). The new floor gets its stopgap seed and
-    its shift stays paused (spec §11.5), so, like classic, the floor runs only
-    the tasks someone assigns until the shift is started."""
-    if twin.layout_name == "distribution_center":
-        distribution_center.seed(twin)
-
-
-def build_twin(layout: str = "classic", base_dir: str = BASE_DIR) -> DigitalTwin:
-    """The app's own twin on the floor called `layout`. Classic keeps logs/ and
-    data/; any other floor gets logs/<layout>/ and data/<layout>/, so switching
-    floors never reseeds classic's inventory file."""
+def build_twin(layout: str = DEFAULT_LAYOUT, base_dir: str = BASE_DIR) -> DigitalTwin:
+    """The app's own twin on the floor called `layout`, with that floor's seed
+    (spec §4.2) and its shift paused until someone starts it (§11.5). Classic
+    keeps logs/ and data/; any other floor gets logs/<layout>/ and
+    data/<layout>/, so switching floors never reseeds the other's inventory file."""
     if layout not in LAYOUTS:
         raise ValueError(f"WAREHOUSE_LAYOUT must be one of {sorted(LAYOUTS)}, not {layout!r}")
     folder = () if layout == "classic" else (layout,)
@@ -97,7 +91,8 @@ def build_twin(layout: str = "classic", base_dir: str = BASE_DIR) -> DigitalTwin
         inventory_path=os.path.join(data_dir, "inventory.sqlite3"),
         layout=layout,
     )
-    _seed_floor(twin)
+    if not twin.floor_seeded:  # classic seeded itself with its demo
+        twin.seed_floor()
     return twin
 
 
@@ -105,7 +100,7 @@ def create_app(
     twin: Optional[DigitalTwin] = None,
     autostart: bool = True,
     run_thread: bool = True,
-    layout: str = "classic",
+    layout: str = DEFAULT_LAYOUT,
 ) -> Tuple[Flask, DigitalTwin, Simulator, CIEngine]:
     app = Flask(__name__, static_folder=None)
     app.config["JSON_SORT_KEYS"] = False
@@ -755,8 +750,7 @@ tr.pass {{ background: #eefaf0; }}
     def sim_reset():
         data = _payload()
         with twin.lock:
-            twin.reset(demo_tasks=bool(data.get("demo_tasks", True)))
-            _seed_floor(twin)
+            twin.reset(demo_tasks=bool(data.get("demo_tasks", True)))  # reruns the floor's seed
         simulator.start()
         broadcaster.publish("state", twin.snapshot(include_layout=True))
         return jsonify({"ok": True, "state": twin.snapshot(include_layout=True)})
@@ -865,8 +859,7 @@ tr.pass {{ background: #eefaf0; }}
     @guarded
     def reset_state():
         with twin.lock:
-            twin.reset(demo_tasks=True)
-            _seed_floor(twin)
+            twin.reset(demo_tasks=True)  # reruns the floor's seed
         broadcaster.publish("state", twin.snapshot(include_layout=True))
         return jsonify({"ok": True, "state": twin.snapshot(include_layout=True)})
 
@@ -923,7 +916,7 @@ tr.pass {{ background: #eefaf0; }}
 def main() -> None:
     host = os.environ.get("WAREHOUSE_HOST", "127.0.0.1")
     port = int(os.environ.get("WAREHOUSE_PORT", "5000"))
-    app, twin, simulator, _ci = create_app(layout=os.environ.get("WAREHOUSE_LAYOUT", "classic"))
+    app, twin, simulator, _ci = create_app(layout=os.environ.get("WAREHOUSE_LAYOUT") or DEFAULT_LAYOUT)
     twin.logger.info(
         LogCategory.SYSTEM,
         f"Warehouse control centre ({twin.layout_name} floor) listening on http://{host}:{port}",
